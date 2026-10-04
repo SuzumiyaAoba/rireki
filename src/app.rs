@@ -9,7 +9,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use crate::db::Db;
+use crate::db::{Db, JsCache};
+use crate::loader;
 use crate::icons::{self, Icon};
 use crate::index::{self, Indexer, Update};
 use crate::layout::{self, Block, Granularity};
@@ -123,6 +124,8 @@ pub struct Rireki {
     loading: Option<(usize, usize)>,
     /// 詳細表示で input / output を引くための読み取り専用接続
     reader: Option<Db>,
+    /// exec の JS をモック実行した結果のキャッシュ
+    js_cache: Option<JsCache>,
     detail_cache: Option<DetailCache>,
     detail_view: Entity<DetailView>,
     /// 直前のフレームで描いたブロック（クリック・ホバーの当たり判定用）
@@ -267,6 +270,7 @@ impl Rireki {
             exec_parent: Default::default(),
             loading: Some((0, 0)),
             reader: None,
+            js_cache: JsCache::open().ok(),
             detail_cache: None,
             detail_view,
             hits: Vec::new(),
@@ -531,6 +535,10 @@ impl Rireki {
                 let (input, output) = match e.row.and_then(|r| fetched.remove(&r)) {
                     Some(v) => v,
                     None => (e.input.clone(), e.output.clone()),
+                };
+                let input = match input.strip_prefix(loader::JS_MARK) {
+                    Some(js) => exec_detail_cached(self.js_cache.as_ref(), js),
+                    None => input,
                 };
                 (truncate(&input, limit), truncate(&output, limit))
             })
@@ -1740,4 +1748,17 @@ impl Render for Rireki {
                     .when_some(self.hover.clone(), |d, h| d.child(div().text_color(c(theme::TEXT)).child(h))),
             )
     }
+}
+
+/// exec の JS を整形する。初回はモック実行してキャッシュに保存する
+fn exec_detail_cached(cache: Option<&JsCache>, js: &str) -> String {
+    let h = crate::jsmock::hash(js);
+    if let Some(d) = cache.and_then(|c| c.get(h)) {
+        return d;
+    }
+    let d = loader::exec_detail(js);
+    if let Some(c) = cache {
+        c.put(h, &d);
+    }
+    d
 }

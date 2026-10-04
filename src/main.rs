@@ -2,6 +2,7 @@ mod app;
 mod db;
 mod icons;
 mod index;
+mod jsmock;
 mod layout;
 mod loader;
 mod model;

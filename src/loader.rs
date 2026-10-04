@@ -604,37 +604,80 @@ fn load_codex(p: &Path) -> Option<Loaded> {
     }))
 }
 
+/// exec の入力として保存する JS の目印。詳細表示時に `exec_detail` で整形する
+pub const JS_MARK: &str = "\u{1}exec\n";
+/// 保存する JS の上限（切れると構文エラーになり、静的解析にフォールバックする）
+const MAX_JS: usize = 50_000;
+
+/// 詳細表示用の exec の整形。モック実行で呼び出しが取れればそれを、取れなければ静的解析の結果を使う
+pub fn exec_detail(js: &str) -> String {
+    if let Some(calls) = crate::jsmock::run(js) {
+        let args: Vec<(&str, Value)> = calls
+            .iter()
+            .map(|(n, a)| {
+                let v = if a.is_object() { a.clone() } else { serde_json::json!({ "input": a }) };
+                (n.as_str(), v)
+            })
+            .collect();
+        let items: Vec<(&str, Box<dyn Args + '_>, String)> =
+            args.iter().map(|(n, v)| (*n, Box::new(JsonArgs(v)) as Box<dyn Args>, pretty(v))).collect();
+        let body = format_calls(&items);
+        return truncate(&format!("（JS をモック実行して推定: {} 件）\n\n{body}", items.len()), MAX_TEXT);
+    }
+    let calls = js_tool_calls(js);
+    if calls.is_empty() {
+        return truncate(js, MAX_TEXT);
+    }
+    let items: Vec<(&str, Box<dyn Args + '_>, String)> = calls
+        .iter()
+        .map(|(n, a)| (*n, Box::new(JsArgs(a)) as Box<dyn Args>, a.trim_matches(|c| c == '(' || c == ')').to_string()))
+        .collect();
+    if items.len() == 1 && codex_format(items[0].0, &*items[0].1).1.is_empty() {
+        return truncate(js, MAX_TEXT);
+    }
+    truncate(&format_calls(&items), MAX_TEXT)
+}
+
+/// (ツール名, 引数, 整形できないときの表示) の列を詳細表示用に並べる
+fn format_calls(items: &[(&str, Box<dyn Args + '_>, String)]) -> String {
+    if let [(name, a, raw)] = items {
+        let d = codex_format(name, &**a).1;
+        return if d.is_empty() { raw.clone() } else { d };
+    }
+    let mut detail = String::new();
+    for (i, (name, a, raw)) in items.iter().enumerate() {
+        let d = codex_format(name, &**a).1;
+        let d = if d.is_empty() { raw.as_str() } else { d.as_str() };
+        detail.push_str(&format!("#{i} {name}\n{d}\n\n"));
+    }
+    detail.trim_end().to_string()
+}
+
 /// Codex のツール呼び出しを表示用に整える: (名前, 要約, 入力表示)
 ///
 /// コードモードの `exec` は JS で `tools.xxx({...})` を呼ぶので、中身のツールを取り出す。
 fn codex_tool(name: &str, input: &Value) -> (String, String, String) {
     if let ("exec", Value::String(js)) = (name, input) {
+        // 名前と要約は静的解析で決め、詳細は表示時にモック実行で作る（exec_detail）
         let calls = js_tool_calls(js);
-        match calls.as_slice() {
-            [(inner, args)] => {
-                let (s, d) = codex_format(inner, &JsArgs(args));
-                let d = if d.is_empty() { truncate(js, MAX_TEXT) } else { d };
-                return (inner.to_string(), s, d);
-            }
-            [] => {}
+        let stored = format!("{JS_MARK}{}", truncate(js, MAX_JS));
+        return match calls.as_slice() {
+            [] => (name.into(), summarize_input(name, input), stored),
+            [(inner, args)] => (inner.to_string(), codex_format(inner, &JsArgs(args)).0, stored),
             many => {
-                // 並列実行などで複数呼ぶ場合は、呼び出しごとに整形して並べる
-                let mut sums = Vec::new();
-                let mut detail = String::new();
-                for (i, (inner, args)) in many.iter().enumerate() {
-                    let (s, d) = codex_format(inner, &JsArgs(args));
-                    let s = if s.is_empty() { inner.to_string() } else { s };
-                    let d = if d.is_empty() { args.trim_matches(|c| c == '(' || c == ')').to_string() } else { d };
-                    detail.push_str(&format!("#{i} {inner}\n{d}\n\n"));
-                    sums.push(s);
-                }
+                let sums: Vec<String> = many
+                    .iter()
+                    .map(|(inner, args)| {
+                        let s = codex_format(inner, &JsArgs(args)).0;
+                        if s.is_empty() { inner.to_string() } else { s }
+                    })
+                    .collect();
                 let first = many[0].0;
                 let n = if many.iter().all(|(x, _)| *x == first) { first } else { "exec" };
                 let s = format!("[{}] {}", many.len(), sums.join(" ; "));
-                return (n.into(), one_line(&s, 160), truncate(detail.trim_end(), MAX_TEXT));
+                (n.into(), one_line(&s, 160), stored)
             }
-        }
-        return (name.into(), summarize_input(name, input), truncate(js, MAX_TEXT));
+        };
     }
     if let ("apply_patch", Value::String(p)) = (name, input) {
         return (name.into(), patch_summary(p), truncate(p, MAX_TEXT));
@@ -934,6 +977,19 @@ fn codex_output(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 保存された JS を詳細表示用に整形し、モック実行の見出しを除く
+    fn detail(d: &str) -> String {
+        let d = exec_detail(d.strip_prefix(JS_MARK).expect("exec の入力は JS のまま保存する"));
+        d.split_once("\n\n").filter(|(h, _)| h.starts_with("（JS をモック")).map_or(d.clone(), |(_, b)| b.to_string())
+    }
+
+    #[test]
+    fn codex_mock_loop() {
+        let js = Value::String("for (const f of [\"a\", \"b\"]) await tools.exec_command({cmd: `cat ${f}`});".into());
+        let (_, _, d) = codex_tool("exec", &js);
+        assert_eq!(detail(&d), "#0 exec_command\n$ cat a\n\n#1 exec_command\n$ cat b");
+    }
+
     #[test]
     fn codex_exec_js() {
         let js = Value::String(
@@ -942,7 +998,7 @@ mod tests {
         let (n, s, d) = codex_tool("exec", &js);
         assert_eq!(n, "exec_command");
         assert_eq!(s, "sed -n '1,2p' a.py");
-        assert_eq!(d, "$ sed -n '1,2p' a.py\n\ncwd: /w");
+        assert_eq!(detail(&d), "$ sed -n '1,2p' a.py\n\ncwd: /w");
     }
 
     #[test]
@@ -953,7 +1009,7 @@ mod tests {
         let (n, s, d) = codex_tool("exec", &js);
         assert_eq!(n, "update_plan");
         assert_eq!(s, "1/2 B");
-        assert_eq!(d, "✓ A\n▶ B");
+        assert_eq!(detail(&d), "✓ A\n▶ B");
     }
 
     #[test]
@@ -978,7 +1034,7 @@ mod tests {
         let (n, s, d) = codex_tool("exec", &js);
         assert_eq!(n, "exec_command");
         assert_eq!(s, "[2] ls ; pwd");
-        assert_eq!(d, "#0 exec_command\n$ ls\n\n#1 exec_command\n$ pwd");
+        assert_eq!(detail(&d), "#0 exec_command\n$ ls\n\n#1 exec_command\n$ pwd");
         let js = Value::String("text(await tools.apply_patch(\"*** Begin Patch\\n*** Update File: /a/b.rs\\n@@\\n\"))".into());
         let (n, s, _) = codex_tool("exec", &js);
         assert_eq!((n.as_str(), s.as_str()), ("apply_patch", "Update b.rs"));

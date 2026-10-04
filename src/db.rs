@@ -12,7 +12,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use crate::model::{Event, Kind, Lane, Loaded, Session, Source};
 
 /// スキーマやパース結果の形式を変えたら上げる（古い DB は作り直す）
-const VERSION: i64 = 10;
+const VERSION: i64 = 11;
 
 pub struct Db {
     conn: Connection,
@@ -404,6 +404,47 @@ impl Db {
             }
         }
         out
+    }
+}
+
+/// Codex の exec を JS のモック実行で整形した結果のキャッシュ（詳細表示時に作る）
+///
+/// 索引 DB とは別ファイルにし、キーは JS 本文のハッシュにする。リアルタイムファイルの
+/// イベントは索引 DB に行を持たないため、行 ID ではなく内容で引く。
+pub struct JsCache {
+    conn: Connection,
+}
+
+impl JsCache {
+    pub fn open() -> rusqlite::Result<Self> {
+        let _ = std::fs::create_dir_all(dir());
+        let conn = Connection::open(dir().join("jscache.db"))?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if v != crate::jsmock::ENGINE_VERSION {
+            conn.execute_batch("DROP TABLE IF EXISTS calls; VACUUM;")?;
+            conn.pragma_update(None, "user_version", crate::jsmock::ENGINE_VERSION)?;
+        }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS calls (
+                 hash INTEGER PRIMARY KEY,
+                 -- lz4 圧縮した整形済みテキスト
+                 detail BLOB NOT NULL
+             );",
+        )?;
+        Ok(Self { conn })
+    }
+
+    pub fn get(&self, hash: i64) -> Option<String> {
+        let mut st = self.conn.prepare_cached("SELECT detail FROM calls WHERE hash = ?1").ok()?;
+        st.query_row([hash], |r| Ok(unpack(r.get_ref(0)?.as_blob()?))).ok()
+    }
+
+    pub fn put(&self, hash: i64, detail: &str) {
+        if let Ok(mut st) = self.conn.prepare_cached("INSERT OR REPLACE INTO calls (hash, detail) VALUES (?1, ?2)") {
+            let _ = st.execute(params![hash, pack(detail)]);
+        }
     }
 }
 
