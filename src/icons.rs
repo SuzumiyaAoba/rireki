@@ -21,12 +21,14 @@ pub enum Icon {
     Bot,
     Layers,
     Folder,
+    Copy,
+    Check,
     Claude,
     Codex,
 }
 
 impl Icon {
-    const ALL: [Icon; 16] = [
+    const ALL: [Icon; 18] = [
         Icon::CalendarDay,
         Icon::CalendarWeek,
         Icon::Timeline,
@@ -41,6 +43,8 @@ impl Icon {
         Icon::Bot,
         Icon::Layers,
         Icon::Folder,
+        Icon::Copy,
+        Icon::Check,
         Icon::Claude,
         Icon::Codex,
     ];
@@ -61,6 +65,8 @@ impl Icon {
             Icon::Bot => "bot",
             Icon::Layers => "layers",
             Icon::Folder => "folder",
+            Icon::Copy => "copy",
+            Icon::Check => "check",
             Icon::Claude => "claude",
             Icon::Codex => "codex",
         }
@@ -103,6 +109,10 @@ impl Icon {
             Icon::Bot => {
                 r#"<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>"#
             }
+            Icon::Copy => {
+                r#"<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>"#
+            }
+            Icon::Check => r#"<path d="M20 6 9 17l-5-5"/>"#,
             Icon::Layers => r#"<path d="m12 2 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>"#,
             Icon::Folder => {
                 r#"<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>"#

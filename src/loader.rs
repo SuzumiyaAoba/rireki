@@ -614,13 +614,21 @@ pub fn exec_detail(js: &str) -> String {
     if let Some(calls) = crate::jsmock::run(js) {
         let args: Vec<(&str, Value)> = calls
             .iter()
-            .map(|(n, a)| {
-                let v = if a.is_object() { a.clone() } else { serde_json::json!({ "input": a }) };
-                (n.as_str(), v)
+            .map(|c| {
+                let v = if c.args.is_object() { c.args.clone() } else { serde_json::json!({ "input": c.args }) };
+                (c.name.as_str(), v)
             })
             .collect();
-        let items: Vec<(&str, Box<dyn Args + '_>, String)> =
-            args.iter().map(|(n, v)| (*n, Box::new(JsonArgs(v)) as Box<dyn Args>, pretty(v))).collect();
+        let items: Vec<Item> = args
+            .iter()
+            .zip(&calls)
+            .map(|((n, v), c)| Item {
+                name: n,
+                label: c.label.clone().or_else(|| c.at.and_then(|at| label_near(js, at))),
+                args: Box::new(JsonArgs(v)),
+                raw: pretty(v),
+            })
+            .collect();
         let body = format_calls(&items);
         return truncate(&format!("（JS をモック実行して推定: {} 件）\n\n{body}", items.len()), MAX_TEXT);
     }
@@ -628,29 +636,113 @@ pub fn exec_detail(js: &str) -> String {
     if calls.is_empty() {
         return truncate(js, MAX_TEXT);
     }
-    let items: Vec<(&str, Box<dyn Args + '_>, String)> = calls
+    let items: Vec<Item> = calls
         .iter()
-        .map(|(n, a)| (*n, Box::new(JsArgs(a)) as Box<dyn Args>, a.trim_matches(|c| c == '(' || c == ')').to_string()))
+        .map(|(n, a)| Item {
+            name: n,
+            label: call_label(js, n),
+            args: Box::new(JsArgs(a)),
+            raw: a.trim_matches(|c| c == '(' || c == ')').to_string(),
+        })
         .collect();
-    if items.len() == 1 && codex_format(items[0].0, &*items[0].1).1.is_empty() {
+    if items.len() == 1 && codex_format(items[0].name, &*items[0].args).1.is_empty() {
         return truncate(js, MAX_TEXT);
     }
     truncate(&format_calls(&items), MAX_TEXT)
 }
 
-/// (ツール名, 引数, 整形できないときの表示) の列を詳細表示用に並べる
-fn format_calls(items: &[(&str, Box<dyn Args + '_>, String)]) -> String {
-    if let [(name, a, raw)] = items {
-        let d = codex_format(name, &**a).1;
-        return if d.is_empty() { raw.clone() } else { d };
+/// 詳細表示用の 1 呼び出し
+struct Item<'a> {
+    name: &'a str,
+    /// 呼び出しに付いた名前（代入先の変数・オブジェクトのキーなど）
+    label: Option<String>,
+    args: Box<dyn Args + 'a>,
+    /// 整形できないときの表示
+    raw: String,
+}
+
+fn format_calls(items: &[Item]) -> String {
+    let body = |it: &Item| {
+        let d = codex_format(it.name, &*it.args).1;
+        if d.is_empty() { it.raw.clone() } else { d }
+    };
+    if let [it] = items {
+        return match &it.label {
+            Some(l) => format!("{l} ← {}\n{}", it.name, body(it)),
+            None => body(it),
+        };
     }
     let mut detail = String::new();
-    for (i, (name, a, raw)) in items.iter().enumerate() {
-        let d = codex_format(name, &**a).1;
-        let d = if d.is_empty() { raw.as_str() } else { d.as_str() };
-        detail.push_str(&format!("#{i} {name}\n{d}\n\n"));
+    for (i, it) in items.iter().enumerate() {
+        let head = match &it.label {
+            Some(l) => format!("#{i} {l} ← {}", it.name),
+            None => format!("#{i} {}", it.name),
+        };
+        detail.push_str(&format!("{head}\n{}\n\n", body(it)));
     }
     detail.trim_end().to_string()
+}
+
+/// 静的解析で見つけた呼び出し（`js_tool_calls` が返したツール名のスライス）の名前
+fn call_label(js: &str, name: &str) -> Option<String> {
+    let at = (name.as_ptr() as usize).checked_sub(js.as_ptr() as usize)?.checked_sub(6)?;
+    label_before(js, at)
+}
+
+/// モック実行で得た位置（`tools.xxx(` の周辺）から呼び出しの名前を探す
+fn label_near(js: &str, at: usize) -> Option<String> {
+    let mut end = (at + 6).min(js.len());
+    while !js.is_char_boundary(end) {
+        end -= 1;
+    }
+    let line_start = js[..at.min(end)].rfind('\n').map_or(0, |i| i + 1);
+    let i = js[line_start..end].rfind("tools.")? + line_start;
+    label_before(js, i)
+}
+
+/// `tools.` の直前を見て、呼び出しに付いた名前を返す
+///
+/// - `const result = await tools.x(...)` → `result`
+/// - `{ build: tools.x(...) }` → `build`
+/// - `["lint", tools.x(...)]` → `lint`
+fn label_before(js: &str, at: usize) -> Option<String> {
+    let mut p = js[..at].trim_end();
+    if let Some(q) = p.strip_suffix("await").filter(|q| !q.ends_with(is_ident)) {
+        p = q.trim_end();
+    }
+    let ident = |s: &str| {
+        let s = s.trim_end();
+        let n = s.chars().rev().take_while(|&c| is_ident(c)).count();
+        let id = &s[s.len() - s.chars().rev().take(n).map(char::len_utf8).sum::<usize>()..];
+        (!id.is_empty() && !id.starts_with(|c: char| c.is_ascii_digit())).then(|| id.to_string())
+    };
+    if let Some(q) = p.strip_suffix('=') {
+        if q.ends_with(['=', '!', '<', '>']) {
+            return None;
+        }
+        return ident(q.trim_end_matches(['+', '-', '*', '/', '|', '&', '?']));
+    }
+    if let Some(q) = p.strip_suffix(':') {
+        let q = q.trim_end();
+        if let Some(&qc @ (b'"' | b'\'' | b'`')) = q.as_bytes().last() {
+            let open = q[..q.len() - 1].rfind(qc as char)?;
+            return Some(q[open + 1..q.len() - 1].to_string()).filter(|s| !s.is_empty());
+        }
+        return ident(q);
+    }
+    if let Some(q) = p.strip_suffix(',') {
+        let q = q.trim_end();
+        let &qc @ (b'"' | b'\'' | b'`') = q.as_bytes().last()? else { return None };
+        let open = q[..q.len() - 1].rfind(qc as char)?;
+        if q[..open].trim_end().ends_with('[') {
+            return Some(q[open + 1..q.len() - 1].to_string()).filter(|s| !s.is_empty() && s.len() <= 60);
+        }
+    }
+    None
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '$'
 }
 
 /// Codex のツール呼び出しを表示用に整える: (名前, 要約, 入力表示)
@@ -669,7 +761,11 @@ fn codex_tool(name: &str, input: &Value) -> (String, String, String) {
                     .iter()
                     .map(|(inner, args)| {
                         let s = codex_format(inner, &JsArgs(args)).0;
-                        if s.is_empty() { inner.to_string() } else { s }
+                        let s = if s.is_empty() { inner.to_string() } else { s };
+                        match call_label(js, inner) {
+                            Some(l) => format!("{l}: {s}"),
+                            None => s,
+                        }
                     })
                     .collect();
                 let first = many[0].0;
@@ -984,6 +1080,31 @@ mod tests {
     }
 
     #[test]
+    fn codex_labels() {
+        let js = Value::String(
+            "const build = await tools.exec_command({cmd:\"make\"});\nconst r = await Promise.allSettled([\n [\"lint\", tools.exec_command({cmd:\"ls\"})],\n tools.exec_command({cmd:\"pwd\"})]);\nconst o = { test: tools.exec_command({cmd:\"t\"}) };".into(),
+        );
+        let (_, s, d) = codex_tool("exec", &js);
+        assert_eq!(s, "[4] build: make ; lint: ls ; pwd ; test: t");
+        assert_eq!(
+            detail(&d),
+            "#0 build ← exec_command\n$ make\n\n#1 lint ← exec_command\n$ ls\n\n#2 exec_command\n$ pwd\n\n#3 test ← exec_command\n$ t"
+        );
+        let js = Value::String("for (const f of [\"a\"]) { const out = await tools.exec_command({cmd: `cat ${f}`}); }".into());
+        let (_, _, d) = codex_tool("exec", &js);
+        assert_eq!(detail(&d), "out ← exec_command\n$ cat a");
+        // 配列の要素の 0 番目が名前
+        let js = Value::String(
+            "const commands=[[\"cpu\",\"sysctl\"],[\"os\",\"sw_vers\"]];\nconst rs=await Promise.allSettled(commands.map(async ([name,cmd])=>({name,...await tools.exec_command({cmd})})));\nfor (const [n, c] of [[\"x\", \"ls\"]]) await tools.exec_command({cmd: c});\nawait tools.exec_command({cmd: \"pwd\"});".into(),
+        );
+        let (_, _, d) = codex_tool("exec", &js);
+        assert_eq!(
+            detail(&d),
+            "#0 cpu ← exec_command\n$ sysctl\n\n#1 os ← exec_command\n$ sw_vers\n\n#2 x ← exec_command\n$ ls\n\n#3 exec_command\n$ pwd"
+        );
+    }
+
+    #[test]
     fn codex_mock_loop() {
         let js = Value::String("for (const f of [\"a\", \"b\"]) await tools.exec_command({cmd: `cat ${f}`});".into());
         let (_, _, d) = codex_tool("exec", &js);
@@ -998,7 +1119,7 @@ mod tests {
         let (n, s, d) = codex_tool("exec", &js);
         assert_eq!(n, "exec_command");
         assert_eq!(s, "sed -n '1,2p' a.py");
-        assert_eq!(detail(&d), "$ sed -n '1,2p' a.py\n\ncwd: /w");
+        assert_eq!(detail(&d), "r ← exec_command\n$ sed -n '1,2p' a.py\n\ncwd: /w");
     }
 
     #[test]

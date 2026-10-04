@@ -1,6 +1,6 @@
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
 use gpui::{
-    AnyElement, AnyView, App, Bounds, ClickEvent, ContentMask, Context, Div, ElementId, Entity, FontWeight,
+    AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, ContentMask, Context, Div, ElementId, Entity, FontWeight,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, SharedString, Stateful,
     StyleRefinement, TextRun, WeakEntity, Window, canvas, div, fill, point, prelude::*, px, size,
 };
@@ -54,6 +54,8 @@ struct DetailCache {
     sel: Selection,
     /// 先頭 DETAIL_MAX 件の (input, output)。表示用に切り詰め済み
     texts: Vec<(String, String)>,
+    /// exec の JS 本文（生データ表示用）。texts と同じ並び
+    raws: Vec<Option<String>>,
 }
 
 struct Track {
@@ -127,6 +129,10 @@ pub struct Rireki {
     /// exec の JS をモック実行した結果のキャッシュ
     js_cache: Option<JsCache>,
     detail_cache: Option<DetailCache>,
+    /// exec の詳細を整形結果ではなく JS 本文で表示する
+    show_raw: bool,
+    /// 直前にコピーしたボタンの ID（しばらくチェックマークを出す）
+    copied: Option<&'static str>,
     detail_view: Entity<DetailView>,
     /// 直前のフレームで描いたブロック（クリック・ホバーの当たり判定用）
     hits: Vec<((f32, f32, f32, f32), Selection)>,
@@ -272,6 +278,8 @@ impl Rireki {
             reader: None,
             js_cache: JsCache::open().ok(),
             detail_cache: None,
+            show_raw: false,
+            copied: None,
             detail_view,
             hits: Vec::new(),
             hit_origin: Rc::new(Cell::new(Point::default())),
@@ -528,6 +536,7 @@ impl Rireki {
         };
         let rows: Vec<i64> = evs.iter().take(DETAIL_MAX).filter_map(|e| e.row).collect();
         let mut fetched = self.reader.as_ref().map(|db| db.details(&rows)).unwrap_or_default();
+        let mut raws = Vec::new();
         let texts = evs
             .iter()
             .take(DETAIL_MAX)
@@ -536,14 +545,15 @@ impl Rireki {
                     Some(v) => v,
                     None => (e.input.clone(), e.output.clone()),
                 };
-                let input = match input.strip_prefix(loader::JS_MARK) {
-                    Some(js) => exec_detail_cached(self.js_cache.as_ref(), js),
-                    None => input,
+                let (input, raw) = match input.strip_prefix(loader::JS_MARK) {
+                    Some(js) => (exec_detail_cached(self.js_cache.as_ref(), js), Some(js.to_string())),
+                    None => (input, None),
                 };
+                raws.push(raw);
                 (truncate(&input, limit), truncate(&output, limit))
             })
             .collect();
-        self.detail_cache = Some(DetailCache { sel, texts });
+        self.detail_cache = Some(DetailCache { sel, texts, raws });
     }
 
     /// 現在の選択を履歴に積んでから選択する
@@ -778,6 +788,41 @@ impl Rireki {
         f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
         self.icon_button(id, None, label, active, cx, f)
+    }
+
+    /// 右上にコピーボタンを重ねた code_box。`copy` がクリップボードに入る（表示用に切り詰める前の本文）
+    fn copyable(&self, id: &'static str, text: String, copy: String, mono: bool, cx: &mut Context<Self>) -> Div {
+        let done = self.copied == Some(id);
+        let button = div()
+            .id(id)
+            .absolute()
+            .top_1()
+            .right_1()
+            .p_1()
+            .rounded_sm()
+            .bg(c(theme::PANEL))
+            .border_1()
+            .border_color(c(theme::BORDER))
+            .cursor_pointer()
+            .hover(|s| s.bg(c(0x2a2f3a)))
+            .child(icons::icon(if done { Icon::Check } else { Icon::Copy }, if done { 0x7fd18b } else { theme::MUTED }))
+            .tooltip(|_, cx| cx.new(|_| Tip("コピー")).into())
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                this.copied = Some(id);
+                this.detail_changed(cx);
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(std::time::Duration::from_millis(1200)).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.copied == Some(id) {
+                            this.copied = None;
+                            this.detail_changed(cx);
+                        }
+                    });
+                })
+                .detach();
+            }));
+        div().relative().min_w_0().child(code_box(text, mono)).child(button)
     }
 
     /// アイコン付きボタン。`label` が空ならアイコンだけを表示する
@@ -1526,9 +1571,11 @@ impl Rireki {
             ),
         );
 
-        let texts = self.detail_cache.as_ref().filter(|d| d.sel == sel).map(|d| d.texts.as_slice()).unwrap_or(&[]);
+        let cache = self.detail_cache.as_ref().filter(|d| d.sel == sel);
+        let texts = cache.map(|d| d.texts.as_slice()).unwrap_or(&[]);
         for (i, e) in evs.iter().enumerate().take(DETAIL_MAX) {
             let (input, output) = texts.get(i).map(|(a, b)| (a.as_str(), b.as_str())).unwrap_or(("", ""));
+            let raw = cache.and_then(|d| d.raws.get(i)).and_then(|r| r.as_deref());
             let idx = sel.first + i;
             let color = theme::event_color(e);
             let mut card = div()
@@ -1575,13 +1622,36 @@ impl Rireki {
                     )));
                 }
             }
-            if single || e.kind != Kind::Tool {
+            if single && let Some(raw) = raw {
+                let show = self.show_raw;
+                card = card.child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .child(self.icon_button("raw-off", None, "整形", !show, cx, |t, _, cx| {
+                            t.show_raw = false;
+                            t.detail_changed(cx);
+                        }))
+                        .child(self.icon_button("raw-on", None, "JS", show, cx, |t, _, cx| {
+                            t.show_raw = true;
+                            t.detail_changed(cx);
+                        })),
+                );
+                if show {
+                    card = card.child(self.copyable("copy-js", truncate(raw, 6000), raw.to_string(), true, cx));
+                } else {
+                    card = card.child(self.copyable("copy-fmt", input.to_string(), input.to_string(), true, cx));
+                }
+            } else if single {
+                let mono = e.kind == Kind::Tool || e.kind == Kind::Agent;
+                card = card.child(self.copyable("copy-in", input.to_string(), input.to_string(), mono, cx));
+            } else if e.kind != Kind::Tool {
                 card = card.child(code_box(input.to_string(), e.kind == Kind::Tool || e.kind == Kind::Agent));
             }
             if single && !output.is_empty() {
                 card = card
                     .child(div().text_xs().text_color(c(theme::MUTED)).child("結果"))
-                    .child(code_box(output.to_string(), true));
+                    .child(self.copyable("copy-out", output.to_string(), output.to_string(), true, cx));
             }
             let session = sel.session;
             let lane_i = sel.lane;
@@ -1761,4 +1831,22 @@ fn exec_detail_cached(cache: Option<&JsCache>, js: &str) -> String {
         c.put(h, &d);
     }
     d
+}
+
+/// 短い文字列だけのツールチップ
+struct Tip(&'static str);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_1p5()
+            .py_0p5()
+            .rounded_sm()
+            .bg(c(theme::PANEL))
+            .border_1()
+            .border_color(c(theme::BORDER))
+            .text_xs()
+            .text_color(c(theme::TEXT))
+            .child(self.0)
+    }
 }
