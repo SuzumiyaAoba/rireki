@@ -1,8 +1,6 @@
 //! トラックパッドのピンチ（拡大・縮小）ジェスチャ。
 //! GPUI は NSEventTypeMagnify を扱わないため、AppKit のローカルイベントモニタで拾ってチャネルへ流す。
 
-#![allow(unexpected_cfgs)] // objc 0.2 のマクロが cfg(feature = "cargo-clippy") を使う
-
 use std::sync::OnceLock;
 
 use async_channel::{Receiver, Sender};

@@ -22,3 +22,7 @@ objc = "0.2.7"
 # 依存クレート（GPUI など）は dev ビルドでも最適化する。未最適化の GPUI は描画が極端に遅い
 [profile.dev.package."*"]
 opt-level = 3
+
+# objc 0.2 のマクロが cfg(feature = "cargo-clippy") を使うため、既知の cfg として登録する
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
