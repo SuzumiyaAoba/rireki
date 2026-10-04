@@ -1,5 +1,5 @@
 //! UI アイコン。Lucide (ISC License, https://lucide.dev) の SVG をバイナリに埋め込み、
-//! Claude / Codex のロゴは Iconify の simple-icons から取得した `assets/icons/*.svg` を使う。
+//! イベントの種類のアイコンは Iconify の lucide セット、Claude / Codex のロゴは Iconify の simple-icons から取得した `assets/icons/*.svg` を使う。
 //! GPUI の `AssetSource` として `icons/<name>.svg` のパスで提供する。
 
 use gpui::{AssetSource, Result, SharedString, Svg, prelude::*, svg};
@@ -41,10 +41,30 @@ pub enum Icon {
     Refresh,
     Claude,
     Codex,
+    // イベントの種類（Iconify の lucide セットから取得）
+    User,
+    MessageSquare,
+    Brain,
+    FileText,
+    TextSearch,
+    FolderSearch,
+    Image,
+    FilePen,
+    FilePlus,
+    NotebookPen,
+    Hourglass,
+    Globe,
+    CloudDownload,
+    ListChecks,
+    Map,
+    Target,
+    Plug,
+    Sparkles,
+    Wrench,
 }
 
 impl Icon {
-    const ALL: [Icon; 34] = [
+    const ALL: [Icon; 53] = [
         Icon::CalendarDay,
         Icon::CalendarWeek,
         Icon::Calendar,
@@ -79,6 +99,25 @@ impl Icon {
         Icon::Refresh,
         Icon::Claude,
         Icon::Codex,
+        Icon::User,
+        Icon::MessageSquare,
+        Icon::Brain,
+        Icon::FileText,
+        Icon::TextSearch,
+        Icon::FolderSearch,
+        Icon::Image,
+        Icon::FilePen,
+        Icon::FilePlus,
+        Icon::NotebookPen,
+        Icon::Hourglass,
+        Icon::Globe,
+        Icon::CloudDownload,
+        Icon::ListChecks,
+        Icon::Map,
+        Icon::Target,
+        Icon::Plug,
+        Icon::Sparkles,
+        Icon::Wrench,
     ];
 
     fn name(self) -> &'static str {
@@ -117,6 +156,25 @@ impl Icon {
             Icon::Refresh => "refresh",
             Icon::Claude => "claude",
             Icon::Codex => "codex",
+            Icon::User => "user",
+            Icon::MessageSquare => "message-square",
+            Icon::Brain => "brain",
+            Icon::FileText => "file-text",
+            Icon::TextSearch => "text-search",
+            Icon::FolderSearch => "folder-search",
+            Icon::Image => "image",
+            Icon::FilePen => "file-pen",
+            Icon::FilePlus => "file-plus",
+            Icon::NotebookPen => "notebook-pen",
+            Icon::Hourglass => "hourglass",
+            Icon::Globe => "globe",
+            Icon::CloudDownload => "cloud-download",
+            Icon::ListChecks => "list-checks",
+            Icon::Map => "map",
+            Icon::Target => "target",
+            Icon::Plug => "plug",
+            Icon::Sparkles => "sparkles",
+            Icon::Wrench => "wrench",
         }
     }
 
@@ -198,13 +256,32 @@ impl Icon {
             Icon::Locate => {
                 r#"<path d="M2 12h3"/><path d="M19 12h3"/><path d="M12 2v3"/><path d="M12 19v3"/><circle cx="12" cy="12" r="7"/>"#
             }
+            Icon::User => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></g>"#,
+            Icon::MessageSquare => r#"<path fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/>"#,
+            Icon::Brain => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 18V5m3 8a4.17 4.17 0 0 1-3-4a4.17 4.17 0 0 1-3 4m8.598-6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></g>"#,
+            Icon::FileText => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10 9H8m8 4H8m8 4H8"/></g>"#,
+            Icon::TextSearch => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M21 5H3m7 7H3m7 7H3"/><circle cx="17" cy="15" r="3"/><path d="m21 19l-1.9-1.9"/></g>"#,
+            Icon::FolderSearch => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M10.7 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v4.1M21 21l-1.9-1.9"/><circle cx="17" cy="17" r="3"/></g>"#,
+            Icon::Image => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15l-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></g>"#,
+            Icon::FilePen => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5m-9.622 4.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></g>"#,
+            Icon::FilePlus => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5M9 15h6m-3 3v-6"/></g>"#,
+            Icon::NotebookPen => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4M2 6h4m-4 4h4m-4 4h4m-4 4h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/></g>"#,
+            Icon::Hourglass => r#"<path fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 22h14M5 2h14m-2 20v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>"#,
+            Icon::Globe => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20a14.5 14.5 0 0 0 0-20M2 12h20"/></g>"#,
+            Icon::CloudDownload => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 13v8l-4-4m4 4l4-4"/><path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284"/></g>"#,
+            Icon::ListChecks => r#"<path fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5h8m-8 7h8m-8 7h8M3 17l2 2l4-4M3 7l2 2l4-4"/>"#,
+            Icon::Map => r#"<path fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0zm.894.211v15M9 3.236v15"/>"#,
+            Icon::Target => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></g>"#,
+            Icon::Plug => r#"<path fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 22v-5m3-9V2m2 6a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1zM9 8V2"/>"#,
+            Icon::Sparkles => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594zM20 2v4m2-2h-4"/><circle cx="4" cy="20" r="2"/></g>"#,
+            Icon::Wrench => r#"<path fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/>"#,
             Icon::Refresh => {
                 r#"<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>"#
             }
         }
     }
 
-    fn path(self) -> String {
+    pub fn path(self) -> String {
         format!("icons/{}.svg", self.name())
     }
 }

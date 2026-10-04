@@ -5,7 +5,7 @@ use gpui::{
     div, point, prelude::*, px,
 };
 
-use super::widgets::dot;
+use super::widgets::event_icon;
 use super::{Popover, Rireki, fmt_dur, local};
 use crate::icons::{self, Icon};
 use crate::layout::{self, Block, Granularity};
@@ -54,18 +54,19 @@ impl Rireki {
         let lane = &s.lanes[sel.lane];
         let evs = &lane.events[sel.first..=sel.last];
         let b = Block { start: 0.0, end: 0.0, first: sel.first, last: sel.last };
-        let color = theme::event_color(&lane.events[layout::dominant(&lane.events, &b)]);
+        let dom = &lane.events[layout::dominant(&lane.events, &b)];
+        let (color, ic) = (theme::event_color(dom), theme::event_icon(dom));
         let (start, end) = self.sel_range(sel);
         let single = evs.len() == 1;
         let head = if single { evs[0].name.clone() } else { format!("{} 件", evs.len()) };
         let body = if single { evs[0].summary.clone() } else { String::new() };
         // まとめたブロックは、多い順に名前ごとの件数を並べる
-        let mut counts: Vec<(&str, usize, u32)> = Vec::new();
+        let mut counts: Vec<(&str, usize, u32, Icon)> = Vec::new();
         if !single {
             for e in evs {
-                match counts.iter_mut().find(|(n, _, _)| *n == e.name) {
+                match counts.iter_mut().find(|(n, ..)| *n == e.name) {
                     Some(x) => x.1 += 1,
-                    None => counts.push((&e.name, 1, theme::event_color(e))),
+                    None => counts.push((&e.name, 1, theme::event_color(e), theme::event_icon(e))),
                 }
             }
             counts.sort_by_key(|a| std::cmp::Reverse(a.1));
@@ -91,7 +92,7 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .child(dot(color, 8.0))
+                    .child(event_icon(ic, color, 14.0))
                     .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(color)).child(head))
                     .child(div().flex_1())
                     .when(end > start, |d| d.child(div().text_color(c(theme::MUTED)).child(fmt_dur(end - start)))),
@@ -99,12 +100,12 @@ impl Rireki {
             .when(!body.is_empty(), |d| d.child(div().line_clamp(3).child(one_line(&body, 240))))
             .when(!counts.is_empty(), |d| {
                 d.child(div().flex().flex_wrap().gap_x_2().gap_y_0p5().children(counts.iter().take(6).map(
-                    |&(name, n, col)| {
+                    |&(name, n, col, ic)| {
                         div()
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(dot(col, 6.0))
+                            .child(event_icon(ic, col, 11.0))
                             .child(name.to_string())
                             .child(div().text_color(c(theme::SUBTLE)).child(format!("×{n}")))
                     },
@@ -226,6 +227,7 @@ impl Rireki {
                 &[
                     ("クリック", "詳細を開く"),
                     ("J · K", "次 / 前のイベント"),
+                    ("1 · 2 · 3", "詳細のタブ（イベント / ファイル / セッション）"),
                     ("⌘[ ⌘]", "選択の履歴を戻る / 進む"),
                     ("esc", "詳細を閉じる"),
                 ],

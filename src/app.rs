@@ -28,6 +28,7 @@ use gpui::{
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::Instant;
 use std::sync::{Arc, Mutex};
 
 use crate::db::{Db, JsCache};
@@ -35,16 +36,16 @@ use crate::index::{self, Indexer, Update};
 use crate::input::{InputEvent, TextInput};
 use crate::layout::Granularity;
 use crate::model::{Source, Store};
-use crate::prefs::{self, Mode, Prefs, SourceFilter};
+use crate::prefs::{self, DetailTab, Mode, Prefs, SourceFilter};
 use crate::search;
 use crate::theme::{self, c};
 
 use detail::{DetailCache, DetailView, RowFilter};
 pub use keymap::init;
 use keymap::{
-    Back, CloseWindow, Dismiss, FocusSearch, Forward, GoNext, GoPrev, GoToday, NextEvent, PrevEvent, SearchCancel,
-    SearchConfirm, SearchDown, SearchUp, ShowDay, ShowHelp, ShowTimeline, ShowWeek, ToggleInViewOnly, ToggleSidebar,
-    ZoomIn, ZoomOut,
+    Back, CloseWindow, DetailEvents, DetailFiles, DetailSession, Dismiss, FocusSearch, Forward, GoNext, GoPrev,
+    GoToday, NextEvent, PrevEvent, SearchCancel, SearchConfirm, SearchDown, SearchUp, ShowDay, ShowHelp, ShowTimeline,
+    ShowWeek, ToggleInViewOnly, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use sidebar::SidebarView;
 
@@ -67,6 +68,8 @@ const MIN_PANE_W: f32 = 160.0;
 const MIN_SIDEBAR_W: f32 = 200.0;
 const MAX_SIDEBAR_W: f32 = 480.0;
 const MIN_DETAIL_W: f32 = 320.0;
+/// サイドバー・詳細パネルの開閉にかける秒数
+const PANE_ANIM_SECS: f32 = 0.18;
 /// メイン列に残す幅
 const MAIN_MIN_W: f32 = 360.0;
 /// 境界のつまみの幅
@@ -120,6 +123,8 @@ struct BlockPaint {
     rect: (f32, f32, f32, f32),
     sel: Selection,
     color: u32,
+    /// 主なイベントの種類のアイコン
+    icon: crate::icons::Icon,
     multi: bool,
     selected: bool,
     hovered: bool,
@@ -201,9 +206,13 @@ pub struct Rireki {
     row_filter: Option<RowFilter>,
     /// 詳細パネルで、長い本文を全部表示している箇所
     expanded: HashSet<&'static str>,
-    /// 詳細パネルのセッション情報を開いているか
-    session_open: bool,
+    /// 詳細パネルのファイルのタブで開いているファイル
+    file_open: Option<String>,
+    /// 詳細パネルで開いているタブ
+    detail_tab: DetailTab,
     detail_scroll: ScrollHandle,
+    /// 詳細パネルを最新のイベントまでスクロールするアニメーション（差し替えると前のものは止まる）
+    follow_anim: Option<gpui::Task<()>>,
     /// 直前にコピーしたボタンの ID（しばらくチェックマークを出す）
     copied: Option<&'static str>,
     /// 直前のフレームで描いたブロック（クリック・ホバーの当たり判定用）
@@ -240,6 +249,11 @@ pub struct Rireki {
     /// タイムラインのレーン名の列の幅
     label_w: f32,
     detail_w: f32,
+    /// サイドバー・詳細パネルの開き具合（0 = 閉、1 = 開）。開閉のアニメーションで目標へ近づける
+    side_t: f32,
+    detail_t: f32,
+    /// 前回アニメーションを進めた時刻。アニメーション中だけ持つ
+    anim_at: Option<Instant>,
     resize: Option<Resize>,
     /// 折りたたんだディレクトリ
     collapsed: HashSet<String>,
@@ -440,6 +454,7 @@ impl Rireki {
                             }
                             app.live_sources = app.find_live_sources();
                             app.sidebar_changed(cx);
+                            app.detail_changed(cx);
                             cx.notify();
                         })
                         .is_ok();
@@ -510,8 +525,10 @@ impl Rireki {
             show_raw: false,
             row_filter: None,
             expanded: HashSet::new(),
-            session_open: p.session_open,
+            file_open: None,
+            detail_tab: p.detail_tab,
             detail_scroll: ScrollHandle::new(),
+            follow_anim: None,
             copied: None,
             hits: Vec::new(),
             hit_origin: Rc::new(Cell::new(Point::default())),
@@ -537,6 +554,9 @@ impl Rireki {
             sidebar_w: p.sidebar_w.clamp(MIN_SIDEBAR_W, MAX_SIDEBAR_W),
             label_w: p.label_w.max(MIN_PANE_W),
             detail_w: p.detail_w.max(MIN_DETAIL_W),
+            side_t: if p.sidebar { 1.0 } else { 0.0 },
+            detail_t: 0.0,
+            anim_at: None,
             resize: None,
             collapsed: p.collapsed.iter().cloned().collect(),
             focus: p.focus.clone(),
@@ -581,7 +601,7 @@ impl Rireki {
             focus: self.focus.clone(),
             collapsed,
             folded,
-            session_open: self.session_open,
+            detail_tab: self.detail_tab,
         };
         if p != self.saved {
             prefs::save(&p);
@@ -591,6 +611,17 @@ impl Rireki {
 
     /// 読み込み結果を Store に反映する
     fn apply(&mut self, updates: Vec<Update>, cx: &mut Context<Self>) -> bool {
+        // 複数イベントの選択がレーンの末尾まで届いていれば、増えたイベントも選択に含めて追従させる
+        let follow = self.selected.filter(|s| {
+            s.first < s.last
+                && self.valid(*s)
+                && s.last + 1 == self.store.sessions[s.session].lanes[s.lane].events.len()
+        });
+        // イベントの一覧が一番下までスクロールされていれば、増えたイベントまでスクロールして追う
+        let at_bottom = {
+            let h = &self.detail_scroll;
+            -h.offset().y >= h.max_offset().height - px(4.0)
+        };
         let touched = self.store.replace(updates.into_iter().map(|u| (u.origin, u.items)));
         if touched.is_empty() {
             return false;
@@ -601,7 +632,17 @@ impl Rireki {
             self.refresh_results();
         }
         // 選択中のセッションが更新されたら、範囲を確かめて詳細を作り直す
-        if let Some(sel) = self.selected.filter(|s| touched.contains(&s.session)) {
+        if let Some(mut sel) = self.selected.filter(|s| touched.contains(&s.session)) {
+            if follow == Some(sel) {
+                if let Some(l) = self.store.sessions.get(sel.session).and_then(|s| s.lanes.get(sel.lane)) {
+                    sel.last = sel.last.max(l.events.len().saturating_sub(1));
+                }
+                // 選択が伸びただけなので、絞り込みや開閉・スクロール位置は保つ
+                self.selected = Some(sel);
+                if at_bottom && self.detail_tab == DetailTab::Events {
+                    self.animate_to_bottom(cx);
+                }
+            }
             if self.valid(sel) {
                 self.select(sel, cx);
             } else {
@@ -612,6 +653,33 @@ impl Rireki {
         }
         self.sidebar_changed(cx);
         true
+    }
+
+    /// 詳細パネルを一番下まで滑らかにスクロールする。途中でユーザーがスクロールしたら止める
+    fn animate_to_bottom(&mut self, cx: &mut Context<Self>) {
+        const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+        const MAX_FRAMES: usize = 40;
+        let h = self.detail_scroll.clone();
+        self.follow_anim = Some(cx.spawn(async move |this, cx| {
+            // 増えたイベントがレイアウトされ、max_offset が更新されるのを待つ
+            cx.background_executor().timer(FRAME).await;
+            let mut last = h.offset().y;
+            for i in 0..MAX_FRAMES {
+                let cur = h.offset().y;
+                if (cur - last).abs() > px(1.0) {
+                    break;
+                }
+                let target = -h.max_offset().height;
+                let gap = target - cur;
+                let next = if gap.abs() < px(1.0) || i + 1 == MAX_FRAMES { target } else { cur + gap * 0.2 };
+                h.set_offset(gpui::point(h.offset().x, next));
+                last = next;
+                if this.update(cx, |t, cx| t.detail_changed(cx)).is_err() || next == target {
+                    break;
+                }
+                cx.background_executor().timer(FRAME).await;
+            }
+        }));
     }
 
     fn detail_changed(&self, cx: &mut Context<Self>) {
@@ -868,10 +936,16 @@ impl Rireki {
 
     /// サイドバーと詳細パネルの実際の幅。ウィンドウが狭いときはメイン列が残るよう、詳細パネル → サイドバーの順に縮める
     fn pane_widths(&self, window: &Window) -> (f32, f32) {
+        let (side, detail) = self.pane_full_widths(window);
+        (side * ease(self.side_t), detail * ease(self.detail_t))
+    }
+
+    /// 開ききったときのサイドバーと詳細パネルの幅（アニメーション中の中身はこの幅で描き、外側で切り取る）
+    fn pane_full_widths(&self, window: &Window) -> (f32, f32) {
         let w: f32 = window.viewport_size().width.into();
         let room = w - RAIL_W - GAP - 2.0 - MAIN_MIN_W;
-        let mut side = if self.sidebar_open { self.sidebar_w } else { 0.0 };
-        let mut detail = if self.selected.is_some() { self.detail_w } else { 0.0 };
+        let mut side = if self.side_t > 0.0 { self.sidebar_w } else { 0.0 };
+        let mut detail = if self.detail_t > 0.0 { self.detail_w } else { 0.0 };
         if side + detail > room && detail > 0.0 {
             detail = (room - side).clamp(MIN_DETAIL_W, detail);
         }
@@ -879,6 +953,29 @@ impl Rireki {
             side = (room - detail).clamp(MIN_SIDEBAR_W, side);
         }
         (side, detail)
+    }
+
+    /// 開閉のアニメーションを 1 フレーム進める。途中なら次のフレームを要求する
+    fn step_panes(&mut self, window: &mut Window) {
+        let side_goal = if self.sidebar_open { 1.0 } else { 0.0 };
+        let detail_goal = if self.selected.is_some() { 1.0 } else { 0.0 };
+        if self.side_t == side_goal && self.detail_t == detail_goal {
+            self.anim_at = None;
+            return;
+        }
+        let now = Instant::now();
+        // 最初のフレームは 1 フレーム分だけ進める
+        let dt = self
+            .anim_at
+            .map_or(1.0 / 60.0, |t| now.duration_since(t).as_secs_f32().min(0.05));
+        self.anim_at = Some(now);
+        let step = dt / PANE_ANIM_SECS;
+        let approach = |t: f32, goal: f32| {
+            if t < goal { (t + step).min(goal) } else { (t - step).max(goal) }
+        };
+        self.side_t = approach(self.side_t, side_goal);
+        self.detail_t = approach(self.detail_t, detail_goal);
+        window.request_animation_frame();
     }
 
     /// メイン列（見出し・本体・凡例）の幅
@@ -931,6 +1028,7 @@ impl Rireki {
         if self.selected != Some(sel) {
             self.row_filter = None;
             self.expanded.clear();
+            self.file_open = None;
             self.detail_scroll.set_offset(point(px(0.0), px(0.0)));
         }
         self.selected = Some(sel);
@@ -1532,8 +1630,14 @@ impl Render for Rireki {
             Mode::Timeline => self.timeline(window, cx),
             _ => self.calendar(window, cx),
         };
-        let detail_open = self.selected.is_some();
+        self.step_panes(window);
         let (side_w, detail_w) = self.pane_widths(window);
+        let (side_full, detail_full) = self.pane_full_widths(window);
+        let side_shown = self.side_t > 0.0;
+        let detail_shown = self.detail_t > 0.0;
+        // 開ききっているときだけ幅を変えるつまみを出す
+        let side_ready = self.sidebar_open && self.side_t == 1.0;
+        let detail_ready = self.selected.is_some() && self.detail_t == 1.0;
         let label_handle = self
             .resize_handle("resize-label", cx, |t, x| Resize::Label { x, w: t.label_w })
             .left(px(self.label_w - HANDLE_W / 2.0));
@@ -1578,27 +1682,32 @@ impl Render for Rireki {
             .border_color(c(theme::BORDER))
             .bg(c(theme::BG))
             .overflow_hidden();
-        if self.sidebar_open {
+        // 開閉中は中身を開ききった幅で描き、外側の箱の幅で切り取る（中身を押しつぶさない）
+        if side_shown {
             panel = panel.child(
-                AnyView::from(self.sidebar_view.clone())
-                    .cached(StyleRefinement::default().w(px(side_w)).h_full().flex_none()),
+                div().w(px(side_w)).h_full().flex_none().overflow_hidden().flex().justify_end().child(
+                    AnyView::from(self.sidebar_view.clone())
+                        .cached(StyleRefinement::default().w(px(side_full)).h_full().flex_none()),
+                ),
             );
         }
         panel = panel.child(main_col);
-        if detail_open {
+        if detail_shown {
             panel = panel.child(
-                AnyView::from(self.detail_view.clone())
-                    .cached(StyleRefinement::default().w(px(detail_w)).h_full().flex_none()),
+                div().w(px(detail_w)).h_full().flex_none().overflow_hidden().child(
+                    AnyView::from(self.detail_view.clone())
+                        .cached(StyleRefinement::default().w(px(detail_full)).h_full().flex_none()),
+                ),
             );
         }
         // つまみはドラッグ開始時の実際の幅から動かす
-        if self.sidebar_open {
+        if side_ready {
             panel = panel.child(
                 self.resize_handle("resize-sidebar", cx, move |_, x| Resize::Sidebar { x, w: side_w })
                     .left(px(side_w - HANDLE_W / 2.0)),
             );
         }
-        if detail_open {
+        if detail_ready {
             panel = panel.child(
                 self.resize_handle("resize-detail", cx, move |_, x| Resize::Detail { x, w: detail_w })
                     .right(px(detail_w - HANDLE_W / 2.0)),
@@ -1651,6 +1760,9 @@ impl Render for Rireki {
             .on_action(cx.listener(|t, _: &Back, window, cx| t.go_back(window, cx)))
             .on_action(cx.listener(|t, _: &NextEvent, window, cx| t.step_event(1, window, cx)))
             .on_action(cx.listener(|t, _: &PrevEvent, window, cx| t.step_event(-1, window, cx)))
+            .on_action(cx.listener(|t, _: &DetailEvents, _, cx| t.set_detail_tab(DetailTab::Events, cx)))
+            .on_action(cx.listener(|t, _: &DetailFiles, _, cx| t.set_detail_tab(DetailTab::Files, cx)))
+            .on_action(cx.listener(|t, _: &DetailSession, _, cx| t.set_detail_tab(DetailTab::Session, cx)))
             .on_action(cx.listener(|t, _: &Forward, window, cx| t.go_forward(window, cx)))
             .on_action(cx.listener(|t, _: &Dismiss, window, cx| t.dismiss(window, cx)))
             .on_action(cx.listener(|t, _: &ShowHelp, _, cx| {
@@ -1672,4 +1784,9 @@ impl Render for Rireki {
             .child(div().flex().flex_1().min_h_0().child(self.rail(cx)).child(panel))
             .children(self.overlays(window, cx))
     }
+}
+
+/// 開閉のアニメーションの緩急（ease-out cubic）
+fn ease(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
 }

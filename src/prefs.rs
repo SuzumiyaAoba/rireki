@@ -23,6 +23,19 @@ pub enum SourceFilter {
     Codex,
 }
 
+/// 詳細パネルのタブ
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetailTab {
+    /// 選んだイベントの入力・結果、または一覧
+    #[default]
+    Events,
+    /// 編集したファイル
+    Files,
+    /// セッションの情報と集計
+    Session,
+}
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
@@ -43,8 +56,8 @@ pub struct Prefs {
     pub collapsed: Vec<String>,
     /// サイドバーで折りたたんだ区分
     pub folded: Vec<String>,
-    /// 詳細パネルのセッション情報を開いているか
-    pub session_open: bool,
+    /// 詳細パネルで開いているタブ
+    pub detail_tab: DetailTab,
 }
 
 impl Default for Prefs {
@@ -62,7 +75,7 @@ impl Default for Prefs {
             focus: None,
             collapsed: Vec::new(),
             folded: Vec::new(),
-            session_open: false,
+            detail_tab: DetailTab::Events,
         }
     }
 }

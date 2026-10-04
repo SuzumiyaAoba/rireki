@@ -1,5 +1,6 @@
 use gpui::{Hsla, rgb};
 
+use crate::icons::Icon;
 use crate::model::{Event, Kind};
 
 pub fn c(hex: u32) -> Hsla {
@@ -60,17 +61,52 @@ pub fn tool_color(name: &str) -> u32 {
     }
 }
 
+/// イベントのアイコン。色（カテゴリ）より細かく、ツールごとに分ける
+pub fn event_icon(e: &Event) -> Icon {
+    match e.kind {
+        Kind::User => Icon::User,
+        Kind::Assistant => Icon::MessageSquare,
+        Kind::Thinking => Icon::Brain,
+        Kind::Agent => Icon::Bot,
+        Kind::Tool => tool_icon(&e.name),
+    }
+}
+
+pub fn tool_icon(name: &str) -> Icon {
+    match name {
+        "Read" | "read_file" => Icon::FileText,
+        "Grep" | "grep_files" => Icon::TextSearch,
+        "Glob" | "LS" | "list_dir" => Icon::FolderSearch,
+        "view_image" => Icon::Image,
+        "Edit" | "MultiEdit" | "apply_patch" => Icon::FilePen,
+        "Write" => Icon::FilePlus,
+        "NotebookEdit" => Icon::NotebookPen,
+        "Bash" | "BashOutput" | "exec" | "exec_command" | "shell" | "local_shell_call" => Icon::Terminal,
+        "write_stdin" => Icon::Keyboard,
+        "wait" => Icon::Hourglass,
+        "Monitor" => Icon::Activity,
+        "WebSearch" | "web_search_call" | "web_search" => Icon::Globe,
+        "WebFetch" => Icon::CloudDownload,
+        "TodoWrite" | "update_plan" | "TaskCreate" | "TaskUpdate" | "TaskList" => Icon::ListChecks,
+        "ExitPlanMode" => Icon::Map,
+        "update_goal" => Icon::Target,
+        "Skill" => Icon::Sparkles,
+        n if n.starts_with("mcp__") => Icon::Plug,
+        _ => Icon::Wrench,
+    }
+}
+
 /// 凡例
-pub const LEGEND: &[(&str, u32)] = &[
-    ("User", 0xe0b341),
-    ("Assistant", 0x4fb3a5),
-    ("読み取り", 0x4a8fe7),
-    ("編集", 0x55b45f),
-    ("シェル", 0xe08a3c),
-    ("Web", 0x3cc3e0),
-    ("計画", 0xd96ba0),
-    ("サブエージェント", 0xa77bf3),
-    ("その他", 0x7f8ea3),
+pub const LEGEND: &[(&str, u32, Icon)] = &[
+    ("User", 0xe0b341, Icon::User),
+    ("Assistant", 0x4fb3a5, Icon::MessageSquare),
+    ("読み取り", 0x4a8fe7, Icon::FileText),
+    ("編集", 0x55b45f, Icon::FilePen),
+    ("シェル", 0xe08a3c, Icon::Terminal),
+    ("Web", 0x3cc3e0, Icon::Globe),
+    ("計画", 0xd96ba0, Icon::ListChecks),
+    ("サブエージェント", 0xa77bf3, Icon::Bot),
+    ("その他", 0x7f8ea3, Icon::Wrench),
 ];
 
 /// プロジェクト（作業ディレクトリ）の目印の色。イベントの色と紛れないよう彩度を落としてある

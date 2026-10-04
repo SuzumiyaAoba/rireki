@@ -6,7 +6,7 @@ use gpui::{
     StyledText, WeakEntity, Window, div, prelude::*, px,
 };
 
-use super::widgets::{dot, kbd, project_tile, tip};
+use super::widgets::{dot, event_icon, kbd, project_tile, tip};
 use super::{HEADER_H, INNER_RADIUS, Rireki, is_live, rel_time, when};
 use crate::icons::{self, Icon};
 use crate::model::one_line;
@@ -436,7 +436,7 @@ impl Rireki {
                 let i = ns + k;
                 let s = &self.store.sessions[h.session];
                 let e = &s.lanes[h.lane].events[h.event];
-                let color = theme::event_color(e);
+                let (color, ic) = (theme::event_color(e), theme::event_icon(e));
                 // 一致した位置が要約の中なら、その周辺を切り出して強調する
                 let name_len = e.name.len() as u32;
                 let summary: SharedString = if h.at.0 > name_len {
@@ -450,7 +450,7 @@ impl Rireki {
                 list = list.child(
                     self.result_row_frame(i)
                         .items_start()
-                        .child(div().pt(px(5.0)).child(dot(color, 7.0)))
+                        .child(div().pt(px(2.0)).child(event_icon(ic, color, 13.0)))
                         .child(
                             div()
                                 .flex_1()

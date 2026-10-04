@@ -62,6 +62,11 @@ pub(super) fn dot(color: u32, size: f32) -> Div {
     div().flex_none().size(px(size)).rounded_full().bg(c(color))
 }
 
+/// イベントの種類のアイコンを、その種類の色で出す
+pub(super) fn event_icon(i: crate::icons::Icon, color: u32, size: f32) -> gpui::Svg {
+    crate::icons::icon(i, color).size(px(size))
+}
+
 /// プロジェクトの目印。ディレクトリ名の頭文字を色付きの角丸四角に入れる
 pub(super) fn project_tile(cwd: &str, size: f32) -> Div {
     let initial: String =

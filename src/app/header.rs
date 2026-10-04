@@ -3,7 +3,7 @@
 use chrono::{Datelike, Duration, Weekday};
 use gpui::{ClickEvent, Context, Div, FontWeight, Window, canvas, div, prelude::*, px};
 
-use super::widgets::{dot, project_tile, tip};
+use super::widgets::{event_icon, project_tile, tip};
 use super::{FOOTER_H, HEADER_H, Popover, Rireki, fmt_dur, local, now};
 use crate::icons::{self, Icon};
 use crate::prefs::Mode;
@@ -294,14 +294,14 @@ impl Rireki {
         let text_w = |s: &str| s.chars().map(|ch| if ch.is_ascii() { 6.5 } else { 11.5 }).sum::<f32>();
         let mut room = w - 32.0 - text_w(&left) - 24.0;
         let mut legend = Vec::new();
-        for (name, col) in theme::LEGEND {
-            let need = 8.0 + 4.0 + text_w(name) + 12.0;
+        for (name, col, ic) in theme::LEGEND {
+            let need = 12.0 + 4.0 + text_w(name) + 12.0;
             if room < need {
                 break;
             }
             room -= need;
             legend
-                .push(div().flex().flex_none().items_center().gap_1().child(dot(*col, 8.0).rounded_sm()).child(*name));
+                .push(div().flex().flex_none().items_center().gap_1().child(event_icon(*ic, *col, 12.0)).child(*name));
         }
         div()
             .h(px(FOOTER_H))

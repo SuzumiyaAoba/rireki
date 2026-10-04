@@ -13,6 +13,10 @@ use crate::layout::{self, Block};
 use crate::model::one_line;
 use crate::theme::{self, c};
 
+/// ブロックに描くアイコンの大きさと、アイコンを出すブロックの最小幅
+const ICON: f32 = 11.0;
+const ICON_MIN_W: f32 = 16.0;
+
 /// 右端の縦のミニマップの幅
 const LANE_MAP_W: f32 = 12.0;
 
@@ -21,7 +25,8 @@ impl Rireki {
         let (_, _, w, h) = rect;
         let lane = &self.store.sessions[sel.session].lanes[sel.lane];
         let b = Block { start: 0.0, end: 0.0, first: sel.first, last: sel.last };
-        let color = theme::event_color(&lane.events[layout::dominant(&lane.events, &b)]);
+        let dom = &lane.events[layout::dominant(&lane.events, &b)];
+        let (color, icon) = (theme::event_color(dom), theme::event_icon(dom));
         let selected = self.selected.is_some_and(|s| {
             s.session == sel.session && s.lane == sel.lane && s.first <= sel.last && sel.first <= s.last
         });
@@ -32,6 +37,7 @@ impl Rireki {
             rect,
             sel,
             color,
+            icon,
             multi: sel.last > sel.first,
             selected,
             hovered: self.hovered == Some(sel),
@@ -70,6 +76,20 @@ impl Rireki {
                             q = q.border_widths(gpui::Edges { left: px(2.0), ..Default::default() }).border_color(col);
                         }
                         window.paint_quad(q);
+                        // 収まるならアイコンを左端に出し、ラベルはその右に続ける
+                        let mut text_x = 4.0;
+                        if w >= ICON_MIN_W && h >= ICON + 2.0 {
+                            let top = (h - ICON) / 2.0;
+                            let ib = Bounds::new(r.origin + point(px(3.0), px(top)), size(px(ICON), px(ICON)));
+                            let _ = window.paint_svg(
+                                ib,
+                                b.icon.path().into(),
+                                gpui::TransformationMatrix::unit(),
+                                gpui::black().opacity(0.8),
+                                cx,
+                            );
+                            text_x = 3.0 + ICON + 3.0;
+                        }
                         let Some(label) = &b.label else { continue };
                         let run = TextRun {
                             len: label.len(),
@@ -82,7 +102,7 @@ impl Rireki {
                         let line = window.text_system().shape_line(label.clone(), font_size, &[run], None);
                         let top = if h > line_h.into() { (h - f32::from(line_h)) / 2.0 } else { 0.0 };
                         window.with_content_mask(Some(ContentMask { bounds: r }), |window| {
-                            let _ = line.paint(r.origin + point(px(4.0), px(top)), line_h, window, cx);
+                            let _ = line.paint(r.origin + point(px(text_x), px(top)), line_h, window, cx);
                         });
                     }
                 });
