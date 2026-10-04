@@ -20,6 +20,10 @@ impl Rireki {
                 out.push(self.backdrop(cx).into_any_element());
                 out.push(self.gran_menu(cx));
             }
+            Some(Popover::Range) => {
+                out.push(self.backdrop(cx).into_any_element());
+                out.push(self.range_menu(cx));
+            }
             Some(Popover::Help) => out.push(self.help_sheet(cx)),
             None => out.extend(self.hover_card()),
         }
@@ -203,6 +207,7 @@ impl Rireki {
                     ("⌘2 · D", "日"),
                     ("⌘3 · W", "週"),
                     ("⌃⌘S · ⌘B", "サイドバーの表示を切り替え"),
+                    ("V", "表示範囲内のセッションだけを表示"),
                 ],
             ),
             (

@@ -34,6 +34,8 @@ pub struct Prefs {
     pub label_w: f32,
     pub detail_w: f32,
     pub gran: Granularity,
+    /// タイムラインで表示範囲内のセッションだけを並べるか
+    pub in_view_only: bool,
     pub source: SourceFilter,
     /// 絞り込み中のプロジェクト（作業ディレクトリ）
     pub focus: Option<String>,
@@ -53,6 +55,7 @@ impl Default for Prefs {
             label_w: 260.0,
             detail_w: 440.0,
             gran: Granularity::Auto,
+            in_view_only: false,
             source: SourceFilter::All,
             focus: None,
             collapsed: Vec::new(),

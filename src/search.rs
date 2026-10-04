@@ -158,6 +158,8 @@ mod tests {
                 output: String::new(),
                 call_id: None,
                 row: None,
+                usage: Default::default(),
+                model: None,
             })
             .collect();
         Loaded::Session(Session {

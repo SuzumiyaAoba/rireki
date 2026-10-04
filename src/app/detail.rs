@@ -10,7 +10,7 @@ use super::{DETAIL_MAX, HEADER_H, INNER_RADIUS, Rireki, Selection, fmt_dur, loca
 use crate::db::JsCache;
 use crate::icons::{self, Icon};
 use crate::loader;
-use crate::model::{Kind, Session, Source, truncate};
+use crate::model::{Kind, Session, Source, Usage, UsageSum, truncate};
 use crate::theme::{self, c};
 
 /// 詳細パネル。選択が変わったときだけ描き直すよう、別ビューとしてキャッシュする
@@ -139,6 +139,9 @@ impl Rireki {
             (true, false) => Some(format!("エフォート {}", lane.effort)),
             (false, false) => Some(format!("{} · エフォート {}", lane.model, lane.effort)),
         };
+        let session_usage = UsageSum::of(s.lanes.iter().flat_map(|l| &l.events));
+        let models = UsageSum::by_model(s.lanes.iter().flat_map(|l| &l.events));
+        let lane_usage = (s.lanes.len() > 1).then(|| UsageSum::of(&lane.events)).filter(|u| u.calls > 0);
         let resume = resume_command(s);
         let resumed = self.copied == Some("copy-resume");
         let origin = s.lanes.first().map(|l| l.origin.clone()).unwrap_or_default();
@@ -202,6 +205,13 @@ impl Rireki {
                             .into_any_element(),
                     ))
                     .when_some(model, |d, m| d.child(meta("モデル", div().child(m).into_any_element())))
+                    .when(session_usage.calls > 0, |d| {
+                        d.child(meta("トークン", usage_view(&session_usage).into_any_element()))
+                    })
+                    .when_some(lane_usage, |d, u| d.child(meta("このレーン", usage_view(&u).into_any_element())))
+                    .when(models.len() > 1 || models.first().is_some_and(|m| m.1.unpriced > 0), |d| {
+                        d.child(meta("モデル別", model_table(&models).into_any_element()))
+                    })
                     .child(meta("ディレクトリ", div().child(tilde(&s.cwd)).into_any_element()))
                     .child(meta(
                         "セッション",
@@ -303,6 +313,7 @@ impl Rireki {
             }
         }
         counts.sort_by_key(|a| std::cmp::Reverse(a.1));
+        let usage = UsageSum::of(evs);
         div()
             .flex()
             .flex_col()
@@ -319,6 +330,7 @@ impl Rireki {
                 fmt_dur(end - start),
                 evs.len()
             )))
+            .when(usage.calls > 0 && evs.len() > 1, |d| d.child(usage_view(&usage)))
             .when(evs.len() > 1, |d| {
                 d.child(div().flex().flex_wrap().gap_1().children(counts.iter().take(8).map(|&(name, n, col)| {
                     div()
@@ -371,6 +383,9 @@ impl Rireki {
                         .child(div().font_weight(FontWeight::BOLD).text_color(c(color)).child(e.name.clone()))
                         .when(e.end > e.start, |d| {
                             d.child(div().text_color(c(theme::MUTED)).child(fmt_dur(e.end - e.start)))
+                        })
+                        .when(!e.usage.is_empty(), |d| {
+                            d.child(div().flex_1()).child(usage_chip(&e.usage, e.model.as_deref()))
                         }),
                 );
             if !e.summary.is_empty() && e.kind == Kind::Tool || e.kind == Kind::Agent {
@@ -436,6 +451,128 @@ impl Rireki {
         }
         out
     }
+}
+
+/// トークン数を短く（1,234 / 12.3k / 1.23M）
+fn fmt_tokens(n: u64) -> String {
+    match n {
+        0..10_000 => super::fmt_n(n as usize),
+        10_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3),
+        _ => format!("{:.2}M", n as f64 / 1e6),
+    }
+}
+
+/// 使用量の内訳の色: 入力・キャッシュ読込・キャッシュ書込・出力
+const USAGE_COLORS: [u32; 4] = [0x5b9cf5, 0x3f6a9e, 0xd29a4a, 0x7fd18b];
+
+/// 使用量の合計・内訳の帯・凡例
+fn usage_view(u: &UsageSum) -> Div {
+    let total = u.total().max(1) as f32;
+    let parts = [
+        ("入力", u.input, USAGE_COLORS[0]),
+        ("キャッシュ読込", u.cache_read, USAGE_COLORS[1]),
+        ("キャッシュ書込", u.cache_write, USAGE_COLORS[2]),
+        ("出力", u.output, USAGE_COLORS[3]),
+    ];
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .gap_1p5()
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(fmt_tokens(u.total())))
+                .when(u.calls > u.unpriced, |d| {
+                    d.child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::OK)).child(fmt_usd(u.cost)))
+                })
+                .child(div().text_color(c(theme::SUBTLE)).child(format!("· {} 回", super::fmt_n(u.calls as usize))))
+                .when(u.unpriced > 0, |d| {
+                    d.child(
+                        div()
+                            .id("unpriced")
+                            .text_color(c(theme::SUBTLE))
+                            .child(format!("（料金不明 {} 回）", super::fmt_n(u.unpriced as usize)))
+                            .tooltip(tip(
+                                format!(
+                                    "料金表にないモデル。{} に追加できます",
+                                    tilde(&crate::pricing::path().to_string_lossy())
+                                ),
+                                None,
+                            )),
+                    )
+                }),
+        )
+        .child(
+            div().flex().h(px(6.0)).w_full().rounded_sm().overflow_hidden().bg(c(theme::GRID)).children(
+                parts.iter().filter(|p| p.1 > 0).map(|&(_, n, col)| {
+                    div().h_full().flex_basis(gpui::relative(n as f32 / total)).flex_shrink_0().bg(c(col))
+                }),
+            ),
+        )
+        .child(div().flex().flex_wrap().gap_x_2().gap_y_0p5().text_color(c(theme::MUTED)).children(
+            parts.iter().filter(|p| p.1 > 0).map(|&(label, n, col)| {
+                div().flex().items_center().gap_1().child(dot(col, 7.0)).child(format!("{label} {}", fmt_tokens(n)))
+            }),
+        ))
+        .when(u.reasoning > 0, |d| {
+            d.child(div().text_color(c(theme::SUBTLE)).child(format!("出力のうち推論 {}", fmt_tokens(u.reasoning))))
+        })
+}
+
+/// 料金（USD）
+fn fmt_usd(v: f64) -> String {
+    if v < 0.01 && v > 0.0 {
+        format!("${v:.4}")
+    } else {
+        format!("${v:.2}")
+    }
+}
+
+/// モデルごとのトークン数と料金
+fn model_table(models: &[(String, UsageSum)]) -> Div {
+    div().flex().flex_col().gap_0p5().children(models.iter().map(|(m, u)| {
+        div()
+            .flex()
+            .gap_2()
+            .child(div().flex_1().min_w_0().truncate().child(if m.is_empty() {
+                "(不明)".to_string()
+            } else {
+                m.clone()
+            }))
+            .child(div().flex_none().text_color(c(theme::MUTED)).child(fmt_tokens(u.total())))
+            .child(div().flex_none().w(px(64.0)).flex().justify_end().child(if u.unpriced > 0 && u.cost == 0.0 {
+                div().text_color(c(theme::SUBTLE)).child("—")
+            } else {
+                div().text_color(c(theme::OK)).child(fmt_usd(u.cost))
+            }))
+    }))
+}
+
+/// イベント見出しに添える使用量（入力はキャッシュ込み）
+fn usage_chip(u: &Usage, model: Option<&str>) -> gpui::Stateful<Div> {
+    let input = u.input as u64 + u.cache_read as u64 + u.cache_write as u64;
+    let mut detail = format!(
+        "入力 {} / キャッシュ読込 {} / キャッシュ書込 {} / 出力 {}",
+        super::fmt_n(u.input as usize),
+        super::fmt_n(u.cache_read as usize),
+        super::fmt_n(u.cache_write as usize),
+        super::fmt_n(u.output as usize)
+    );
+    if u.reasoning > 0 {
+        detail.push_str(&format!("（うち推論 {}）", super::fmt_n(u.reasoning as usize)));
+    }
+    if let Some(m) = model {
+        detail.push_str(&format!("\n{m}"));
+        if let Some(p) = crate::pricing::price(m) {
+            detail.push_str(&format!(" · {}", fmt_usd(p.cost(u))));
+        }
+    }
+    div()
+        .id(SharedString::from(format!("usage-{detail}")))
+        .text_color(c(theme::SUBTLE))
+        .child(format!("↑{} ↓{}", fmt_tokens(input), fmt_tokens(u.output as u64)))
+        .tooltip(tip(detail, None))
 }
 
 /// exec の JS を整形する。初回はモック実行してキャッシュに保存する

@@ -9,6 +9,7 @@ mod loader;
 mod model;
 mod pinch;
 mod prefs;
+mod pricing;
 mod search;
 mod theme;
 

@@ -9,10 +9,10 @@ use std::path::PathBuf;
 use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags, params};
 
-use crate::model::{Event, Kind, Lane, Loaded, Session, Source};
+use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Usage};
 
 /// スキーマやパース結果の形式を変えたら上げる（古い DB は作り直す）
-const VERSION: i64 = 12;
+const VERSION: i64 = 14;
 
 pub struct Db {
     conn: Connection,
@@ -194,7 +194,15 @@ impl Db {
                  kind INTEGER NOT NULL,
                  name TEXT NOT NULL,
                  summary TEXT NOT NULL,
-                 call_id TEXT
+                 call_id TEXT,
+                 -- トークン使用量（なければ 0）
+                 u_in INTEGER NOT NULL DEFAULT 0,
+                 u_cr INTEGER NOT NULL DEFAULT 0,
+                 u_cw INTEGER NOT NULL DEFAULT 0,
+                 u_out INTEGER NOT NULL DEFAULT 0,
+                 u_rs INTEGER NOT NULL DEFAULT 0,
+                 u_cw1h INTEGER NOT NULL DEFAULT 0,
+                 u_model TEXT
              );
              CREATE INDEX IF NOT EXISTS events_lane ON events(lane_id);
              -- 大きな本文は別表にして、起動時の events 全件読み込みを軽くする
@@ -242,8 +250,8 @@ impl Db {
             let mut ins_lane =
                 tx.prepare_cached("INSERT INTO lanes (item_id, ord, name, spawned_by, model, effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
             let mut ins_ev = tx.prepare_cached(
-                "INSERT INTO events (lane_id, start, end, kind, name, summary, call_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO events (lane_id, start, end, kind, name, summary, call_id, u_in, u_cr, u_cw, u_out, u_rs, u_cw1h, u_model)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?;
             let mut ins_text = tx.prepare_cached("INSERT INTO t.texts (id, input, output) VALUES (?1, ?2, ?3)")?;
             for Packed { path, fingerprint: fp, items, texts } in files {
@@ -281,7 +289,14 @@ impl Db {
                                 kind_to_i(e.kind),
                                 e.name,
                                 e.summary,
-                                e.call_id
+                                e.call_id,
+                                e.usage.input,
+                                e.usage.cache_read,
+                                e.usage.cache_write,
+                                e.usage.output,
+                                e.usage.reasoning,
+                                e.usage.cache_write_1h,
+                                e.model.as_deref()
                             ])?;
                             let (input, output) =
                                 texts.next().map(|(i, o)| (i.as_slice(), o.as_slice())).unwrap_or_default();
@@ -468,12 +483,13 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
                 sc.spawn(move || -> rusqlite::Result<Vec<(i64, Event)>> {
                     let conn = read_conn(p)?;
                     let mut st = conn.prepare(
-                        "SELECT id, lane_id, start, end, kind, name, summary, call_id FROM events
+                        "SELECT id, lane_id, start, end, kind, name, summary, call_id, u_in, u_cr, u_cw, u_out, u_rs, u_cw1h, u_model FROM events
                          WHERE id >= ?1 AND id < ?2 ORDER BY id",
                     )?;
                     let a = lo + k * step;
                     let mut rows = st.query([a, a + step])?;
                     let mut out = Vec::with_capacity(cap);
+                    let mut models = crate::loader::Interner::default();
                     while let Some(r) = rows.next()? {
                         out.push((
                             r.get(1)?,
@@ -487,6 +503,15 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
                                 output: String::new(),
                                 call_id: r.get(7)?,
                                 row: Some(r.get(0)?),
+                                usage: Usage {
+                                    input: r.get(8)?,
+                                    cache_read: r.get(9)?,
+                                    cache_write: r.get(10)?,
+                                    output: r.get(11)?,
+                                    reasoning: r.get(12)?,
+                                    cache_write_1h: r.get(13)?,
+                                },
+                                model: r.get_ref(14)?.as_str_or_null()?.map(|m| models.get(m)),
                             },
                         ));
                     }

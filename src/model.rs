@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
@@ -24,6 +25,96 @@ pub enum Kind {
     Agent,
 }
 
+/// トークン使用量。input はキャッシュを除いた入力、reasoning は output のうち推論の分
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Usage {
+    pub input: u32,
+    pub cache_read: u32,
+    pub cache_write: u32,
+    /// cache_write のうち 1 時間キャッシュの分
+    pub cache_write_1h: u32,
+    pub output: u32,
+    pub reasoning: u32,
+}
+
+impl Usage {
+    pub fn is_empty(&self) -> bool {
+        *self == Usage::default()
+    }
+
+    /// 入力（キャッシュ含む）と出力の合計
+    pub fn total(&self) -> u64 {
+        self.input as u64 + self.cache_read as u64 + self.cache_write as u64 + self.output as u64
+    }
+}
+
+/// 集計用。u32 の和はあふれうるので u64 で持つ
+#[derive(Clone, Copy, Default, Debug)]
+pub struct UsageSum {
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub output: u64,
+    pub reasoning: u64,
+    /// 使用量の付いたイベント（API 呼び出し）の数
+    pub calls: u64,
+    /// 料金（USD）。料金の分からないモデルの分は含まない
+    pub cost: f64,
+    /// 料金の分からないモデルの呼び出し数
+    pub unpriced: u64,
+}
+
+impl UsageSum {
+    pub fn add(&mut self, u: &Usage, model: Option<&str>) {
+        if u.is_empty() {
+            return;
+        }
+        match model.and_then(crate::pricing::price) {
+            Some(p) => self.cost += p.cost(u),
+            None => self.unpriced += 1,
+        }
+        self.input += u.input as u64;
+        self.cache_read += u.cache_read as u64;
+        self.cache_write += u.cache_write as u64;
+        self.output += u.output as u64;
+        self.reasoning += u.reasoning as u64;
+        self.calls += 1;
+    }
+
+    pub fn of<'a>(events: impl IntoIterator<Item = &'a Event>) -> Self {
+        let mut s = Self::default();
+        for e in events {
+            s.add(&e.usage, e.model.as_deref());
+        }
+        s
+    }
+
+    /// モデルごとの集計（合計の多い順）
+    pub fn by_model<'a>(events: impl IntoIterator<Item = &'a Event>) -> Vec<(String, Self)> {
+        let mut out: Vec<(String, Self)> = Vec::new();
+        for e in events {
+            if e.usage.is_empty() {
+                continue;
+            }
+            let m = e.model.as_deref().unwrap_or("");
+            let i = match out.iter().position(|(k, _)| k == m) {
+                Some(i) => i,
+                None => {
+                    out.push((m.to_string(), Self::default()));
+                    out.len() - 1
+                }
+            };
+            out[i].1.add(&e.usage, e.model.as_deref());
+        }
+        out.sort_by_key(|(_, u)| std::cmp::Reverse(u.total()));
+        out
+    }
+
+    pub fn total(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write + self.output
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Event {
     /// Unix 秒
@@ -39,6 +130,10 @@ pub struct Event {
     pub call_id: Option<String>,
     /// 索引 DB 上の行 ID。DB から読んだイベントは input / output が空で、詳細表示時に取り出す
     pub row: Option<i64>,
+    /// この時点の API 呼び出しのトークン使用量（なければ空）
+    pub usage: Usage,
+    /// 使用量を計上したモデル（使用量のあるイベントだけ）
+    pub model: Option<Arc<str>>,
 }
 
 impl Event {
@@ -54,6 +149,8 @@ impl Event {
             output: String::new(),
             call_id: self.call_id.clone(),
             row: self.row,
+            usage: self.usage,
+            model: self.model.clone(),
         }
     }
 }

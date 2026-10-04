@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use rayon::prelude::*;
 use serde_json::Value;
 
-use crate::model::{Event, Kind, Lane, Loaded, Session, Source, one_line, truncate};
+use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Usage, one_line, truncate};
 
 const MAX_TEXT: usize = 6000;
 
@@ -279,6 +280,8 @@ fn message_event(t: f64, kind: Kind, name: &str, text: &str) -> Event {
         output: String::new(),
         call_id: None,
         row: None,
+        usage: Usage::default(),
+        model: None,
     }
 }
 
@@ -293,6 +296,8 @@ fn tool_event(t: f64, name: &str, input: &Value, call_id: Option<String>) -> Eve
         output: String::new(),
         call_id,
         row: None,
+        usage: Usage::default(),
+        model: None,
     }
 }
 
@@ -311,6 +316,72 @@ impl Pending {
 
 // ---------------------------------------------------------------- Claude
 
+/// モデル名の共有（イベントごとに文字列を複製しない）
+#[derive(Default)]
+pub struct Interner(HashMap<String, Arc<str>>);
+
+impl Interner {
+    pub fn get(&mut self, s: &str) -> Arc<str> {
+        if let Some(a) = self.0.get(s) {
+            return a.clone();
+        }
+        let a: Arc<str> = Arc::from(s);
+        self.0.insert(s.to_string(), a.clone());
+        a
+    }
+}
+
+fn num(v: &Value, k: &str) -> u32 {
+    v.pointer(k).and_then(|x| x.as_u64()).map_or(0, |n| n.min(u32::MAX as u64) as u32)
+}
+
+fn add_usage(a: Usage, b: Usage) -> Usage {
+    Usage {
+        input: a.input.saturating_add(b.input),
+        cache_read: a.cache_read.saturating_add(b.cache_read),
+        cache_write: a.cache_write.saturating_add(b.cache_write),
+        cache_write_1h: a.cache_write_1h.saturating_add(b.cache_write_1h),
+        output: a.output.saturating_add(b.output),
+        reasoning: a.reasoning.saturating_add(b.reasoning),
+    }
+}
+
+/// Claude の message.usage。input_tokens はキャッシュを含まない
+fn claude_usage(u: &Value) -> Usage {
+    Usage {
+        input: num(u, "/input_tokens"),
+        cache_read: num(u, "/cache_read_input_tokens"),
+        cache_write: num(u, "/cache_creation_input_tokens"),
+        cache_write_1h: num(u, "/cache_creation/ephemeral_1h_input_tokens"),
+        output: num(u, "/output_tokens"),
+        reasoning: num(u, "/output_tokens_details/thinking_tokens"),
+    }
+}
+
+/// Codex の token_count の累計（total_token_usage）。input_tokens はキャッシュを含む
+fn codex_usage(u: &Value) -> Usage {
+    let cached = num(u, "/cached_input_tokens");
+    Usage {
+        input: num(u, "/input_tokens").saturating_sub(cached),
+        cache_read: cached,
+        cache_write: num(u, "/cache_write_input_tokens"),
+        cache_write_1h: 0,
+        output: num(u, "/output_tokens"),
+        reasoning: num(u, "/reasoning_output_tokens"),
+    }
+}
+
+fn sub_usage(a: Usage, b: Usage) -> Usage {
+    Usage {
+        input: a.input.saturating_sub(b.input),
+        cache_read: a.cache_read.saturating_sub(b.cache_read),
+        cache_write: a.cache_write.saturating_sub(b.cache_write),
+        cache_write_1h: a.cache_write_1h.saturating_sub(b.cache_write_1h),
+        output: a.output.saturating_sub(b.output),
+        reasoning: a.reasoning.saturating_sub(b.reasoning),
+    }
+}
+
 struct ClaudeParse {
     lane: Lane,
     cwd: String,
@@ -326,6 +397,11 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
     let mut title = String::new();
     let mut session_id = String::new();
     let mut headless = false;
+    // message.id → (使用量を付けるイベント, 使用量)。同じメッセージが内容ブロックごとに複数行に分かれ、
+    // 各行に同じ usage が載るので、メッセージごとに最後の行の値を 1 回だけ数える
+    let mut usages: Vec<(usize, Usage, Option<Arc<str>>)> = Vec::new();
+    let mut models = Interner::default();
+    let mut usage_ix: HashMap<String, usize> = HashMap::new();
 
     let buf = read_all(p);
     for line in lines(&buf) {
@@ -394,6 +470,7 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                 let Value::Array(items) = content else {
                     continue;
                 };
+                let first = lane.events.len();
                 for it in items {
                     match it.get("type").and_then(|x| x.as_str()) {
                         Some("text") => {
@@ -420,8 +497,33 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                         _ => {}
                     }
                 }
+                if let Some(u) = v.pointer("/message/usage").map(claude_usage)
+                    && !u.is_empty()
+                {
+                    let id = v.pointer("/message/id").and_then(|x| x.as_str()).unwrap_or_default();
+                    // そのメッセージの最初のイベント。イベントを生まない行なら直前のイベント
+                    let at = first.min(lane.events.len().saturating_sub(1));
+                    let model = v
+                        .pointer("/message/model")
+                        .and_then(|m| m.as_str())
+                        .filter(|m| !m.starts_with('<'))
+                        .map(|m| models.get(m));
+                    match usage_ix.get(id) {
+                        Some(&k) if !id.is_empty() => (usages[k].1, usages[k].2) = (u, model),
+                        _ => {
+                            usage_ix.insert(id.to_string(), usages.len());
+                            usages.push((at, u, model));
+                        }
+                    }
+                }
             }
             _ => {}
+        }
+    }
+    for (i, u, m) in usages {
+        if let Some(e) = lane.events.get_mut(i) {
+            e.usage = add_usage(e.usage, u);
+            e.model = m.or(e.model.take());
         }
     }
     lane.finish();
@@ -491,14 +593,21 @@ fn load_codex(p: &Path) -> Option<Loaded> {
     let mut title = String::new();
     let mut parent: Option<String> = None;
     let mut headless = false;
+    // token_count は累計なので、前回との差をその時点の最後のイベントに付ける
+    let mut total = Usage::default();
+    let mut unassigned = Usage::default();
+    // 直近の turn_context のモデル（ターンごとに変わりうる）
+    let mut model: Option<Arc<str>> = None;
+    let token_count = memchr::memmem::Finder::new("\"type\":\"token_count\"");
 
     let buf = read_all(p);
     for line in lines(&buf) {
         // 巨大で不要な行は JSON パース前に捨てる
         let head = &line[..line.len().min(160)];
         // turn_context はモデルとエフォートを拾うため最初の 1 行だけ読む
-        let ctx = SKIP[1].find(head).is_some() && lane.model.is_empty();
-        if !ctx && SKIP.iter().any(|f| f.find(head).is_some()) {
+        let ctx = SKIP[1].find(head).is_some();
+        let tc = token_count.find(head).is_some();
+        if !ctx && !tc && SKIP.iter().any(|f| f.find(head).is_some()) {
             continue;
         }
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
@@ -507,9 +616,34 @@ fn load_codex(p: &Path) -> Option<Loaded> {
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let Some(pl) = v.get("payload") else { continue };
 
+        if tc {
+            if let Some(info) = pl.get("info").filter(|i| !i.is_null()) {
+                let now = info.get("total_token_usage").map(codex_usage).unwrap_or_default();
+                // 累計が減ったら（圧縮などで数え直し）直近の分だけを使う
+                let d = if now.total() >= total.total() {
+                    sub_usage(now, total)
+                } else {
+                    info.get("last_token_usage").map(codex_usage).unwrap_or_default()
+                };
+                total = now;
+                unassigned = add_usage(unassigned, d);
+                if let Some(e) = lane.events.last_mut() {
+                    e.usage = add_usage(e.usage, std::mem::take(&mut unassigned));
+                    e.model = model.clone();
+                }
+            }
+            continue;
+        }
         if ty == "turn_context" {
             let str_at = |k: &str| pl.pointer(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-            lane.model = str_at("/model");
+            let m = str_at("/model");
+            if !m.is_empty() && model.as_deref() != Some(m.as_str()) {
+                model = Some(Arc::from(m.as_str()));
+            }
+            if !lane.model.is_empty() {
+                continue;
+            }
+            lane.model = m;
             lane.effort = str_at("/effort");
             if lane.effort.is_empty() {
                 lane.effort = str_at("/collaboration_mode/settings/reasoning_effort");
@@ -586,6 +720,10 @@ fn load_codex(p: &Path) -> Option<Loaded> {
     lane.finish();
     if lane.events.is_empty() {
         return None;
+    }
+    if !unassigned.is_empty() {
+        lane.events[0].usage = add_usage(lane.events[0].usage, unassigned);
+        lane.events[0].model = model;
     }
     if let Some(parent) = parent {
         return Some(Loaded::Child(parent, lane));
@@ -732,7 +870,9 @@ fn label_before(js: &str, at: usize) -> Option<String> {
     }
     if let Some(q) = p.strip_suffix(',') {
         let q = q.trim_end();
-        let &qc @ (b'"' | b'\'' | b'`') = q.as_bytes().last()? else { return None };
+        let &qc @ (b'"' | b'\'' | b'`') = q.as_bytes().last()? else {
+            return None;
+        };
         let open = q[..q.len() - 1].rfind(qc as char)?;
         if q[..open].trim_end().ends_with('[') {
             return Some(q[open + 1..q.len() - 1].to_string()).filter(|s| !s.is_empty() && s.len() <= 60);
@@ -810,7 +950,9 @@ impl Args for JsonArgs<'_> {
         }
     }
     fn plan(&self) -> Vec<(String, String)> {
-        let Some(Value::Array(a)) = self.0.get("plan") else { return Vec::new() };
+        let Some(Value::Array(a)) = self.0.get("plan") else {
+            return Vec::new();
+        };
         a.iter()
             .map(|p| {
                 let f = |k| p.get(k).and_then(|x: &Value| x.as_str()).unwrap_or("").to_string();
@@ -959,7 +1101,9 @@ fn js_unquote(lit: &str) -> String {
 fn codex_format(name: &str, a: &dyn Args) -> (String, String) {
     match name {
         "exec_command" | "shell" | "local_shell" => {
-            let Some(cmd) = a.str("cmd").or_else(|| a.str("command")) else { return Default::default() };
+            let Some(cmd) = a.str("cmd").or_else(|| a.str("command")) else {
+                return Default::default();
+            };
             let mut d = format!("$ {cmd}");
             if let Some(w) = a.str("workdir") {
                 d.push_str(&format!("\n\ncwd: {w}"));
@@ -973,7 +1117,9 @@ fn codex_format(name: &str, a: &dyn Args) -> (String, String) {
             (s.clone(), if chars.is_empty() { s } else { format!("{s}\n\n{chars}") })
         }
         "apply_patch" => {
-            let Some(p) = a.first().or_else(|| a.str("input")) else { return Default::default() };
+            let Some(p) = a.first().or_else(|| a.str("input")) else {
+                return Default::default();
+            };
             (patch_summary(&p), truncate(&p, MAX_TEXT))
         }
         "wait" => {
@@ -1045,7 +1191,9 @@ fn codex_js_line(line: &str) -> Option<String> {
 
 /// Codex のツール出力から定型ヘッダ (Wall time など) を取り除き、終了コードと所要時間を 1 行にまとめる
 fn codex_output(s: &str) -> String {
-    let Some(i) = s.find("Output:\n").filter(|&i| i < 400) else { return s.to_string() };
+    let Some(i) = s.find("Output:\n").filter(|&i| i < 400) else {
+        return s.to_string();
+    };
     let (mut exit, mut wall) = (None, None);
     for l in s[..i].lines() {
         let l = l.trim();
@@ -1114,7 +1262,8 @@ mod tests {
     #[test]
     fn codex_exec_js() {
         let js = Value::String(
-            "const r=await tools.exec_command({cmd:\"sed -n '1,2p' a.py\",workdir:\"/w\",yield_time_ms:10000}); text(r.output);".into(),
+            "const r=await tools.exec_command({cmd:\"sed -n '1,2p' a.py\",workdir:\"/w\",yield_time_ms:10000}); text(r.output);"
+                .into(),
         );
         let (n, s, d) = codex_tool("exec", &js);
         assert_eq!(n, "exec_command");

@@ -41,6 +41,7 @@ impl Rireki {
 
     fn apply_preset(&mut self, i: usize, window: &Window) {
         self.mode = Mode::Timeline;
+        self.pick = None;
         let secs = PRESETS[i].1;
         if secs > 0.0 {
             let n = now();
@@ -251,7 +252,34 @@ impl Rireki {
                 t.popover = if t.popover == Some(Popover::Granularity) { None } else { Some(Popover::Granularity) };
                 cx.notify();
             }));
-        row.when(w >= 700.0, |d| d.child(zoom)).child(gran)
+        let on = self.in_view_only;
+        let in_view = div()
+            .id("in-view-only")
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .h(px(26.0))
+            .rounded_md()
+            .border_1()
+            .border_color(c(if on { theme::ACCENT } else { theme::BORDER }))
+            .when(on, |d| d.bg(c(theme::ACCENT_BG)))
+            .text_xs()
+            .cursor_pointer()
+            .hover(|s| s.bg(c(theme::HOVER)))
+            .child(icons::icon(Icon::Filter, if on { theme::ACCENT } else { theme::MUTED }))
+            .when(w >= 760.0, |d| d.child("範囲内のみ"))
+            .tooltip(tip(
+                if on {
+                    "表示範囲外のセッションもグレーアウトして表示する"
+                } else {
+                    "表示範囲内のセッションだけを表示する"
+                },
+                Some("V"),
+            ))
+            .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.toggle_in_view_only(cx)));
+        row.child(self.range_button(cx)).when(w >= 700.0, |d| d.child(zoom)).when(timeline, |d| d.child(in_view)).child(gran)
     }
 
     /// 下端の帯。表示中の件数と目盛りの間隔、ブロックの色の凡例

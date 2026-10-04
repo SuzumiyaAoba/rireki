@@ -13,6 +13,7 @@ mod header;
 mod keymap;
 mod overlay;
 mod rail;
+mod range;
 mod sidebar;
 mod timeline;
 mod widgets;
@@ -41,7 +42,7 @@ use detail::DetailView;
 pub use keymap::init;
 use keymap::{
     Back, CloseWindow, Dismiss, FocusSearch, Forward, GoNext, GoPrev, GoToday, SearchCancel, SearchConfirm, SearchDown,
-    SearchUp, ShowDay, ShowHelp, ShowTimeline, ShowWeek, ToggleSidebar, ZoomIn, ZoomOut,
+    SearchUp, ShowDay, ShowHelp, ShowTimeline, ShowWeek, ToggleInViewOnly, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use sidebar::SidebarView;
 
@@ -56,6 +57,8 @@ const PANEL_RADIUS: f32 = 10.0;
 const INNER_RADIUS: f32 = PANEL_RADIUS - 1.0;
 const HEADER_H: f32 = 46.0;
 const FOOTER_H: f32 = 26.0;
+/// タイムラインの上のミニマップの高さ
+const MINIMAP_H: f32 = 30.0;
 const AXIS_H: f32 = 30.0;
 /// 境界ドラッグで変えられる幅の下限
 const MIN_PANE_W: f32 = 160.0;
@@ -102,6 +105,8 @@ struct Track {
     depth: usize,
     /// 別セッションとして起動された子の main レーンなら、起動元 (セッション, レーン, 時刻)
     link: Option<(usize, usize, f64)>,
+    /// 表示範囲内にイベントがあるか（なければグレーアウトする）
+    active: bool,
 }
 
 /// タイムラインの 1 行
@@ -111,6 +116,8 @@ enum Row {
         cwd: String,
         sessions: Vec<usize>,
         collapsed: bool,
+        /// グループ内に表示範囲内のレーンがあるか
+        active: bool,
     },
     Lane(Track),
 }
@@ -148,6 +155,8 @@ enum Popover {
     Granularity,
     /// キーボードショートカット一覧
     Help,
+    /// 表示期間を選ぶカレンダー
+    Range,
 }
 
 /// サイドバーに並べるプロジェクト（作業ディレクトリ）
@@ -159,6 +168,9 @@ struct Project {
     /// 最後に作業した時刻
     last: f64,
 }
+
+/// ミニマップのキャッシュのキー (期間の始め, 終わり, 本数, data_gen)
+type MinimapKey = (u64, u64, usize, u64);
 
 pub struct Rireki {
     store: Store,
@@ -213,6 +225,8 @@ pub struct Rireki {
     px_per_hour: f32,
     cal_scroll: f32,
     gran: Granularity,
+    /// タイムラインで表示範囲内のセッションだけを並べるか
+    in_view_only: bool,
     source: SourceFilter,
     /// 読み込み元ごとに、進行中のセッションがあるか (Claude, Codex)
     live_sources: (bool, bool),
@@ -238,6 +252,24 @@ pub struct Rireki {
     popover: Option<Popover>,
     /// まとめ方ボタンの位置（メニューを出す基準）
     gran_anchor: Rc<Cell<Bounds<Pixels>>>,
+    /// カレンダーで選んだ表示期間。ミニマップはこの期間全体を表す
+    pick: Option<(f64, f64)>,
+    /// 期間を選ぶカレンダーで表示している月（1 日）
+    picker_month: NaiveDate,
+    /// 期間を選ぶカレンダーで、先に選んだ開始日
+    picker_from: Option<NaiveDate>,
+    /// 期間を選ぶボタンの位置
+    picker_anchor: Rc<Cell<Bounds<Pixels>>>,
+    /// ミニマップの位置（ウィンドウ座標）
+    minimap_bounds: Rc<Cell<Bounds<Pixels>>>,
+    minimap_drag: bool,
+    /// タイムライン右端の、表示範囲内のレーンの位置を示す縦のミニマップ
+    lane_map_bounds: Rc<Cell<Bounds<Pixels>>>,
+    lane_map_drag: bool,
+    /// ミニマップの棒の高さ。キーは (期間の始め, 終わり, 本数, data_gen)
+    minimap_cache: Option<(MinimapKey, Vec<u32>)>,
+    /// 表示するセッションが変わるたびに増やす
+    data_gen: u64,
     /// 下端に出す、表示中の件数
     counts: String,
     /// 最後に保存した画面の状態
@@ -490,6 +522,7 @@ impl Rireki {
             px_per_hour: 60.0,
             cal_scroll: 8.0 * 60.0,
             gran: p.gran,
+            in_view_only: p.in_view_only,
             source: p.source,
             live_sources: (false, false),
             selected: None,
@@ -507,6 +540,16 @@ impl Rireki {
             session_limit: 50,
             popover: None,
             gran_anchor: Rc::new(Cell::new(Bounds::default())),
+            pick: None,
+            picker_month: today,
+            picker_from: None,
+            picker_anchor: Rc::new(Cell::new(Bounds::default())),
+            minimap_bounds: Rc::new(Cell::new(Bounds::default())),
+            minimap_drag: false,
+            lane_map_bounds: Rc::new(Cell::new(Bounds::default())),
+            lane_map_drag: false,
+            minimap_cache: None,
+            data_gen: 0,
             counts: String::new(),
             saved: p,
         };
@@ -529,6 +572,7 @@ impl Rireki {
             label_w: self.label_w,
             detail_w: self.detail_w,
             gran: self.gran,
+            in_view_only: self.in_view_only,
             source: self.source,
             focus: self.focus.clone(),
             collapsed,
@@ -587,12 +631,14 @@ impl Rireki {
             .copied()
             .filter(|&i| self.focus.as_ref().is_none_or(|f| *f == self.store.sessions[i].cwd))
             .collect();
-        order.sort_by(|&a, &b| self.store.sessions[a].start.total_cmp(&self.store.sessions[b].start));
+        // 新しいセッションほど上に並べる
+        order.sort_by(|&a, &b| self.store.sessions[b].start.total_cmp(&self.store.sessions[a].start));
         self.projects = self.projects_of(&scope);
         self.scope = scope;
         self.order = order;
         self.exec_parent = self.find_exec_parents();
         self.live_sources = self.find_live_sources();
+        self.data_gen += 1;
     }
 
     /// セッションをプロジェクトごとにまとめる（最近作業した順）
@@ -740,7 +786,8 @@ impl Rireki {
             self.session_tracks(ci, base + 1, self.exec_parent.get(&ci).copied(), children, (v0, v1), &mut kids);
         }
         let in_range = !(s.end < v0 || s.start > v1);
-        if !in_range && kids.is_empty() {
+        let all = !self.in_view_only;
+        if !in_range && kids.is_empty() && !all {
             return false;
         }
         let visible = |li: usize| {
@@ -753,8 +800,10 @@ impl Rireki {
         if !kids.is_empty() && !show.is_empty() {
             show[0] = true;
         }
+        let mut active = vec![false; s.lanes.len()];
         for &(li, _) in &s.tree {
             if in_range && visible(li) {
+                active[li] = true;
                 let mut cur = Some(li);
                 while let Some(c) = cur {
                     if std::mem::replace(&mut show[c], true) && c != li {
@@ -765,8 +814,14 @@ impl Rireki {
             }
         }
         for &(li, depth) in &s.tree {
-            if show[li] {
-                out.push(Track { session: si, lane: li, depth: base + depth, link: if li == 0 { link } else { None } });
+            if show[li] || all {
+                out.push(Track {
+                    session: si,
+                    lane: li,
+                    depth: base + depth,
+                    link: if li == 0 { link } else { None },
+                    active: active[li],
+                });
             }
         }
         out.extend(kids);
@@ -785,13 +840,15 @@ impl Rireki {
                     cwd: cwd.clone(),
                     sessions: Vec::new(),
                     collapsed: self.collapsed.contains(cwd),
+                    active: false,
                 });
             }
-            let Some(Row::Header { sessions, collapsed, .. }) =
+            let Some(Row::Header { sessions, collapsed, active, .. }) =
                 rows.iter_mut().rev().find(|r| matches!(r, Row::Header { .. }))
             else {
                 unreachable!()
             };
+            *active |= t.active;
             if !sessions.contains(&t.session) {
                 sessions.push(t.session);
             }
@@ -829,7 +886,12 @@ impl Rireki {
     /// メイン列の本体（見出しと凡例を除く）の高さ
     fn body_height(&self, window: &Window) -> f32 {
         let h: f32 = window.viewport_size().height.into();
-        (h - STRIP_H - GAP - 2.0 - HEADER_H - FOOTER_H).max(100.0)
+        let minimap = if self.mode == Mode::Timeline {
+            MINIMAP_H
+        } else {
+            0.0
+        };
+        (h - STRIP_H - GAP - 2.0 - HEADER_H - minimap - FOOTER_H).max(100.0)
     }
 
     /// タイムラインのブロックを描く領域の幅
@@ -1186,6 +1248,14 @@ impl Rireki {
         cx.notify();
     }
 
+    /// タイムラインで表示範囲内のセッションだけを並べるか、範囲外もグレーアウトして並べるかを切り替える
+    fn toggle_in_view_only(&mut self, cx: &mut Context<Self>) {
+        self.in_view_only = !self.in_view_only;
+        self.row_scroll = 0.0;
+        self.persist();
+        cx.notify();
+    }
+
     fn step(&mut self, dir: f64, window: &Window) {
         match self.mode {
             Mode::Day => self.day0 += Duration::days(dir as i64),
@@ -1362,7 +1432,9 @@ impl Rireki {
         if d.moved {
             return;
         }
-        let Some(sel) = self.hit(e.position) else { return };
+        let Some(sel) = self.hit(e.position) else {
+            return;
+        };
         if e.click_count >= 2 && self.mode == Mode::Timeline {
             // ダブルクリックでブロックの範囲まで拡大する
             let (a, b) = self.sel_range(sel);
@@ -1509,6 +1581,7 @@ impl Render for Rireki {
             .flex()
             .flex_col()
             .child(self.header(window, cx))
+            .when(self.mode == Mode::Timeline, |d| d.child(self.minimap(window, cx)))
             .child(body)
             .child(self.footer(window));
 
@@ -1561,6 +1634,7 @@ impl Render for Rireki {
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .on_action(cx.listener(|t, _: &FocusSearch, window, cx| t.focus_search(window, cx)))
             .on_action(cx.listener(|t, _: &ToggleSidebar, _, cx| t.toggle_sidebar(cx)))
+            .on_action(cx.listener(|t, _: &ToggleInViewOnly, _, cx| t.toggle_in_view_only(cx)))
             .on_action(cx.listener(|t, _: &ShowTimeline, window, cx| {
                 t.set_mode(Mode::Timeline, window);
                 cx.notify();

@@ -2,8 +2,8 @@
 
 use chrono::Timelike;
 use gpui::{
-    AnyElement, App, Bounds, ClickEvent, ContentMask, Context, ElementId, FontWeight, SharedString, TextRun, Window,
-    canvas, div, fill, point, prelude::*, px, size,
+    AnyElement, App, Bounds, ClickEvent, ContentMask, Context, ElementId, FontWeight, MouseButton, MouseDownEvent,
+    MouseMoveEvent, Pixels, SharedString, TextRun, Window, canvas, div, fill, point, prelude::*, px, size,
 };
 
 use super::widgets::{project_tile, tip};
@@ -12,6 +12,9 @@ use crate::icons::{self, Icon};
 use crate::layout::{self, Block};
 use crate::model::one_line;
 use crate::theme::{self, c};
+
+/// 右端の縦のミニマップの幅
+const LANE_MAP_W: f32 = 12.0;
 
 impl Rireki {
     pub(super) fn block_paint(&self, sel: Selection, rect: (f32, f32, f32, f32), vertical: bool) -> BlockPaint {
@@ -147,8 +150,9 @@ impl Rireki {
         for (row, r) in tracks.iter().enumerate().skip(first_row).take(rows_visible) {
             let y = row as f32 * ROW_H - self.row_scroll;
             let tr = match r {
-                Row::Header { cwd, sessions, collapsed } => {
+                Row::Header { cwd, sessions, collapsed, active } => {
                     let collapsed = *collapsed;
+                    let dim = !*active;
                     let (cwd_c, cwd_f) = (cwd.clone(), cwd.clone());
                     let focused = self.focus.as_ref() == Some(cwd);
                     let group = SharedString::from(format!("grp-{row}"));
@@ -168,6 +172,7 @@ impl Rireki {
                             .bg(c(0x1f232b))
                             .border_t_1()
                             .border_color(c(0x3a4150))
+                            .when(dim, |d| d.opacity(0.45))
                             .text_xs()
                             .whitespace_nowrap()
                             .overflow_hidden()
@@ -306,6 +311,7 @@ impl Rireki {
                     .pl(px(indent))
                     .when(new_session, |d| d.border_t_1().border_color(c(theme::BORDER)))
                     .when(lane_selected, |d| d.bg(c(theme::ACCENT_BG)))
+                    .when(!tr.active, |d| d.opacity(0.4))
                     .text_xs()
                     .whitespace_nowrap()
                     .overflow_hidden()
@@ -326,6 +332,10 @@ impl Rireki {
             );
             if new_session {
                 plot = plot.child(div().absolute().left_0().right_0().top(px(y)).h(px(1.0)).bg(c(theme::BORDER)));
+            }
+            if !tr.active {
+                // 表示範囲外のレーンはグレーアウトする
+                plot = plot.child(div().absolute().left_0().right_0().top(px(y)).h(px(ROW_H)).bg(c(0x000000).opacity(0.18)));
             }
             if lane_selected {
                 plot = plot.child(
@@ -378,6 +388,8 @@ impl Rireki {
 
         if tracks.is_empty() {
             plot = plot.child(self.empty_state(cx));
+        } else {
+            plot = plot.child(self.lane_map(&tracks, ph, cx));
         }
 
         div()
@@ -406,6 +418,103 @@ impl Rireki {
             )
             .child(div().flex().child(labels.border_r_1().border_color(c(theme::BORDER))).child(plot))
             .into_any_element()
+    }
+
+    /// 右端の縦のミニマップ。表示範囲内にイベントがあるレーンの位置と、いま見えている行の範囲を示す
+    fn lane_map(&self, tracks: &[Row], ph: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let n = tracks.len().max(1) as f32;
+        let marks: Vec<(f32, u32)> = tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match r {
+                Row::Lane(t) if t.active => {
+                    let selected = self.selected.is_some_and(|x| x.session == t.session && x.lane == t.lane);
+                    let col = if selected {
+                        0xffffff
+                    } else if t.lane == 0 {
+                        theme::ACCENT
+                    } else {
+                        theme::SUB
+                    };
+                    Some((i as f32 / n, col))
+                }
+                Row::Header { active: true, collapsed: true, .. } => Some((i as f32 / n, theme::ACCENT)),
+                _ => None,
+            })
+            .collect();
+        let total = n * ROW_H;
+        let view = ((self.row_scroll / total).clamp(0.0, 1.0), ((self.row_scroll + ph) / total).clamp(0.0, 1.0));
+        let bounds_cell = self.lane_map_bounds.clone();
+        let map = canvas(
+            move |b, _, _| bounds_cell.set(b),
+            move |b, _, window: &mut Window, _| {
+                let h: f32 = b.size.height.into();
+                let w = b.size.width;
+                let (v0, v1) = view;
+                window.paint_quad(
+                    fill(
+                        Bounds::new(b.origin + point(px(0.0), px(v0 * h)), size(w, px(((v1 - v0) * h).max(4.0)))),
+                        gpui::white().opacity(0.10),
+                    )
+                    .corner_radii(px(2.0)),
+                );
+                let mh = (h / n).clamp(2.0, 4.0);
+                for &(f, col) in &marks {
+                    window.paint_quad(fill(
+                        Bounds::new(b.origin + point(px(2.0), px(f * h)), size(w - px(4.0), px(mh))),
+                        c(col).opacity(0.9),
+                    ));
+                }
+            },
+        )
+        .size_full();
+        div()
+            .id("lane-map")
+            .absolute()
+            .top_0()
+            .right_0()
+            .w(px(LANE_MAP_W))
+            .h(px(ph))
+            .bg(c(0x15181e).opacity(0.85))
+            .border_l_1()
+            .border_color(c(theme::BORDER))
+            .cursor_pointer()
+            .child(map)
+            .tooltip(tip("表示範囲内のレーンの位置（クリック・ドラッグで移動）", None))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |t, e: &MouseDownEvent, _, cx| {
+                    t.lane_map_drag = true;
+                    t.lane_map_seek(e.position.y, total, ph);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |t, e: &MouseMoveEvent, _, cx| {
+                if !t.lane_map_drag {
+                    return;
+                }
+                if e.pressed_button != Some(MouseButton::Left) {
+                    t.lane_map_drag = false;
+                    return;
+                }
+                cx.stop_propagation();
+                t.lane_map_seek(e.position.y, total, ph);
+                cx.notify();
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|t, _, _, _| t.lane_map_drag = false))
+    }
+
+    /// 縦のミニマップ上の位置 y が表示の中央に来るようにスクロールする
+    fn lane_map_seek(&mut self, y: Pixels, total: f32, ph: f32) {
+        let b = self.lane_map_bounds.get();
+        let h: f32 = b.size.height.into();
+        if h <= 0.0 {
+            return;
+        }
+        let f = (f32::from(y - b.origin.y) / h).clamp(0.0, 1.0);
+        let max = (total - ph + ROW_H).max(0.0);
+        self.row_scroll = (f * total - ph / 2.0).clamp(0.0, max);
     }
 
     /// 表示範囲に何もないときの案内

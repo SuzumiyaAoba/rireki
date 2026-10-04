@@ -351,7 +351,9 @@ impl Rireki {
     }
 
     fn search_results(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(r) = &self.results else { return div().into_any_element() };
+        let Some(r) = &self.results else {
+            return div().into_any_element();
+        };
         let terms: Vec<String> = self.query.split_whitespace().map(|t| t.to_ascii_lowercase()).collect();
         let filtered = self.focus.is_some() || self.source != SourceFilter::All;
         let mut list =
