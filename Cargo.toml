@@ -1,0 +1,24 @@
+[package]
+name = "rireki"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-channel = "2.5.0"
+chrono = { version = "0.4.45", features = ["serde"] }
+dirs = "7.0.0"
+gpui = "0.2.2"
+lz4_flex = "0.14.0"
+memchr = "2.8.3"
+rayon = "1.12.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block = "0.1.6"
+objc = "0.2.7"
+
+# 依存クレート（GPUI など）は dev ビルドでも最適化する。未最適化の GPUI は描画が極端に遅い
+[profile.dev.package."*"]
+opt-level = 3
