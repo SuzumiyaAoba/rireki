@@ -14,6 +14,7 @@ mod keymap;
 mod overlay;
 mod rail;
 mod range;
+mod rich;
 mod sidebar;
 mod timeline;
 mod widgets;
@@ -38,11 +39,12 @@ use crate::prefs::{self, Mode, Prefs, SourceFilter};
 use crate::search;
 use crate::theme::{self, c};
 
-use detail::DetailView;
+use detail::{DetailCache, DetailView, RowFilter};
 pub use keymap::init;
 use keymap::{
-    Back, CloseWindow, Dismiss, FocusSearch, Forward, GoNext, GoPrev, GoToday, SearchCancel, SearchConfirm, SearchDown,
-    SearchUp, ShowDay, ShowHelp, ShowTimeline, ShowWeek, ToggleInViewOnly, ToggleSidebar, ZoomIn, ZoomOut,
+    Back, CloseWindow, Dismiss, FocusSearch, Forward, GoNext, GoPrev, GoToday, NextEvent, PrevEvent, SearchCancel,
+    SearchConfirm, SearchDown, SearchUp, ShowDay, ShowHelp, ShowTimeline, ShowWeek, ToggleInViewOnly, ToggleSidebar,
+    ZoomIn, ZoomOut,
 };
 use sidebar::SidebarView;
 
@@ -87,15 +89,6 @@ struct Selection {
     lane: usize,
     first: usize,
     last: usize,
-}
-
-/// 選択中ブロックの詳細テキスト（選択時に一度だけ作る）
-struct DetailCache {
-    sel: Selection,
-    /// 先頭 DETAIL_MAX 件の (input, output)。表示用に切り詰め済み
-    texts: Vec<(String, String)>,
-    /// exec の JS 本文（生データ表示用）。texts と同じ並び
-    raws: Vec<Option<String>>,
 }
 
 struct Track {
@@ -204,6 +197,13 @@ pub struct Rireki {
     detail_cache: Option<DetailCache>,
     /// exec の詳細を整形結果ではなく JS 本文で表示する
     show_raw: bool,
+    /// 詳細パネルのイベント一覧の絞り込み（選択が変わると解除する）
+    row_filter: Option<RowFilter>,
+    /// 詳細パネルで、長い本文を全部表示している箇所
+    expanded: HashSet<&'static str>,
+    /// 詳細パネルのセッション情報を開いているか
+    session_open: bool,
+    detail_scroll: ScrollHandle,
     /// 直前にコピーしたボタンの ID（しばらくチェックマークを出す）
     copied: Option<&'static str>,
     /// 直前のフレームで描いたブロック（クリック・ホバーの当たり判定用）
@@ -508,6 +508,10 @@ impl Rireki {
             detail_view,
             detail_cache: None,
             show_raw: false,
+            row_filter: None,
+            expanded: HashSet::new(),
+            session_open: p.session_open,
+            detail_scroll: ScrollHandle::new(),
             copied: None,
             hits: Vec::new(),
             hit_origin: Rc::new(Cell::new(Point::default())),
@@ -577,6 +581,7 @@ impl Rireki {
             focus: self.focus.clone(),
             collapsed,
             folded,
+            session_open: self.session_open,
         };
         if p != self.saved {
             prefs::save(&p);
@@ -923,37 +928,13 @@ impl Rireki {
     fn select(&mut self, sel: Selection, cx: &mut Context<Self>) {
         self.detail_changed(cx);
         self.sidebar_changed(cx);
+        if self.selected != Some(sel) {
+            self.row_filter = None;
+            self.expanded.clear();
+            self.detail_scroll.set_offset(point(px(0.0), px(0.0)));
+        }
         self.selected = Some(sel);
-        let lane = &self.store.sessions[sel.session].lanes[sel.lane];
-        let evs = &lane.events[sel.first..=sel.last];
-        let n = evs.len();
-        let limit = if n == 1 {
-            6000
-        } else if n < 10 {
-            1500
-        } else {
-            300
-        };
-        let rows: Vec<i64> = evs.iter().take(DETAIL_MAX).filter_map(|e| e.row).collect();
-        let mut fetched = self.reader.as_ref().map(|db| db.details(&rows)).unwrap_or_default();
-        let mut raws = Vec::new();
-        let texts = evs
-            .iter()
-            .take(DETAIL_MAX)
-            .map(|e| {
-                let (input, output) = match e.row.and_then(|r| fetched.remove(&r)) {
-                    Some(v) => v,
-                    None => (e.input.clone(), e.output.clone()),
-                };
-                let (input, raw) = match input.strip_prefix(crate::loader::JS_MARK) {
-                    Some(js) => (detail::exec_detail_cached(self.js_cache.as_ref(), js), Some(js.to_string())),
-                    None => (input, None),
-                };
-                raws.push(raw);
-                (crate::model::truncate(&input, limit), crate::model::truncate(&output, limit))
-            })
-            .collect();
-        self.detail_cache = Some(DetailCache { sel, texts, raws });
+        self.detail_cache = Some(self.load_detail(sel));
     }
 
     /// 現在の選択を履歴に積んでから選択する。詳細パネルが開いて表示幅が縮むときは、選択が隠れないようにする
@@ -1668,6 +1649,8 @@ impl Render for Rireki {
                 cx.notify();
             }))
             .on_action(cx.listener(|t, _: &Back, window, cx| t.go_back(window, cx)))
+            .on_action(cx.listener(|t, _: &NextEvent, window, cx| t.step_event(1, window, cx)))
+            .on_action(cx.listener(|t, _: &PrevEvent, window, cx| t.step_event(-1, window, cx)))
             .on_action(cx.listener(|t, _: &Forward, window, cx| t.go_forward(window, cx)))
             .on_action(cx.listener(|t, _: &Dismiss, window, cx| t.dismiss(window, cx)))
             .on_action(cx.listener(|t, _: &ShowHelp, _, cx| {

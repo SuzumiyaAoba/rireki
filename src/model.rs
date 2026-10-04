@@ -25,6 +25,28 @@ pub enum Kind {
     Agent,
 }
 
+/// ツール呼び出しの結果。メッセージは常に Ok
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Status {
+    #[default]
+    Ok,
+    /// 失敗（エラーの結果、0 以外の終了コード）
+    Error,
+    /// ユーザーが実行を拒否した
+    Rejected,
+    /// ユーザーが中断した
+    Interrupted,
+    /// 結果がない（実行中、または結果を記録せずに終わった）
+    Pending,
+}
+
+impl Status {
+    /// 失敗の扱い（エラー・拒否・中断）か
+    pub fn failed(self) -> bool {
+        matches!(self, Status::Error | Status::Rejected | Status::Interrupted)
+    }
+}
+
 /// トークン使用量。input はキャッシュを除いた入力、reasoning は output のうち推論の分
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct Usage {
@@ -134,6 +156,7 @@ pub struct Event {
     pub usage: Usage,
     /// 使用量を計上したモデル（使用量のあるイベントだけ）
     pub model: Option<Arc<str>>,
+    pub status: Status,
 }
 
 impl Event {
@@ -151,7 +174,49 @@ impl Event {
             row: self.row,
             usage: self.usage,
             model: self.model.clone(),
+            status: self.status,
         }
+    }
+}
+
+/// イベント列の集計（詳細パネルの概要に出す）。トークン数は `UsageSum` で数える
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct Stats {
+    /// ユーザーの発話（ターン）の数
+    pub turns: usize,
+    /// ツール呼び出し（サブエージェントの起動を含む）の数
+    pub tools: usize,
+    pub errors: usize,
+    pub rejected: usize,
+    pub interrupted: usize,
+    /// 1 回の API 呼び出しの入力（キャッシュ含む）の最大。コンテキストの大きさの最大
+    pub peak: u64,
+}
+
+impl Stats {
+    pub fn of<'a>(events: impl IntoIterator<Item = &'a Event>) -> Self {
+        let mut s = Stats::default();
+        for e in events {
+            match e.kind {
+                Kind::User => s.turns += 1,
+                Kind::Tool | Kind::Agent => s.tools += 1,
+                _ => {}
+            }
+            match e.status {
+                Status::Error => s.errors += 1,
+                Status::Rejected => s.rejected += 1,
+                Status::Interrupted => s.interrupted += 1,
+                _ => {}
+            }
+            let u = &e.usage;
+            s.peak = s.peak.max(u.input as u64 + u.cache_read as u64 + u.cache_write as u64);
+        }
+        s
+    }
+
+    /// 失敗（エラー・拒否・中断）の数
+    pub fn failures(&self) -> usize {
+        self.errors + self.rejected + self.interrupted
     }
 }
 
@@ -204,6 +269,10 @@ pub struct Session {
     /// `codex exec` / `claude -p` のように非対話で起動されたセッション
     pub headless: bool,
     pub title: String,
+    /// Git のブランチ（最後に記録されたもの）
+    pub branch: String,
+    /// 記録した CLI のバージョン
+    pub version: String,
     pub lanes: Vec<Lane>,
     pub start: f64,
     pub end: f64,
@@ -363,6 +432,8 @@ impl Store {
                     ex.title = s.title;
                     ex.cwd = s.cwd;
                     ex.source = s.source;
+                    ex.branch = s.branch;
+                    ex.version = s.version;
                     return Some(i);
                 }
                 if let Some(lanes) = self.orphans.remove(&s.id) {

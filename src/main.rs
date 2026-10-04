@@ -65,7 +65,9 @@ fn print_stats() {
     let visible: Vec<_> = (0..store.sessions.len()).filter(|&i| store.visible(i)).map(|i| &store.sessions[i]).collect();
     let lanes: usize = visible.iter().map(|s| s.lanes.len()).sum();
     let events: usize = visible.iter().flat_map(|s| &s.lanes).map(|l| l.events.len()).sum();
+    let st = model::Stats::of(visible.iter().flat_map(|s| &s.lanes).flat_map(|l| &l.events));
     println!("DB: {n_stable} files in {t_db:.2?} ({})", db::path().display());
     println!("parsed: {n_tasks} files ({n_live} live)");
     println!("{} sessions, {lanes} lanes, {events} events in {:.2?}", visible.len(), t.elapsed());
+    println!("{} tool calls ({} errors, {} rejected, {} interrupted)", st.tools, st.errors, st.rejected, st.interrupted);
 }

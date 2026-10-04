@@ -9,10 +9,10 @@ use std::path::PathBuf;
 use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags, params};
 
-use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Usage};
+use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Status, Usage};
 
 /// スキーマやパース結果の形式を変えたら上げる（古い DB は作り直す）
-const VERSION: i64 = 14;
+const VERSION: i64 = 15;
 
 pub struct Db {
     conn: Connection,
@@ -65,6 +65,26 @@ fn kind_of(i: i64) -> Kind {
         2 => Kind::Thinking,
         4 => Kind::Agent,
         _ => Kind::Tool,
+    }
+}
+
+fn status_to_i(s: Status) -> i64 {
+    match s {
+        Status::Ok => 0,
+        Status::Error => 1,
+        Status::Rejected => 2,
+        Status::Interrupted => 3,
+        Status::Pending => 4,
+    }
+}
+
+fn status_of(i: i64) -> Status {
+    match i {
+        1 => Status::Error,
+        2 => Status::Rejected,
+        3 => Status::Interrupted,
+        4 => Status::Pending,
+        _ => Status::Ok,
     }
 }
 
@@ -125,6 +145,8 @@ pub fn pack_files(files: &[(String, String, &[Loaded])]) -> Vec<Packed> {
                         cwd: s.cwd.clone(),
                         headless: s.headless,
                         title: s.title.clone(),
+                        branch: s.branch.clone(),
+                        version: s.version.clone(),
                         lanes: s.lanes.iter().map(|l| lane(l, &mut texts)).collect(),
                         start: 0.0,
                         end: 0.0,
@@ -173,7 +195,9 @@ impl Db {
                  source INTEGER NOT NULL,
                  cwd TEXT NOT NULL,
                  title TEXT NOT NULL,
-                 headless INTEGER NOT NULL DEFAULT 0
+                 headless INTEGER NOT NULL DEFAULT 0,
+                 branch TEXT NOT NULL DEFAULT '',
+                 version TEXT NOT NULL DEFAULT ''
              );
              CREATE INDEX IF NOT EXISTS items_path ON items(path);
              CREATE TABLE IF NOT EXISTS lanes (
@@ -202,7 +226,9 @@ impl Db {
                  u_out INTEGER NOT NULL DEFAULT 0,
                  u_rs INTEGER NOT NULL DEFAULT 0,
                  u_cw1h INTEGER NOT NULL DEFAULT 0,
-                 u_model TEXT
+                 u_model TEXT,
+                 -- 0 = 成功, 1 = 失敗, 2 = 拒否, 3 = 中断, 4 = 結果なし
+                 status INTEGER NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS events_lane ON events(lane_id);
              -- 大きな本文は別表にして、起動時の events 全件読み込みを軽くする
@@ -245,13 +271,14 @@ impl Db {
             let mut del_item = tx.prepare_cached("DELETE FROM items WHERE path = ?1")?;
             let mut ins_file = tx.prepare_cached("INSERT OR REPLACE INTO files (path, fingerprint) VALUES (?1, ?2)")?;
             let mut ins_item = tx.prepare_cached(
-                "INSERT INTO items (path, kind, session_id, source, cwd, title, headless) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO items (path, kind, session_id, source, cwd, title, headless, branch, version)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             let mut ins_lane =
                 tx.prepare_cached("INSERT INTO lanes (item_id, ord, name, spawned_by, model, effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
             let mut ins_ev = tx.prepare_cached(
-                "INSERT INTO events (lane_id, start, end, kind, name, summary, call_id, u_in, u_cr, u_cw, u_out, u_rs, u_cw1h, u_model)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                "INSERT INTO events (lane_id, start, end, kind, name, summary, call_id, u_in, u_cr, u_cw, u_out, u_rs, u_cw1h, u_model, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             )?;
             let mut ins_text = tx.prepare_cached("INSERT INTO t.texts (id, input, output) VALUES (?1, ?2, ?3)")?;
             for Packed { path, fingerprint: fp, items, texts } in files {
@@ -262,21 +289,17 @@ impl Db {
                 del_item.execute([path])?;
                 ins_file.execute([path, fp])?;
                 for item in items {
-                    let (kind, sid, source, cwd, title, headless, lanes): (
-                        i64,
-                        &str,
-                        i64,
-                        &str,
-                        &str,
-                        bool,
-                        Vec<&Lane>,
-                    ) = match item {
-                        Loaded::Session(s) => {
-                            (0, &s.id, source_to_i(s.source), &s.cwd, &s.title, s.headless, s.lanes.iter().collect())
-                        }
-                        Loaded::Child(parent, lane) => (1, parent, 0, "", "", false, vec![lane]),
+                    let (kind, sid, source, lanes, s): (i64, &str, i64, Vec<&Lane>, Option<&Session>) = match item {
+                        Loaded::Session(s) => (0, &s.id, source_to_i(s.source), s.lanes.iter().collect(), Some(s)),
+                        Loaded::Child(parent, lane) => (1, parent, 0, vec![lane], None),
                     };
-                    ins_item.execute(params![path, kind, sid, source, cwd, title, headless])?;
+                    let (cwd, title, headless, branch, version) = match s {
+                        Some(s) => {
+                            (s.cwd.as_str(), s.title.as_str(), s.headless, s.branch.as_str(), s.version.as_str())
+                        }
+                        None => ("", "", false, "", ""),
+                    };
+                    ins_item.execute(params![path, kind, sid, source, cwd, title, headless, branch, version])?;
                     let item_id = tx.last_insert_rowid();
                     for (ord, lane) in lanes.iter().enumerate() {
                         ins_lane.execute(params![item_id, ord as i64, lane.name, lane.spawned_by, lane.model, lane.effort])?;
@@ -296,7 +319,8 @@ impl Db {
                                 e.usage.output,
                                 e.usage.reasoning,
                                 e.usage.cache_write_1h,
-                                e.model.as_deref()
+                                e.model.as_deref(),
+                                status_to_i(e.status)
                             ])?;
                             let (input, output) =
                                 texts.next().map(|(i, o)| (i.as_slice(), o.as_slice())).unwrap_or_default();
@@ -319,6 +343,8 @@ impl Db {
             cwd: String,
             title: String,
             headless: bool,
+            branch: String,
+            version: String,
             lanes: Vec<Lane>,
         }
         let mut items: Vec<Item> = Vec::new();
@@ -326,7 +352,7 @@ impl Db {
         {
             let mut st = self
                 .conn
-                .prepare("SELECT id, path, kind, session_id, source, cwd, title, headless FROM items ORDER BY id")?;
+                .prepare("SELECT id, path, kind, session_id, source, cwd, title, headless, branch, version FROM items ORDER BY id")?;
             let mut rows = st.query([])?;
             while let Some(r) = rows.next()? {
                 item_ix.insert(r.get(0)?, items.len());
@@ -338,6 +364,8 @@ impl Db {
                     cwd: r.get(5)?,
                     title: r.get(6)?,
                     headless: r.get(7)?,
+                    branch: r.get(8)?,
+                    version: r.get(9)?,
                     lanes: Vec::new(),
                 });
             }
@@ -390,6 +418,8 @@ impl Db {
                     cwd: it.cwd,
                     headless: it.headless,
                     title: it.title,
+                    branch: it.branch,
+                    version: it.version,
                     lanes: it.lanes,
                     start: 0.0,
                     end: 0.0,
@@ -483,8 +513,8 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
                 sc.spawn(move || -> rusqlite::Result<Vec<(i64, Event)>> {
                     let conn = read_conn(p)?;
                     let mut st = conn.prepare(
-                        "SELECT id, lane_id, start, end, kind, name, summary, call_id, u_in, u_cr, u_cw, u_out, u_rs, u_cw1h, u_model FROM events
-                         WHERE id >= ?1 AND id < ?2 ORDER BY id",
+                        "SELECT id, lane_id, start, end, kind, name, summary, call_id, u_in, u_cr, u_cw, u_out, u_rs, u_cw1h, u_model, status
+                         FROM events WHERE id >= ?1 AND id < ?2 ORDER BY id",
                     )?;
                     let a = lo + k * step;
                     let mut rows = st.query([a, a + step])?;
@@ -512,6 +542,7 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
                                     cache_write_1h: r.get(13)?,
                                 },
                                 model: r.get_ref(14)?.as_str_or_null()?.map(|m| models.get(m)),
+                                status: status_of(r.get(15)?),
                             },
                         ));
                     }

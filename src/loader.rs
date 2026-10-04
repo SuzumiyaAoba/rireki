@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use rayon::prelude::*;
 use serde_json::Value;
 
-use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Usage, one_line, truncate};
+use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Status, Usage, one_line, truncate};
 
 const MAX_TEXT: usize = 6000;
 
@@ -224,6 +224,12 @@ fn pretty_output(s: &str) -> String {
 fn summarize_input(name: &str, input: &Value) -> String {
     const KEYS: &[&str] =
         &["description", "file_path", "path", "command", "cmd", "pattern", "url", "query", "prompt", "skill", "plan"];
+    if name == "TodoWrite" {
+        let todos = todo_items(input);
+        if !todos.is_empty() {
+            return plan_summary(&todos);
+        }
+    }
     if let Value::Object(map) = input {
         for k in KEYS {
             if let Some(v) = map.get(*k) {
@@ -282,9 +288,11 @@ fn message_event(t: f64, kind: Kind, name: &str, text: &str) -> Event {
         row: None,
         usage: Usage::default(),
         model: None,
+        status: Status::Ok,
     }
 }
 
+/// 結果を受け取るまでは Pending
 fn tool_event(t: f64, name: &str, input: &Value, call_id: Option<String>) -> Event {
     Event {
         start: t,
@@ -298,6 +306,7 @@ fn tool_event(t: f64, name: &str, input: &Value, call_id: Option<String>) -> Eve
         row: None,
         usage: Usage::default(),
         model: None,
+        status: Status::Pending,
     }
 }
 
@@ -305,12 +314,214 @@ fn tool_event(t: f64, name: &str, input: &Value, call_id: Option<String>) -> Eve
 struct Pending(HashMap<String, usize>);
 
 impl Pending {
-    fn finish(&mut self, events: &mut [Event], id: &str, t: f64, output: String) {
-        if let Some(i) = self.0.remove(id) {
-            let e = &mut events[i];
-            e.end = t.max(e.start);
-            e.output = truncate(&pretty_output(&output), MAX_TEXT);
+    /// 結果を反映し、呼び出しのイベントの位置を返す
+    fn finish(&mut self, events: &mut [Event], id: &str, t: f64, output: String, status: Status) -> Option<usize> {
+        let i = self.0.remove(id)?;
+        let e = &mut events[i];
+        e.end = t.max(e.start);
+        e.output = truncate(&pretty_output(&output), MAX_TEXT);
+        e.status = status;
+        Some(i)
+    }
+}
+
+/// シェルのコマンドの表示。`$ コマンド` の後に、その他の引数を YAML 風に添える
+fn shell_text(cmd: &str, rest: &str) -> String {
+    let mut d = format!("$ {cmd}");
+    if !rest.is_empty() {
+        d.push_str("\n\n");
+        d.push_str(rest);
+    }
+    d
+}
+
+/// `keys` 以外の引数を YAML 風に並べる
+fn yaml_except(input: &Value, keys: &[&str]) -> String {
+    match input {
+        Value::Object(m) => m
+            .iter()
+            .filter(|(k, _)| !keys.contains(&k.as_str()))
+            .flat_map(|(k, v)| entry(k, v))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Claude のツール入力を表示用に整える。専用の形がないものは YAML 風にする
+///
+/// 編集系は差分（`*** Update File: パス` + `@@` 区切りの -/+ 行）にする。結果に行番号付きの差分が
+/// あれば、結果を受け取ったときに置き換える（`claude_patch`）
+fn claude_input(name: &str, input: &Value) -> String {
+    let s = |k: &str| input.get(k).and_then(|v| v.as_str());
+    let text = match name {
+        "Bash" => s("command").map(|cmd| shell_text(cmd, &yaml_except(input, &["command", "description"]))),
+        "Edit" => match (s("file_path"), s("old_string"), s("new_string")) {
+            (Some(p), Some(a), Some(b)) => Some(format!("*** Update File: {p}\n{}", line_diff(a, b))),
+            _ => None,
+        },
+        "MultiEdit" => s("file_path").zip(input.get("edits").and_then(|e| e.as_array())).map(|(p, edits)| {
+            let hunks: Vec<String> = edits
+                .iter()
+                .map(|e| {
+                    let f = |k| e.get(k).and_then(|v: &Value| v.as_str()).unwrap_or("");
+                    line_diff(f("old_string"), f("new_string"))
+                })
+                .collect();
+            format!("*** Update File: {p}\n{}", hunks.join("\n"))
+        }),
+        "Write" => s("file_path").zip(s("content")).map(|(p, c)| added_file(p, c)),
+        "TodoWrite" => {
+            let todos = todo_items(input);
+            (!todos.is_empty()).then(|| checklist(&todos))
         }
+        "ExitPlanMode" => s("plan").map(String::from),
+        // サブエージェントへの指示は Markdown で読めるよう、その他の引数を前に置いて本文をそのまま残す
+        "Agent" | "Task" => s("prompt").map(|p| {
+            let rest = yaml_except(input, &["prompt"]);
+            if rest.is_empty() { p.to_string() } else { format!("{rest}\n\n{p}") }
+        }),
+        _ => None,
+    };
+    match text {
+        Some(t) => truncate(&t, MAX_TEXT),
+        None => pretty(input),
+    }
+}
+
+/// 新しく作るファイルの差分（全行を追加として並べる）
+fn added_file(path: &str, content: &str) -> String {
+    let mut d = format!("*** Add File: {path}");
+    for l in content.lines() {
+        d.push_str("\n+");
+        d.push_str(l);
+    }
+    d
+}
+
+/// Claude の Edit / Write の結果（toolUseResult）から、行番号付きの差分を作る
+fn claude_patch(r: &Value) -> Option<String> {
+    let path = r.get("filePath")?.as_str()?;
+    let hunks = r.get("structuredPatch")?.as_array().filter(|h| !h.is_empty())?;
+    let mut d = format!("*** Update File: {path}");
+    for h in hunks {
+        let n = |k| h.get(k).and_then(|v: &Value| v.as_u64()).unwrap_or(0);
+        d.push_str(&format!("\n@@ -{},{} +{},{} @@", n("oldStart"), n("oldLines"), n("newStart"), n("newLines")));
+        for l in h.get("lines")?.as_array()? {
+            d.push('\n');
+            d.push_str(l.as_str().unwrap_or(""));
+        }
+    }
+    Some(truncate(&d, MAX_TEXT))
+}
+
+/// 行単位の差分。`old` と `new` の全行を文脈として含め、`@@` で始める
+fn line_diff(old: &str, new: &str) -> String {
+    let a: Vec<&str> = old.lines().collect();
+    let b: Vec<&str> = new.lines().collect();
+    let mut d = String::from("@@");
+    for (mark, l) in diff_lines(&a, &b) {
+        d.push('\n');
+        d.push(mark);
+        d.push_str(l);
+    }
+    d
+}
+
+/// 2 つの行列の差分を (' ' | '-' | '+', 行) の列で返す（最長共通部分列による）
+fn diff_lines<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<(char, &'a str)> {
+    let pre = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let suf = a[pre..].iter().rev().zip(b[pre..].iter().rev()).take_while(|(x, y)| x == y).count();
+    let (a2, b2) = (&a[pre..a.len() - suf], &b[pre..b.len() - suf]);
+    let mut out: Vec<(char, &str)> = a[..pre].iter().map(|l| (' ', *l)).collect();
+    let (n, m) = (a2.len(), b2.len());
+    if n * m > 1_000_000 {
+        // 大きすぎるときは比べずに、消した行と足した行を並べる
+        out.extend(a2.iter().map(|l| ('-', *l)));
+        out.extend(b2.iter().map(|l| ('+', *l)));
+    } else {
+        // lcs[i * (m + 1) + j] = a2[i..] と b2[j..] の最長共通部分列の長さ
+        let w = m + 1;
+        let mut lcs = vec![0u32; (n + 1) * w];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i * w + j] = if a2[i] == b2[j] {
+                    lcs[(i + 1) * w + j + 1] + 1
+                } else {
+                    lcs[(i + 1) * w + j].max(lcs[i * w + j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < n && j < m {
+            if a2[i] == b2[j] {
+                out.push((' ', a2[i]));
+                i += 1;
+                j += 1;
+            } else if lcs[(i + 1) * w + j] >= lcs[i * w + j + 1] {
+                out.push(('-', a2[i]));
+                i += 1;
+            } else {
+                out.push(('+', b2[j]));
+                j += 1;
+            }
+        }
+        out.extend(a2[i..].iter().map(|l| ('-', *l)));
+        out.extend(b2[j..].iter().map(|l| ('+', *l)));
+    }
+    out.extend(a[a.len() - suf..].iter().map(|l| (' ', *l)));
+    out
+}
+
+/// TodoWrite の (内容, 状態) 列
+fn todo_items(input: &Value) -> Vec<(String, String)> {
+    let Some(Value::Array(a)) = input.get("todos") else { return Vec::new() };
+    a.iter()
+        .map(|t| {
+            let f = |k| t.get(k).and_then(|x: &Value| x.as_str()).unwrap_or("").to_string();
+            (f("content"), f("status"))
+        })
+        .collect()
+}
+
+/// 計画を「✓ 済み / ▶ 進行中 / ○ 未着手」の行で並べる
+fn checklist(items: &[(String, String)]) -> String {
+    items
+        .iter()
+        .map(|(step, st)| {
+            let mark = match st.as_str() {
+                "completed" => "✓",
+                "in_progress" => "▶",
+                _ => "○",
+            };
+            format!("{mark} {step}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 計画の要約（「済み数/全体 進行中の項目」）
+fn plan_summary(items: &[(String, String)]) -> String {
+    let done = items.iter().filter(|p| p.1 == "completed").count();
+    let cur = items.iter().find(|p| p.1 == "in_progress").map(|p| p.0.as_str()).unwrap_or("");
+    one_line(&format!("{done}/{} {cur}", items.len()), 160)
+}
+
+/// Claude の tool_result の状態。`result` は同じ行の toolUseResult
+fn claude_status(item: &Value, result: Option<&Value>, out: &str) -> Status {
+    if result.and_then(|r| r.get("interrupted")).and_then(|x| x.as_bool()) == Some(true) {
+        return Status::Interrupted;
+    }
+    if item.get("is_error").and_then(|x| x.as_bool()) != Some(true) {
+        return Status::Ok;
+    }
+    let rejected = result.and_then(|r| r.as_str()) == Some("User rejected tool use");
+    if rejected || out.starts_with("The user doesn't want to") {
+        Status::Rejected
+    } else if out.starts_with("[Request interrupted by user") {
+        Status::Interrupted
+    } else {
+        Status::Error
     }
 }
 
@@ -388,6 +599,8 @@ struct ClaudeParse {
     title: String,
     session_id: String,
     headless: bool,
+    branch: String,
+    version: String,
 }
 
 fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
@@ -397,6 +610,8 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
     let mut title = String::new();
     let mut session_id = String::new();
     let mut headless = false;
+    let mut branch = String::new();
+    let mut version = String::new();
     // message.id → (使用量を付けるイベント, 使用量)。同じメッセージが内容ブロックごとに複数行に分かれ、
     // 各行に同じ usage が載るので、メッセージごとに最後の行の値を 1 回だけ数える
     let mut usages: Vec<(usize, Usage, Option<Arc<str>>)> = Vec::new();
@@ -420,6 +635,16 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
             if let Some(c) = v.get("sessionId").and_then(|c| c.as_str()) {
                 session_id = c.into();
             }
+        }
+        if let Some(b) = v.get("gitBranch").and_then(|b| b.as_str()).filter(|b| !b.is_empty() && *b != "HEAD")
+            && branch != b
+        {
+            branch = b.into();
+        }
+        if let Some(x) = v.get("version").and_then(|x| x.as_str())
+            && version != x
+        {
+            version = x.into();
         }
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if ty == "ai-title" || ty == "summary" {
@@ -449,11 +674,23 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                     continue;
                 }
                 if let Value::Array(items) = content {
-                    for it in items {
-                        if it.get("type").and_then(|x| x.as_str()) == Some("tool_result") {
-                            let id = it.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("");
-                            let out = text_of(it.get("content").unwrap_or(&Value::Null));
-                            pending.finish(&mut lane.events, id, t, out);
+                    let results: Vec<&Value> = items
+                        .iter()
+                        .filter(|it| it.get("type").and_then(|x| x.as_str()) == Some("tool_result"))
+                        .collect();
+                    // toolUseResult は行に 1 つなので、結果が 1 つの行でだけ使う
+                    let detail = v.get("toolUseResult").filter(|_| results.len() == 1);
+                    for it in results {
+                        let id = it.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("");
+                        let out = text_of(it.get("content").unwrap_or(&Value::Null));
+                        let status = claude_status(it, detail, &out);
+                        let out = match out.strip_prefix("<tool_use_error>") {
+                            Some(e) => e.strip_suffix("</tool_use_error>").unwrap_or(e).to_string(),
+                            None => out,
+                        };
+                        let Some(i) = pending.finish(&mut lane.events, id, t, out, status) else { continue };
+                        if let Some(d) = detail.and_then(claude_patch) {
+                            lane.events[i].input = d;
                         }
                     }
                 }
@@ -492,7 +729,9 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                             if let Some(id) = &id {
                                 pending.0.insert(id.clone(), lane.events.len());
                             }
-                            lane.events.push(tool_event(t, name, &input, id));
+                            let mut ev = tool_event(t, name, &input, id);
+                            ev.input = claude_input(name, &input);
+                            lane.events.push(ev);
                         }
                         _ => {}
                     }
@@ -527,7 +766,7 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
         }
     }
     lane.finish();
-    ClaudeParse { lane, cwd, title, session_id, headless }
+    ClaudeParse { lane, cwd, title, session_id, headless, branch, version }
 }
 
 fn load_claude(p: &Path) -> Vec<Loaded> {
@@ -560,6 +799,8 @@ fn load_claude(p: &Path) -> Vec<Loaded> {
         cwd: parsed.cwd,
         headless: parsed.headless,
         title: parsed.title,
+        branch: parsed.branch,
+        version: parsed.version,
         lanes,
         start: 0.0,
         end: 0.0,
@@ -585,6 +826,21 @@ static SKIP: std::sync::LazyLock<[memchr::memmem::Finder<'static>; 4]> = std::sy
         .map(memchr::memmem::Finder::new)
 });
 
+/// event_msg のうち読むもの（小さい行だけ）: ゴールの設定、ターンの中断
+static KEEP_EVENTS: std::sync::LazyLock<[memchr::memmem::Finder<'static>; 2]> = std::sync::LazyLock::new(|| {
+    ["\"type\":\"thread_goal_updated\"", "\"type\":\"turn_aborted\""].map(memchr::memmem::Finder::new)
+});
+
+/// ツール出力の本文。新しい形式では `[{type: input_text, text}, ...]` に分かれている
+fn codex_output_text(o: Option<&Value>) -> String {
+    match o {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(items)) => items.iter().filter_map(|i| i.get("text").and_then(|t| t.as_str())).collect(),
+        Some(o) => o.get("content").map(text_of).unwrap_or_else(|| o.to_string()),
+        None => String::new(),
+    }
+}
+
 fn load_codex(p: &Path) -> Option<Loaded> {
     let mut lane = Lane::new("main");
     let mut pending = Pending(HashMap::new());
@@ -593,6 +849,9 @@ fn load_codex(p: &Path) -> Option<Loaded> {
     let mut title = String::new();
     let mut parent: Option<String> = None;
     let mut headless = false;
+    let mut branch = String::new();
+    let mut version = String::new();
+    let mut goal = String::new();
     // token_count は累計なので、前回との差をその時点の最後のイベントに付ける
     let mut total = Usage::default();
     let mut unassigned = Usage::default();
@@ -607,7 +866,8 @@ fn load_codex(p: &Path) -> Option<Loaded> {
         // turn_context はモデルとエフォートを拾うため最初の 1 行だけ読む
         let ctx = SKIP[1].find(head).is_some();
         let tc = token_count.find(head).is_some();
-        if !ctx && !tc && SKIP.iter().any(|f| f.find(head).is_some()) {
+        let keep = SKIP[0].find(head).is_some() && KEEP_EVENTS.iter().any(|f| f.find(head).is_some());
+        if !ctx && !tc && !keep && SKIP.iter().any(|f| f.find(head).is_some()) {
             continue;
         }
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
@@ -650,10 +910,34 @@ fn load_codex(p: &Path) -> Option<Loaded> {
             }
             continue;
         }
+        if ty == "event_msg" {
+            match pl.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+                "thread_goal_updated" => {
+                    // ゴール（/goal）で始めたセッションは、ゴールをユーザーの発話として扱う
+                    let obj = pl.pointer("/goal/objective").and_then(|x| x.as_str()).unwrap_or("").trim();
+                    if let Some(t) = ts(&v).filter(|_| !obj.is_empty() && obj != goal) {
+                        goal = obj.to_string();
+                        if title.is_empty() {
+                            title = one_line(obj, 80);
+                        }
+                        lane.events.push(message_event(t, Kind::User, "User", obj));
+                    }
+                }
+                "turn_aborted" => {
+                    for &i in pending.0.values() {
+                        lane.events[i].status = Status::Interrupted;
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
         if ty == "session_meta" {
             id = pl.get("id").and_then(|x| x.as_str()).unwrap_or_default().into();
             cwd = pl.get("cwd").and_then(|x| x.as_str()).unwrap_or_default().into();
             headless = pl.get("source").and_then(|x| x.as_str()) == Some("exec");
+            version = pl.get("cli_version").and_then(|x| x.as_str()).unwrap_or_default().into();
+            branch = pl.pointer("/git/branch").and_then(|x| x.as_str()).unwrap_or_default().into();
             if let Some(sub) = pl.pointer("/source/subagent") {
                 let Some(spawn) = sub.get("thread_spawn") else {
                     return None; // guardian などの内部サブエージェントは表示しない
@@ -707,12 +991,8 @@ fn load_codex(p: &Path) -> Option<Loaded> {
             }
             "function_call_output" | "custom_tool_call_output" => {
                 let c = pl.get("call_id").and_then(|x| x.as_str()).unwrap_or("");
-                let out = match pl.get("output") {
-                    Some(Value::String(s)) => s.clone(),
-                    Some(o) => o.get("content").map(text_of).unwrap_or_else(|| o.to_string()),
-                    None => String::new(),
-                };
-                pending.finish(&mut lane.events, c, t, codex_output(&out));
+                let (out, status) = codex_output(&codex_output_text(pl.get("output")));
+                pending.finish(&mut lane.events, c, t, out, status);
             }
             _ => {}
         }
@@ -734,6 +1014,8 @@ fn load_codex(p: &Path) -> Option<Loaded> {
         cwd,
         headless,
         title,
+        branch,
+        version,
         lanes: vec![lane],
         start: 0.0,
         end: 0.0,
@@ -1129,17 +1411,8 @@ fn codex_format(name: &str, a: &dyn Args) -> (String, String) {
         "update_plan" => {
             let plan = a.plan();
             let mut d = a.str("explanation").map(|e| format!("{e}\n\n")).unwrap_or_default();
-            for (step, st) in &plan {
-                let mark = match st.as_str() {
-                    "completed" => "✓",
-                    "in_progress" => "▶",
-                    _ => "○",
-                };
-                d.push_str(&format!("{mark} {step}\n"));
-            }
-            let done = plan.iter().filter(|p| p.1 == "completed").count();
-            let cur = plan.iter().find(|p| p.1 == "in_progress").map(|p| p.0.as_str()).unwrap_or("");
-            (one_line(&format!("{done}/{} {cur}", plan.len()), 160), d.trim_end().to_string())
+            d.push_str(&checklist(&plan));
+            (plan_summary(&plan), d.trim_end().to_string())
         }
         _ => Default::default(),
     }
@@ -1159,26 +1432,50 @@ fn patch_summary(p: &str) -> String {
     one_line(&files.join(", "), 160)
 }
 
-/// コードモードの `text()` が出力した JSON 1 行を読みやすくする
+/// コードモードの `text()` が出力した JSON 1 行を読みやすくする。2 つ目は失敗（reject・0 以外の終了コード）か
 ///
 /// `{"i":0,"status":"fulfilled","value":{exit_code, output, ...}}`（Promise.allSettled の結果）や
 /// `{"exit_code":0,"output":"..."}`（ツールの戻り値そのまま）を見出し + 本文にする。
-fn codex_js_line(line: &str) -> Option<String> {
-    let v: Value = serde_json::from_str(line.trim()).ok().filter(|v: &Value| v.is_object())?;
+fn codex_js_line(line: &str) -> Option<(String, bool)> {
+    // text() を続けて呼ぶと、改行なしで JSON が連なる（`{...}{"i":1,...}`）
+    let line = line.trim();
+    let mut it = serde_json::Deserializer::from_str(line).into_iter::<Value>();
+    let (mut parts, mut failed, mut end) = (Vec::new(), false, 0);
+    while let Some(Ok(v)) = it.next() {
+        let (text, f) = codex_js_value(&v)?;
+        parts.push(text);
+        failed |= f;
+        end = it.byte_offset();
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    if !line[end..].trim().is_empty() {
+        parts.push(line[end..].trim().to_string());
+    }
+    Some((parts.join("\n"), failed))
+}
+
+fn codex_js_value(v: &Value) -> Option<(String, bool)> {
+    if !v.is_object() {
+        return None;
+    }
     let idx = v.get("i").map(|i| format!("#{i} "));
     let (val, rejected) = match v.get("status").and_then(|s| s.as_str()) {
         Some("rejected") => (v.get("reason")?, true),
         Some(_) => (v.get("value")?, false),
-        None => (&v, false),
+        None => (v, false),
     };
     let idx = idx.unwrap_or_default();
     if rejected {
         let r = val.as_str().map(String::from).unwrap_or_else(|| val.to_string());
-        return Some(format!("── {idx}rejected\n{r}"));
+        return Some((format!("── {idx}rejected\n{r}"), true));
     }
     let out = val.get("output")?.as_str()?;
     let mut meta = Vec::new();
+    let mut failed = false;
     if let Some(c) = val.get("exit_code").filter(|c| !c.is_null()) {
+        failed = c.as_i64() != Some(0);
         meta.push(format!("exit {c}"));
     } else if let Some(id) = val.get("session_id").filter(|c| !c.is_null()) {
         meta.push(format!("running · session {id}"));
@@ -1186,18 +1483,66 @@ fn codex_js_line(line: &str) -> Option<String> {
     if let Some(w) = val.get("wall_time_seconds").and_then(|w| w.as_f64()) {
         meta.push(format!("{w:.1}s"));
     }
-    Some(format!("── {idx}[{}]\n{}", meta.join(" · "), out.trim_end()))
+    Some((format!("── {idx}[{}]\n{}", meta.join(" · "), out.trim_end()), failed))
 }
 
-/// Codex のツール出力から定型ヘッダ (Wall time など) を取り除き、終了コードと所要時間を 1 行にまとめる
-fn codex_output(s: &str) -> String {
+/// 出力の先頭に出る、失敗・中断を表す定型文
+fn codex_failure(s: &str) -> Option<Status> {
+    const ERRORS: &[&str] = &[
+        "Script failed",
+        "apply_patch verification failed",
+        "failed to spawn",
+        "execution error",
+        "unsupported custom tool call",
+    ];
+    let mut end = s.len().min(200);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &s[..end];
+    if head.starts_with("aborted by user") || head.contains("\naborted by user") {
+        Some(Status::Interrupted)
+    } else if ERRORS.iter().any(|e| head.starts_with(e)) {
+        Some(Status::Error)
+    } else {
+        None
+    }
+}
+
+/// Codex のツール出力から定型ヘッダ (Wall time など) を取り除き、終了コードと所要時間を 1 行にまとめる。
+/// あわせて、終了コードや定型文から呼び出しの成否を判定する
+fn codex_output(s: &str) -> (String, Status) {
+    let mut status = codex_failure(s).unwrap_or(Status::Ok);
+    let fail = |status: &mut Status| {
+        if *status == Status::Ok {
+            *status = Status::Error;
+        }
+    };
+    // 旧形式の `{"output": "...", "metadata": {"exit_code": 0, "duration_seconds": 0.1}}`
+    if s.starts_with("{\"output\"")
+        && let Ok(v) = serde_json::from_str::<Value>(s)
+        && let Some(out) = v.get("output").and_then(|o| o.as_str())
+    {
+        let mut meta = Vec::new();
+        if let Some(c) = v.pointer("/metadata/exit_code").and_then(|c| c.as_i64()) {
+            if c != 0 {
+                fail(&mut status);
+            }
+            meta.push(format!("exit {c}"));
+        }
+        if let Some(d) = v.pointer("/metadata/duration_seconds").and_then(|d| d.as_f64()) {
+            meta.push(format!("{d:.1}s"));
+        }
+        let text = if meta.is_empty() { out.to_string() } else { format!("[{}]\n{out}", meta.join(" · ")) };
+        return (text, status);
+    }
     let Some(i) = s.find("Output:\n").filter(|&i| i < 400) else {
-        return s.to_string();
+        return (s.to_string(), status);
     };
     let (mut exit, mut wall) = (None, None);
     for l in s[..i].lines() {
         let l = l.trim();
-        if let Some(c) = l.strip_prefix("Process exited with code ") {
+        if let Some(c) = l.strip_prefix("Process exited with code ").or_else(|| l.strip_prefix("Exit code: ")) {
             exit = Some(c.to_string());
         } else if let Some(w) = l.strip_prefix("Wall time") {
             wall = Some(w.trim_start_matches(':').trim().replace(" seconds", "s").replace(" second", "s"));
@@ -1207,14 +1552,29 @@ fn codex_output(s: &str) -> String {
             || l.starts_with("Script ")
             || l.starts_with("Process running"))
         {
-            return s.to_string();
+            return (s.to_string(), status);
         }
     }
+    if exit.as_deref().is_some_and(|c| c.trim() != "0") {
+        fail(&mut status);
+    }
     let body = &s[i + 8..];
-    let lines: Vec<String> = body.lines().map(|l| codex_js_line(l).unwrap_or_else(|| l.to_string())).collect();
+    let lines: Vec<String> = body
+        .lines()
+        .map(|l| match codex_js_line(l) {
+            Some((text, failed)) => {
+                if failed {
+                    fail(&mut status);
+                }
+                text
+            }
+            None => l.to_string(),
+        })
+        .collect();
     let body = &lines.join("\n");
     let meta: Vec<String> = exit.map(|c| format!("exit {c}")).into_iter().chain(wall).collect();
-    if meta.is_empty() { body.to_string() } else { format!("[{}]\n{body}", meta.join(" · ")) }
+    let text = if meta.is_empty() { body.to_string() } else { format!("[{}]\n{body}", meta.join(" · ")) };
+    (text, status)
 }
 
 #[cfg(test)]
@@ -1289,11 +1649,76 @@ mod tests {
             "a: 1\nb:\n  x\n  y\nc: [1, 2]\nd:\n  e: null\nf:\n  - g: true\n    h: i"
         );
         assert_eq!(pretty_output("[exit 0]\n{\"ok\":true}"), "[exit 0]\nok: true");
-        assert_eq!(codex_output("Script completed\nWall time 0.2 seconds\nOutput:\nhello"), "[0.2s]\nhello");
+        let ok = |s: &str| (s.to_string(), Status::Ok);
+        let err = |s: &str| (s.to_string(), Status::Error);
+        assert_eq!(codex_output("Script completed\nWall time 0.2 seconds\nOutput:\nhello"), ok("[0.2s]\nhello"));
         assert_eq!(
             codex_output("Chunk ID: x\nWall time: 0.1 seconds\nProcess exited with code 1\nOriginal token count: 3\nOutput:\nerr"),
-            "[exit 1 · 0.1s]\nerr"
+            err("[exit 1 · 0.1s]\nerr")
         );
+        assert_eq!(codex_output("Exit code: 0\nWall time: 0 seconds\nOutput:\nSuccess."), ok("[exit 0 · 0s]\nSuccess."));
+        assert_eq!(
+            codex_output("{\"output\":\"x\\n\",\"metadata\":{\"exit_code\":2,\"duration_seconds\":0.5}}"),
+            err("[exit 2 · 0.5s]\nx\n")
+        );
+        assert_eq!(codex_output("Script failed\nWall time 0.1 seconds\nOutput:\nboom").1, Status::Error);
+        assert_eq!(codex_output("aborted by user after 4.9s").1, Status::Interrupted);
+        assert_eq!(codex_output("Wall time: 573.7 seconds\naborted by user").1, Status::Interrupted);
+        assert_eq!(codex_output("apply_patch verification failed: Failed to find expected lines").1, Status::Error);
+        // ネストした呼び出しの 1 つが失敗していれば失敗
+        assert_eq!(
+            codex_output("Script completed\nWall time 0.2 seconds\nOutput:\n{\"i\":0,\"status\":\"fulfilled\",\"value\":{\"exit_code\":1,\"output\":\"\"}}\n{\"i\":1,\"status\":\"fulfilled\",\"value\":{\"exit_code\":0,\"output\":\"\"}}").1,
+            Status::Error
+        );
+        assert_eq!(
+            codex_output_text(Some(&serde_json::json!([{"type": "input_text", "text": "Script completed\nOutput:\n"}, {"type": "input_text", "text": "hi"}]))),
+            "Script completed\nOutput:\nhi"
+        );
+        // 改行なしで連なった JSON
+        assert_eq!(
+            codex_output("Script completed\nWall time 0.1 seconds\nOutput:\n{\"i\":0,\"status\":\"fulfilled\",\"value\":{\"exit_code\":0,\"output\":\"a\\n\"}}{\"i\":1,\"status\":\"fulfilled\",\"value\":{\"exit_code\":2,\"output\":\"b\"}}"),
+            err("[0.1s]\n── #0 [exit 0]\na\n── #1 [exit 2]\nb")
+        );
+    }
+
+    #[test]
+    fn claude_edits_as_diff() {
+        let edit = serde_json::json!({"file_path": "/w/a.rs", "old_string": "a\nb\nc", "new_string": "a\nB\nc\nd"});
+        assert_eq!(claude_input("Edit", &edit), "*** Update File: /w/a.rs\n@@\n a\n-b\n+B\n c\n+d");
+        let write = serde_json::json!({"file_path": "/w/n.rs", "content": "x\ny\n"});
+        assert_eq!(claude_input("Write", &write), "*** Add File: /w/n.rs\n+x\n+y");
+        let bash = serde_json::json!({"command": "cargo test", "description": "テスト", "timeout": 60000});
+        assert_eq!(claude_input("Bash", &bash), "$ cargo test\n\ntimeout: 60000");
+        let todo = serde_json::json!({"todos": [{"content": "A", "status": "completed"}, {"content": "B", "status": "in_progress"}]});
+        assert_eq!(claude_input("TodoWrite", &todo), "✓ A\n▶ B");
+        assert_eq!(summarize_input("TodoWrite", &todo), "1/2 B");
+        // 結果に行番号付きの差分があれば、それで置き換える
+        let r = serde_json::json!({"filePath": "/w/a.rs", "structuredPatch": [{"oldStart": 3, "oldLines": 2, "newStart": 3, "newLines": 2, "lines": [" a", "-b", "+B"]}]});
+        assert_eq!(claude_patch(&r).unwrap(), "*** Update File: /w/a.rs\n@@ -3,2 +3,2 @@\n a\n-b\n+B");
+        assert_eq!(claude_patch(&serde_json::json!({"filePath": "/w", "structuredPatch": []})), None);
+    }
+
+    #[test]
+    fn diff_keeps_common_lines() {
+        let a = ["x", "a", "b", "y"];
+        let b = ["x", "b", "c", "y"];
+        assert_eq!(diff_lines(&a, &b), [(' ', "x"), ('-', "a"), (' ', "b"), ('+', "c"), (' ', "y")]);
+        assert_eq!(diff_lines(&["a"], &["a"]), [(' ', "a")]);
+        assert_eq!(diff_lines(&[], &["n"]), [('+', "n")]);
+    }
+
+    #[test]
+    fn claude_result_status() {
+        let item = |err: bool| serde_json::json!({"type": "tool_result", "is_error": err});
+        assert_eq!(claude_status(&item(false), None, "ok"), Status::Ok);
+        assert_eq!(claude_status(&item(true), None, "Exit code 1"), Status::Error);
+        let rejected = serde_json::json!("User rejected tool use");
+        assert_eq!(claude_status(&item(true), Some(&rejected), "The user doesn't want to proceed"), Status::Rejected);
+        assert_eq!(claude_status(&item(true), None, "[Request interrupted by user for tool use]"), Status::Interrupted);
+        let interrupted = serde_json::json!({"interrupted": true, "stdout": ""});
+        assert_eq!(claude_status(&item(false), Some(&interrupted), ""), Status::Interrupted);
+        // 失敗でなければ、出力に中断の文言があっても成功
+        assert_eq!(claude_status(&item(false), None, "[Request interrupted by user]"), Status::Ok);
     }
 
     #[test]
@@ -1310,7 +1735,7 @@ mod tests {
         assert_eq!((n.as_str(), s.as_str()), ("apply_patch", "Update b.rs"));
         assert_eq!(
             codex_output("Script completed\nWall time 0.2 seconds\nOutput:\n{\"i\":0,\"status\":\"fulfilled\",\"value\":{\"exit_code\":0,\"wall_time_seconds\":0.01,\"output\":\"hi\\n\"}}"),
-            "[0.2s]\n── #0 [exit 0 · 0.0s]\nhi"
+            ("[0.2s]\n── #0 [exit 0 · 0.0s]\nhi".to_string(), Status::Ok)
         );
     }
 }

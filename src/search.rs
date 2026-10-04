@@ -160,6 +160,7 @@ mod tests {
                 row: None,
                 usage: Default::default(),
                 model: None,
+                status: Default::default(),
             })
             .collect();
         Loaded::Session(Session {
@@ -168,6 +169,8 @@ mod tests {
             cwd: "/w/rireki".into(),
             headless: false,
             title: title.into(),
+            branch: String::new(),
+            version: String::new(),
             lanes: vec![lane],
             start: 0.0,
             end: 0.0,

@@ -43,6 +43,8 @@ pub struct Prefs {
     pub collapsed: Vec<String>,
     /// サイドバーで折りたたんだ区分
     pub folded: Vec<String>,
+    /// 詳細パネルのセッション情報を開いているか
+    pub session_open: bool,
 }
 
 impl Default for Prefs {
@@ -60,6 +62,7 @@ impl Default for Prefs {
             focus: None,
             collapsed: Vec::new(),
             folded: Vec::new(),
+            session_open: false,
         }
     }
 }

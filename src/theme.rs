@@ -31,6 +31,10 @@ pub const NOW: u32 = 0xe5534b;
 /// サブエージェント
 pub const SUB: u32 = 0xb9a3f0;
 pub const OK: u32 = 0x7fd18b;
+/// 失敗したツール呼び出し
+pub const ERR: u32 = 0xf07c7c;
+/// 拒否・中断したツール呼び出し
+pub const WARN: u32 = 0xe0a24a;
 
 pub fn event_color(e: &Event) -> u32 {
     match e.kind {

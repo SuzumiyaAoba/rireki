@@ -14,6 +14,8 @@ pub enum Icon {
     ChevronLeft,
     ChevronRight,
     ChevronDown,
+    ChevronUp,
+    GitBranch,
     Today,
     ZoomIn,
     ZoomOut,
@@ -42,7 +44,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    const ALL: [Icon; 32] = [
+    const ALL: [Icon; 34] = [
         Icon::CalendarDay,
         Icon::CalendarWeek,
         Icon::Calendar,
@@ -50,6 +52,8 @@ impl Icon {
         Icon::ChevronLeft,
         Icon::ChevronRight,
         Icon::ChevronDown,
+        Icon::ChevronUp,
+        Icon::GitBranch,
         Icon::Today,
         Icon::ZoomIn,
         Icon::ZoomOut,
@@ -86,6 +90,8 @@ impl Icon {
             Icon::ChevronLeft => "chevron-left",
             Icon::ChevronRight => "chevron-right",
             Icon::ChevronDown => "chevron-down",
+            Icon::ChevronUp => "chevron-up",
+            Icon::GitBranch => "git-branch",
             Icon::Today => "today",
             Icon::ZoomIn => "zoom-in",
             Icon::ZoomOut => "zoom-out",
@@ -142,6 +148,10 @@ impl Icon {
             Icon::ChevronLeft => r#"<path d="m15 18-6-6 6-6"/>"#,
             Icon::ChevronRight => r#"<path d="m9 18 6-6-6-6"/>"#,
             Icon::ChevronDown => r#"<path d="m6 9 6 6 6-6"/>"#,
+            Icon::ChevronUp => r#"<path d="m18 15-6-6-6 6"/>"#,
+            Icon::GitBranch => {
+                r#"<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>"#
+            }
             Icon::Today => {
                 r#"<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/><path d="M12 1v2"/><path d="M12 21v2"/><path d="M1 12h2"/><path d="M21 12h2"/>"#
             }
