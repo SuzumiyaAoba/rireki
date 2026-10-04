@@ -1,0 +1,101 @@
+//! 画面の状態（表示モード・パネルの開閉と幅・絞り込みなど）を保存し、次回の起動時に復元する
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use crate::layout::Granularity;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    Day,
+    Week,
+    Timeline,
+}
+
+/// 表示するセッションの読み込み元
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFilter {
+    All,
+    Claude,
+    Codex,
+}
+
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    pub mode: Mode,
+    /// カレンダーで最後に使った表示（日 / 週）
+    pub calendar: Mode,
+    pub sidebar: bool,
+    pub sidebar_w: f32,
+    pub label_w: f32,
+    pub detail_w: f32,
+    pub gran: Granularity,
+    pub source: SourceFilter,
+    /// 絞り込み中のプロジェクト（作業ディレクトリ）
+    pub focus: Option<String>,
+    /// タイムラインで折りたたんだプロジェクト
+    pub collapsed: Vec<String>,
+    /// サイドバーで折りたたんだ区分
+    pub folded: Vec<String>,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            mode: Mode::Timeline,
+            calendar: Mode::Week,
+            sidebar: true,
+            sidebar_w: 260.0,
+            label_w: 260.0,
+            detail_w: 440.0,
+            gran: Granularity::Auto,
+            source: SourceFilter::All,
+            focus: None,
+            collapsed: Vec::new(),
+            folded: Vec::new(),
+        }
+    }
+}
+
+fn path() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"));
+    base.join("rireki").join("prefs.json")
+}
+
+pub fn load() -> Prefs {
+    std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+pub fn save(p: &Prefs) {
+    let path = path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match serde_json::to_vec_pretty(p) {
+        Ok(b) => {
+            if let Err(e) = std::fs::write(&path, b) {
+                eprintln!("rireki: 画面の状態を保存できません: {e}");
+            }
+        }
+        Err(e) => eprintln!("rireki: 画面の状態を保存できません: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_and_partial() {
+        let p = Prefs { focus: Some("/w".into()), gran: Granularity::Turn, ..Prefs::default() };
+        let s = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Prefs>(&s).unwrap(), p);
+        // 足りない項目は既定値で補う（項目を増やしても古いファイルを読める）
+        let q: Prefs = serde_json::from_str(r#"{"mode":"day"}"#).unwrap();
+        assert_eq!((q.mode, q.sidebar), (Mode::Day, true));
+    }
+}

@@ -300,12 +300,6 @@ impl Store {
         let s = &self.sessions[i];
         !s.lanes.is_empty() && s.start.is_finite()
     }
-
-    pub fn time_bounds(&self) -> Option<(f64, f64)> {
-        let ss = (0..self.sessions.len()).filter(|&i| self.visible(i)).map(|i| &self.sessions[i]);
-        let (start, end) = ss.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), s| (a.min(s.start), b.max(s.end)));
-        start.is_finite().then_some((start, end))
-    }
 }
 
 pub fn truncate(s: &str, max: usize) -> String {

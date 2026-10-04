@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::{Event, Kind, Lane};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Granularity {
     /// スケールに応じて自動でまとめる
     Auto,
@@ -25,6 +28,16 @@ impl Granularity {
             Granularity::SameTool => "同一ツール",
             Granularity::Turn => "ターン",
             Granularity::Call => "コール",
+        }
+    }
+
+    /// メニューに添える説明
+    pub fn description(self) -> &'static str {
+        match self {
+            Granularity::Auto => "拡大率に応じて、近いイベントをまとめる",
+            Granularity::SameTool => "同じツールの連続した呼び出しをまとめる",
+            Granularity::Turn => "ユーザーの発話から次の発話までをまとめる",
+            Granularity::Call => "まとめずに 1 呼び出しずつ表示する",
         }
     }
 }

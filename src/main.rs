@@ -2,28 +2,44 @@ mod app;
 mod db;
 mod icons;
 mod index;
+mod input;
 mod jsmock;
 mod layout;
 mod loader;
 mod model;
 mod pinch;
+mod prefs;
+mod search;
 mod theme;
 
-use gpui::{App, Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui::{
+    App, Application, Bounds, Focusable, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size,
+};
 
 fn main() {
     if std::env::args().any(|a| a == "--stats") {
         return print_stats();
     }
     Application::new().with_assets(icons::Assets).run(|cx: &mut App| {
+        app::init(cx);
         let bounds = Bounds::centered(None, size(px(1500.0), px(920.0)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(gpui::TitlebarOptions { title: Some("rireki".into()), ..Default::default() }),
+                // タイトルバーを透明にして、上端の帯とアイコンレールを地の色でつなげる（信号機ボタンは帯の中央に置く）
+                titlebar: Some(TitlebarOptions {
+                    title: Some("rireki".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(14.0), px((app::STRIP_H - 14.0) / 2.0))),
+                }),
+                window_min_size: Some(size(px(960.0), px(600.0))),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| app::Rireki::new(window, cx)),
+            |window, cx| {
+                let view = cx.new(|cx| app::Rireki::new(window, cx));
+                window.focus(&view.focus_handle(cx));
+                view
+            },
         )
         .unwrap();
         cx.activate(true);

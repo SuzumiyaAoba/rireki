@@ -13,7 +13,7 @@ cargo build                 # ビルド
 cargo run                   # GUI 起動
 cargo run -- --stats        # GUI を起動せず、索引 DB の読み込みと差分取り込みを行い、件数と所要時間を表示
 cargo clippy                # lint
-cargo test                  # テスト（現状テストは無い）
+cargo test                  # テスト
 ```
 
 `.cargo/config.toml` で linker / CC を `/usr/bin/cc` に固定している（Nix の cc が libiconv を見つけられないため）。変更しないこと。
@@ -30,7 +30,22 @@ cargo test                  # テスト（現状テストは無い）
 - **jsmock.rs** — Codex のコードモード (`exec`) の JS を QuickJS (rquickjs) で実行し、`tools` を Proxy にしたモックで呼び出しを記録する。読み込み時は静的解析 (`js_tool_calls`) で名前と要約だけを決め、input には JS を `JS_MARK` 付きで保存する。詳細表示時に `loader::exec_detail` で整形し、結果を `jscache.db`（キーは JS 本文のハッシュ）にキャッシュする。モックの挙動を変えたら `ENGINE_VERSION` を上げる。
 - **model.rs** — `Session` は複数の `Lane`（main + サブエージェント）を持ち、`Lane` は時刻順の `Event` 列。`Store` はレーンを読み込み元ファイル (`Lane::origin`) 単位で差し替え、親より先に届いた子レーンを `orphans` に保持して親セッション追加時に合流させる。描画用の派生データ（`cum_end`, `parents`, `spawn_t`）は `Session::finalize` で事前計算し、描画中に全イベントを走査しない。時刻はすべて Unix 秒の `f64`。
 - **layout.rs** — 表示スケール（`spp` = 1px あたり秒数）と `Granularity`（自動／同一ツール／ターン／コール）に応じて、レーンのイベントを `Block`（events の index 範囲）に集約する。表示範囲外のブロックは捨てる。
-- **app.rs** — GPUI の `Rireki` ビュー。`Mode`（Day / Week / Timeline）の切り替え、cwd ごとのグループ見出しと折りたたみ、ホイールでのズーム・スクロール、ドラッグでのパン、選択ブロックの詳細表示を担う。
+- **app.rs** — GPUI の `Rireki` ビュー。状態、データの反映、選択と履歴（戻る / 進む）、表示位置の移動（`reveal`）、ホイール・ドラッグ・ピンチ・境界ドラッグの入力処理、画面全体の組み立てを担う。画面は Slack 風に、上端の帯・左端のアイコンレール・サイドバー・メイン列・詳細パネルを並べる。描画は `app/` 以下に分ける:
+  - `rail.rs` — 上端の帯と、読み込み元（すべて / Claude / Codex）・表示（タイムライン / カレンダー）を切り替えるレール
+  - `sidebar.rs` — 検索欄と、進行中・プロジェクト・セッションの一覧、または検索結果。`SidebarView` として別ビューにし、一覧が変わったときだけ描き直す（`sidebar_changed`）
+  - `header.rs` — メイン列の見出し（期間の移動・表示範囲・拡大縮小・まとめ方）と下端の凡例。幅が狭いと項目を減らす
+  - `timeline.rs` / `calendar.rs` — タイムラインとカレンダー（日 / 週）。ブロックは 1 つの canvas に描き、当たり判定用に位置を覚える
+  - `detail.rs` — 詳細パネル（`DetailView`）。選択している間だけ開く
+  - `overlay.rs` — ホバーカード・まとめ方メニュー・ショートカット一覧
+  - `keymap.rs` — アクション・キー割り当て・メニューバー。メニューには最初に登録したキーが出るので修飾キー付きを先に登録し、1 文字のキーは `Rireki && !TextInput` で検索欄の入力中は効かせない
+  - `widgets.rs` — ボタンやツールチップなどの共通部品
+- GPUI の注意点:
+  - タイトルバーを透明にしている。上端の約 28px（macOS のタイトルバー領域）はドラッグでウィンドウ移動・ダブルクリックでズームになるので、上端の帯 (`STRIP_H`) には操作する部品を置かない。
+  - gap を付けた行の子に `ml_auto()` を使うと gap が効かなくなる。右寄せは `div().flex_1()` の詰め物で行う。
+  - 内容パネルは角丸なので、角に接する子要素は背景を塗らないか `INNER_RADIUS` で角を丸める（塗ると枠線を覆う）。
+- **search.rs** — サイドバーの検索。セッションのタイトル・ディレクトリ・ID とイベントの名前・要約を部分一致で探す。ASCII だけ小文字にした本文をセッションごとに作り（更新されたセッションだけ作り直す）、memmem で走査する。
+- **input.rs** — 検索欄の 1 行テキスト入力（IME の変換中文字列・横スクロール対応）。
+- **prefs.rs** — 画面の状態（表示モード・パネルの開閉と幅・まとめ方・絞り込み・折りたたみ）を `~/Library/Application Support/rireki/prefs.json` に保存し、起動時に復元する。
 - **theme.rs** — 配色と、ツール名 → 色のマッピング（Claude と Codex のツール名を同じカテゴリにまとめる）。新しいツール名を色分けする場合は `tool_color` と `LEGEND` を合わせて更新する。
 
 コメントや UI 文言は日本語で書かれている。
