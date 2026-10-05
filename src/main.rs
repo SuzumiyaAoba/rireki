@@ -1,18 +1,15 @@
 mod app;
-mod db;
 mod icons;
-mod index;
 mod input;
-mod jsmock;
-mod layout;
-mod loader;
-mod model;
 mod pinch;
 mod perf;
 mod prefs;
-mod pricing;
-mod search;
 mod theme;
+
+use rireki::{
+    db, detail, histogram, index, jsmock, layout, loader, model, patch, pricing, search, statistics, time,
+    view_index,
+};
 
 use gpui::{
     App, Application, Bounds, Focusable, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size,
@@ -23,6 +20,15 @@ static PROCESS_STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::Onc
 fn main() {
     PROCESS_STARTED.set(std::time::Instant::now()).unwrap();
     let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|a| a == "--bench-summary") {
+        return perf::detail_summary(std::path::Path::new(args.get(2).expect("索引 DB を指定してください")));
+    }
+    if args.get(1).is_some_and(|a| a == "--bench-range") {
+        return perf::range(std::path::Path::new(args.get(2).expect("索引 DB を指定してください")));
+    }
+    if args.get(1).is_some_and(|a| a == "--bench-statistics") {
+        return perf::statistics(std::path::Path::new(args.get(2).expect("索引 DB を指定してください")));
+    }
     if args.get(1).is_some_and(|a| a == "--bench-discover") {
         return perf::discover(args.get(2).map(std::path::Path::new), args.get(3).map(std::path::Path::new));
     }
@@ -42,7 +48,7 @@ fn main() {
         return print_stats();
     }
     let profile_ui = args.iter().any(|a| a == "--profile-ui");
-    if args.iter().any(|a| matches!(a.as_str(), "--profile-startup" | "--profile-ingest" | "--profile-idle" | "--profile-render" | "--profile-eager-files" | "--profile-detail" | "--profile-rich" | "--profile-files")) && !profile_ui {
+    if args.iter().any(|a| matches!(a.as_str(), "--profile-startup" | "--profile-ingest" | "--profile-idle" | "--profile-render" | "--profile-eager-files" | "--profile-detail" | "--profile-rich" | "--profile-files" | "--profile-statistics" | "--profile-summary")) && !profile_ui {
         eprintln!("画面計測には --profile-ui も指定してください");
         std::process::exit(1);
     }

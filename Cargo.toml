@@ -3,11 +3,20 @@ name = "rireki"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "rireki"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[features]
+default = ["gui"]
+gui = ["dep:async-channel", "dep:gpui", "dep:two-face", "dep:unicode-segmentation", "dep:block", "dep:objc"]
+
 [dependencies]
-async-channel = "2.5.0"
+async-channel = { version = "2.5.0", optional = true }
 chrono = { version = "0.4.45", features = ["serde"] }
 dirs = "7.0.0"
-gpui = "0.2.2"
+gpui = { version = "0.2.2", optional = true }
 lz4_flex = "0.14.0"
 memchr = "2.8.3"
 rayon = "1.12.0"
@@ -15,11 +24,12 @@ rquickjs = "0.14.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
-unicode-segmentation = "1.13.3"
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"], optional = true }
+unicode-segmentation = { version = "1.13.3", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-block = "0.1.6"
-objc = "0.2.7"
+block = { version = "0.1.6", optional = true }
+objc = { version = "0.2.7", optional = true }
 
 # 依存クレート（GPUI など）は dev ビルドでも最適化する。未最適化の GPUI は描画が極端に遅い
 [profile.dev.package."*"]

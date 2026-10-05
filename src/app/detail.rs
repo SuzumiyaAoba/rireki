@@ -8,7 +8,6 @@
 //! - 複数: 集計と、名前・失敗での絞り込み、ユーザーの指示で区切ったイベントの一覧
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 
 use gpui::{
     AnyElement, ClickEvent, ClipboardItem, Context, Div, ElementId, FontWeight, ListAlignment, ListOffset,
@@ -18,12 +17,11 @@ use gpui::{
 use super::rich;
 use super::widgets::{dot, event_icon, project_tile, tip};
 use super::{DETAIL_MAX, HEADER_H, INNER_RADIUS, Rireki, Selection, fmt_dur, fmt_n, is_live, local, tilde};
-use crate::db::{Db, JsCache};
 use crate::icons::{self, Icon};
-use crate::loader;
-use crate::model::{Event, Kind, Session, Source, Stats, Status, Usage, UsageSum, one_line, truncate};
+use crate::model::{Event, Kind, Session, Source, Status, Usage, UsageSum, one_line};
 
 mod files;
+use crate::detail::{DetailCache, FileStat};
 pub(super) use files::FileList;
 use files::{FILE_MAX, FileListKey, FileRow, PER_EDIT};
 use crate::prefs::DetailTab;
@@ -41,35 +39,6 @@ impl Render for DetailView {
             None => div().into_any_element(),
         }
     }
-}
-
-/// 選択中ブロックの詳細（選択時に一度だけ作る）
-pub(super) struct DetailCache {
-    pub(super) sel: Selection,
-    /// 先頭 DETAIL_MAX 件の (input, output)。表示用に切り詰め済み
-    texts: Vec<(String, String)>,
-    /// exec の JS 本文（生データ表示用）。texts と同じ並び
-    raws: Vec<Option<String>>,
-    /// 各イベントで編集したファイル (パス, 追加行数, 削除行数)。texts と同じ並び
-    touched: Vec<Vec<(String, usize, usize)>>,
-    /// 結果の行数（切り詰める前）。texts と同じ並び
-    out_lines: Vec<usize>,
-    /// 実行したシェルのコマンド（切り詰めない）。一覧で全文を出す。texts と同じ並び
-    commands: Vec<Vec<String>>,
-    /// 選択全体で編集したファイル（編集の多い順）
-    files: Vec<FileStat>,
-    /// ファイルを編集したイベントの差分（選択の先頭からの位置 → そのファイルごとの差分）
-    patches: HashMap<usize, Vec<rich::FilePatch>>,
-}
-
-/// 選択の中で編集されたファイル
-struct FileStat {
-    path: String,
-    edits: usize,
-    added: usize,
-    removed: usize,
-    /// このファイルを編集したイベント（選択の先頭からの位置）
-    events: Vec<usize>,
 }
 
 /// 詳細パネルのイベント一覧の絞り込み
@@ -167,17 +136,11 @@ impl DetailList {
     }
 }
 
-/// ファイルを編集するツール
-const EDIT_TOOLS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch"];
 /// 結果を Markdown として表示するツール（サブエージェントの報告や取得したページ）
 const MARKDOWN_OUTPUT: &[&str] = &["Agent", "Task", "WebFetch", "ExitPlanMode", "Skill"];
 /// 長い本文を最初に出す行数（差分は行数で数える）
 const FOLD_LINES: usize = 60;
 const FOLD_DIFF: usize = 160;
-
-fn is_edit(e: &Event) -> bool {
-    EDIT_TOOLS.contains(&e.name.as_str())
-}
 
 /// セッションを再開するコマンド（作業ディレクトリに移ってから再開する）
 fn resume_command(s: &Session) -> String {
@@ -186,22 +149,6 @@ fn resume_command(s: &Session) -> String {
         Source::Claude => format!("cd {cwd} && claude --resume {}", s.id),
         Source::Codex => format!("cd {cwd} && codex resume {}", s.id),
     }
-}
-
-/// 入力の `$ コマンド` を取り出す。exec のように複数の呼び出しがあれば、そのすべて。
-/// コマンドは `$ ` で始まる行から、空行（その後ろは cwd などの引数）の手前まで
-fn shell_commands(input: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    for para in input.split("\n\n") {
-        let at = if para.starts_with("$ ") { Some(0) } else { para.find("\n$ ").map(|i| i + 1) };
-        if let Some(at) = at {
-            let cmd = para[at + 2..].trim_end();
-            if !cmd.is_empty() {
-                out.push(cmd);
-            }
-        }
-    }
-    out
 }
 
 /// 結果の先頭に出る終了コード（Claude の `Exit code 1`、Codex の `[exit 1 · 0.2s]`）
@@ -267,87 +214,6 @@ fn stat(name: &'static str, value: String, color: Option<u32>) -> Div {
         .child(div().truncate().text_xs().text_color(c(theme::SUBTLE)).child(name))
 }
 
-#[derive(Default)]
-pub(super) struct DetailLoader {
-    reader: Option<Db>,
-    js_cache: Option<JsCache>,
-}
-
-struct DetailEvent {
-    index: usize,
-    row: Option<i64>,
-    input: String,
-    output: String,
-    edit: bool,
-}
-
-impl DetailLoader {
-    fn prepare(&mut self) {
-        if self.reader.is_none() { self.reader = Db::open_read().ok(); }
-        if self.js_cache.is_none() { self.js_cache = JsCache::open().ok(); }
-    }
-
-    fn load(&self, sel: Selection, events: Vec<DetailEvent>, count: usize, is_current: impl Fn() -> bool) -> Option<DetailCache> {
-        if !is_current() { return None; }
-        let limit = if count == 1 { 6000 } else { 400 };
-        let shown = count.min(DETAIL_MAX);
-        let rows: Vec<i64> = events.iter().filter_map(|e| e.row).collect();
-        let mut fetched = self.reader.as_ref().map(|db| db.details(&rows)).unwrap_or_default();
-        let mut d = DetailCache {
-            sel,
-            texts: Vec::new(),
-            raws: Vec::new(),
-            touched: Vec::new(),
-            out_lines: Vec::new(),
-            commands: Vec::new(),
-            files: Vec::new(),
-            patches: HashMap::new(),
-        };
-        let mut at: HashMap<String, usize> = HashMap::new();
-        for e in events {
-            if !is_current() { return None; }
-            let i = e.index;
-            let (input, output) = match e.row.and_then(|r| fetched.remove(&r)) {
-                Some(v) => v,
-                None => (e.input, e.output),
-            };
-            let (input, raw) = match input.strip_prefix(loader::JS_MARK) {
-                Some(js) => (exec_detail_cached(self.js_cache.as_ref(), js), Some(js.to_string())),
-                None => (input, None),
-            };
-            let patches = if e.edit || raw.is_some() { rich::parse_patch(&input) } else { Vec::new() };
-            let patches: Vec<rich::FilePatch> = patches.into_iter().filter(|p| !p.path.is_empty()).collect();
-            let touched: Vec<(String, usize, usize)> =
-                patches.iter().map(|p| (p.path.clone(), p.added, p.removed)).collect();
-            if !patches.is_empty() {
-                d.patches.insert(i, patches);
-            }
-            for (path, added, removed) in &touched {
-                let k = *at.entry(path.clone()).or_insert_with(|| {
-                    d.files.push(FileStat { path: path.clone(), edits: 0, added: 0, removed: 0, events: Vec::new() });
-                    d.files.len() - 1
-                });
-                let f = &mut d.files[k];
-                f.edits += 1;
-                if f.events.last() != Some(&i) {
-                    f.events.push(i);
-                }
-                f.added += added;
-                f.removed += removed;
-            }
-            if i < shown {
-                d.out_lines.push(output.lines().count());
-                d.commands.push(shell_commands(&input).into_iter().map(str::to_string).collect());
-                d.raws.push(raw);
-                d.touched.push(touched);
-                d.texts.push((truncate(&input, limit), truncate(&output, limit)));
-            }
-        }
-        d.files.sort_by(|a, b| b.edits.cmp(&a.edits).then((b.added + b.removed).cmp(&(a.added + a.removed))));
-        is_current().then_some(d)
-    }
-}
-
 impl Rireki {
     pub(super) fn detail_profile_open_file(&mut self, cx: &mut Context<Self>) {
         self.file_open = self.detail_cache.as_ref().and_then(|d| d.files.first()).map(|f| f.path.clone());
@@ -396,6 +262,15 @@ impl Rireki {
             "at_bottom":self.detail_at_bottom(), "tab":format!("{:?}", self.detail_tab),
             "following":self.detail_following, "follow_pending":self.detail_follow,
             "files":self.detail_cache.as_ref().map(|d| d.files.len()),
+            "summary":self.detail_cache.as_ref().map(|d| serde_json::json!({
+                "selection_tools":d.selection_summary.total.stats.tools,
+                "selection_turns":d.selection_summary.total.stats.turns,
+                "selection_tokens":d.selection_summary.total.usage.total(),
+                "session_tools":d.session_summary.total.stats.tools,
+                "session_turns":d.session_summary.total.stats.turns,
+                "session_tokens":d.session_summary.total.usage.total(),
+                "models":d.session_summary.models.len(), "lanes":d.session_summary.lanes.len(),
+            })),
             "file_list_count":self.file_list.state.item_count(), "file_rendered":self.file_list.rendered.get(),
             "file_item_ix":self.file_list.state.logical_scroll_top().item_ix,
             "file_offset_px":f32::from(self.file_list.state.logical_scroll_top().offset_in_item),
@@ -493,13 +368,7 @@ impl Rireki {
         let generation = self.detail_gen.load(super::Ordering::Relaxed);
         let gen_counter = self.detail_gen.clone();
         let loader = self.detail_loader.clone();
-        let evs = &self.store.sessions[sel.session].lanes[sel.lane].events[sel.first..=sel.last];
-        let count = evs.len();
-        let shown = count.min(DETAIL_MAX);
-        let events = evs.iter().enumerate().filter_map(|(i, e)| {
-            let edit = is_edit(e);
-            (i < shown || edit).then(|| DetailEvent { index: i, row: e.row, input: e.input.clone(), output: e.output.clone(), edit })
-        }).collect();
+        let session = self.store.sessions[sel.session].clone();
         self.detail_task = Some(cx.spawn(async move |this, cx| {
             let loaded = cx.background_executor().spawn(async move {
                 let is_current = || gen_counter.load(super::Ordering::Relaxed) == generation;
@@ -507,7 +376,7 @@ impl Rireki {
                 let mut loader = loader.lock().unwrap();
                 if !is_current() { return None; }
                 loader.prepare();
-                loader.load(sel, events, count, is_current)
+                loader.load_session(sel, &session, is_current)
             }).await;
             let Some(cache) = loaded else { return };
             let _ = this.update(cx, |app, cx| {
@@ -604,9 +473,13 @@ impl Rireki {
                 }
             }
             DetailTab::Session => {
-                body = body.child(self.session_card(sel, cx));
-                if self.store.sessions[sel.session].lanes.len() > 1 {
-                    body = body.child(self.subagent_list(sel, cx));
+                if self.cache(sel).is_some() {
+                    body = body.child(self.session_card(sel, cx));
+                    if self.store.sessions[sel.session].lanes.len() > 1 {
+                        body = body.child(self.subagent_list(sel, cx));
+                    }
+                } else {
+                    body = body.child(div().text_xs().text_color(c(theme::MUTED)).child("詳細を読み込み中…"));
                 }
             }
         }
@@ -970,7 +843,8 @@ impl Rireki {
     fn session_card(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         let s = &self.store.sessions[sel.session];
         let lane = &s.lanes[sel.lane];
-        let usage = UsageSum::of(s.lanes.iter().flat_map(|l| &l.events));
+        let summary = &self.cache(sel).unwrap().session_summary;
+        let usage = summary.total.usage;
         let title = if s.title.is_empty() { "(無題)".to_string() } else { s.title.clone() };
         let meta = |k: &'static str, v: AnyElement| {
             div()
@@ -990,7 +864,7 @@ impl Rireki {
             Source::Claude => format!("Claude Code {}", s.version),
             Source::Codex => format!("Codex CLI {}", s.version),
         });
-        let st = Stats::of(s.lanes.iter().flat_map(|l| &l.events));
+        let st = summary.total.stats;
         let session = sel.session;
         let mut tiles = div()
             .flex()
@@ -1020,8 +894,8 @@ impl Rireki {
         if st.peak > 0 {
             tiles = tiles.child(stat("最大コンテキスト", fmt_tokens(st.peak), None));
         }
-        let models = UsageSum::by_model(s.lanes.iter().flat_map(|l| &l.events));
-        let lane_usage = (s.lanes.len() > 1).then(|| UsageSum::of(&lane.events)).filter(|u| u.calls > 0);
+        let models = &summary.models;
+        let lane_usage = (s.lanes.len() > 1).then(|| summary.lanes[sel.lane].usage).filter(|u| u.calls > 0);
         let resume = resume_command(s);
         let resumed = self.copied == Some("copy-resume");
         let origin = s.lanes.first().map(|l| l.origin.clone()).unwrap_or_default();
@@ -1094,7 +968,7 @@ impl Rireki {
                                 .child(usage_view(&u))
                         })
                         .when(models.len() > 1 || models.first().is_some_and(|m| m.1.unpriced > 0), |d| {
-                            d.child(div().text_xs().child(model_table(&models)))
+                            d.child(div().text_xs().child(model_table(models)))
                         }),
                 )
             })
@@ -1137,8 +1011,9 @@ impl Rireki {
             .border_t_1()
             .border_color(c(theme::BORDER))
             .child(div().pb_1().child(label(format!("サブエージェント {}", s.lanes.len() - 1))));
+        let summary = &self.cache(sel).unwrap().session_summary;
         for (li, l) in s.lanes.iter().enumerate().skip(1) {
-            let st = Stats::of(&l.events);
+            let st = summary.lanes[li].stats;
             let (a, b) = l.range().unwrap_or((0.0, 0.0));
             let session = sel.session;
             let on = sel.lane == li;
@@ -1239,8 +1114,11 @@ impl Rireki {
         );
 
         // きっかけになったユーザーの指示
+        let turns = &self.cache(sel).unwrap().session_summary.turns[sel.lane];
+        let previous_turn = turns.partition_point(|turn| turn.index < sel.first).checked_sub(1)
+            .map(|index| turns[index].index);
         if e.kind != Kind::User
-            && let Some(ui) = lane.events[..sel.first].iter().rposition(|x| x.kind == Kind::User)
+            && let Some(ui) = previous_turn
         {
             let u = &lane.events[ui];
             let (session, lane_i) = (sel.session, sel.lane);
@@ -1466,7 +1344,7 @@ impl Rireki {
         let l = &self.store.sessions[session].lanes[li];
         let n = l.events.len();
         let (a, b) = l.range().unwrap_or((0.0, 0.0));
-        let st = Stats::of(&l.events);
+        let st = self.detail_cache.as_ref().unwrap().session_summary.lanes[li].stats;
         let mut text = format!("サブエージェントを開く · {} 件 · {}", fmt_n(n), fmt_dur(b - a));
         if st.failures() > 0 {
             text.push_str(&format!(" · 失敗 {}", st.failures()));
@@ -1492,15 +1370,9 @@ impl Rireki {
         let s = &self.store.sessions[sel.session];
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
         let (start, end) = self.sel_range(sel);
-        let st = Stats::of(evs);
-        let mut counts: Vec<(&str, usize, (u32, Icon))> = Vec::new();
-        for e in evs {
-            match counts.iter_mut().find(|(n, _, _)| *n == e.name) {
-                Some(x) => x.1 += 1,
-                None => counts.push((&e.name, 1, (theme::event_color(e), theme::event_icon(e)))),
-            }
-        }
-        counts.sort_by_key(|a| std::cmp::Reverse(a.1));
+        let summary = &self.cache(sel).unwrap().selection_summary;
+        let st = summary.total.stats;
+        let counts = &summary.names;
         let filter = self.row_filter.clone();
         let chip = |id: SharedString, text: String, col: Option<(u32, Icon)>, on: bool, f: Option<RowFilter>| {
             div()
@@ -1530,13 +1402,13 @@ impl Rireki {
             filter.is_none(),
             None,
         ));
-        for (i, &(name, n, col)) in counts.iter().take(12).enumerate() {
+        for (i, (name, n, first)) in counts.iter().take(12).enumerate() {
             let f = RowFilter::Name(name.to_string());
             let on = filter.as_ref() == Some(&f);
             chips = chips.child(chip(
                 SharedString::from(format!("chip-{i}")),
                 format!("{name} ×{n}"),
-                Some(col),
+                Some((theme::event_color(&evs[*first]), theme::event_icon(&evs[*first]))),
                 on,
                 Some(f),
             ));
@@ -1566,7 +1438,7 @@ impl Rireki {
                     .into_any_element(),
             );
         }
-        let usage = UsageSum::of(evs);
+        let usage = summary.total.usage;
         let col = div()
             .flex()
             .flex_col()
@@ -1951,12 +1823,10 @@ impl Rireki {
         let lane = &self.store.sessions[sel.session].lanes[sel.lane];
         let idx = sel.first + i;
         let e = &lane.events[idx];
-        let end =
-            lane.events[idx + 1..].iter().position(|x| x.kind == Kind::User).map_or(lane.events.len(), |p| idx + 1 + p);
-        let turn = &lane.events[idx + 1..end];
-        let st = Stats::of(turn);
-        let until = turn.iter().map(|x| x.end).fold(e.start, f64::max);
-        let mut facts = vec![format!("{} 件", fmt_n(turn.len()))];
+        let turns = &self.cache(sel).unwrap().session_summary.turns[sel.lane];
+        let turn = &turns[turns.binary_search_by_key(&idx, |turn| turn.index).unwrap()];
+        let until = turn.end;
+        let mut facts = vec![format!("{} 件", fmt_n(turn.events))];
         if until > e.start {
             facts.push(fmt_dur(until - e.start));
         }
@@ -1981,7 +1851,7 @@ impl Rireki {
                     .text_xs()
                     .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(c(color)).child("指示"))
                     .child(div().flex_1())
-                    .when(st.failures() > 0, |d| d.child(badge(format!("失敗 {}", st.failures()), theme::ERR)))
+                    .when(turn.failures > 0, |d| d.child(badge(format!("失敗 {}", turn.failures), theme::ERR)))
                     .child(div().flex_none().text_color(c(theme::SUBTLE)).child(facts.join(" · "))),
             )
             .child(div().text_sm().line_clamp(3).child(one_line(text, 400)));
@@ -2151,12 +2021,13 @@ impl Rireki {
     }
 }
 
-/// トークン数を短く（1,234 / 12.3k / 1.23M）
+/// トークン数を短く（1,234 / 12.3k / 1.23M / 13.2B）
 pub(super) fn fmt_tokens(n: u64) -> String {
     match n {
         0..10_000 => fmt_n(n as usize),
         10_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3),
-        _ => format!("{:.2}M", n as f64 / 1e6),
+        1_000_000..1_000_000_000 => format!("{:.2}M", n as f64 / 1e6),
+        _ => format!("{:.2}B", n as f64 / 1e9),
     }
 }
 
@@ -2282,9 +2153,14 @@ fn diff_bar(added: usize, removed: usize) -> Div {
     }))
 }
 
-/// 料金（USD）
+/// 料金（USD）。1 ドル以上は桁区切りを入れる
 pub(super) fn fmt_usd(v: f64) -> String {
-    if v < 0.01 && v > 0.0 { format!("${v:.4}") } else { format!("${v:.2}") }
+    if v < 0.01 && v > 0.0 {
+        format!("${v:.4}")
+    } else {
+        let cents = (v * 100.0).round() as u64;
+        format!("${}.{:02}", fmt_n((cents / 100) as usize), cents % 100)
+    }
 }
 
 /// モデルごとのトークン数と料金
@@ -2333,19 +2209,6 @@ fn usage_chip(id: impl Into<ElementId>, u: &Usage, model: Option<&str>) -> State
         .text_color(c(theme::SUBTLE))
         .child(format!("↑{} ↓{}", fmt_tokens(input), fmt_tokens(u.output as u64)))
         .tooltip(tip(detail, None))
-}
-
-/// exec の JS を整形する。初回はモック実行してキャッシュに保存する
-pub(super) fn exec_detail_cached(cache: Option<&JsCache>, js: &str) -> String {
-    let h = crate::jsmock::hash(js);
-    if let Some(d) = cache.and_then(|c| c.get(h)) {
-        return d;
-    }
-    let d = loader::exec_detail(js);
-    if let Some(c) = cache {
-        c.put(h, &d);
-    }
-    d
 }
 
 #[cfg(test)]
@@ -2412,36 +2275,6 @@ mod tests {
     }
 
     #[test]
-    fn detail_keeps_edits_after_display_limit_and_commands() {
-        let sel = Selection { session: 0, lane: 0, first: 10, last: DETAIL_MAX + 10 };
-        let events = vec![
-            DetailEvent { index: 0, row: None, input: "$ cargo test".into(), output: "one\ntwo".into(), edit: false },
-            DetailEvent { index: DETAIL_MAX, row: None, input: "*** Update File: src/a.rs\n@@\n-old\n+new".into(), output: String::new(), edit: true },
-        ];
-        let d = DetailLoader::default().load(sel, events, DETAIL_MAX + 1, || true).unwrap();
-        assert_eq!(d.commands, [vec!["cargo test".to_string()]]);
-        assert_eq!(d.out_lines, [2]);
-        assert_eq!(d.files.len(), 1);
-        assert_eq!((&*d.files[0].path, d.files[0].added, d.files[0].removed), ("src/a.rs", 1, 1));
-        assert_eq!(d.files[0].events, [DETAIL_MAX]);
-        assert!(d.patches.contains_key(&DETAIL_MAX));
-    }
-
-    #[test]
-    fn detail_cancels_before_work_and_between_events() {
-        let sel = Selection { session: 0, lane: 0, first: 0, last: 1 };
-        assert!(DetailLoader::default().load(sel, Vec::new(), 2, || false).is_none());
-        let checks = std::cell::Cell::new(0);
-        let events = (0..2).map(|index| DetailEvent { index, row: None, input: "test".into(), output: String::new(), edit: false }).collect();
-        let result = DetailLoader::default().load(sel, events, 2, || {
-            checks.set(checks.get() + 1);
-            checks.get() <= 2
-        });
-        assert!(result.is_none());
-        assert_eq!(checks.get(), 3);
-    }
-
-    #[test]
     fn resume_quotes_cwd() {
         let s = Session {
             id: "abc".into(),
@@ -2463,18 +2296,15 @@ mod tests {
     }
 
     #[test]
-    fn commands_in_input() {
-        assert_eq!(shell_commands("$ ls -la\n\ncwd: /w"), vec!["ls -la"]);
-        let exec = "（JS をモック実行して推定: 2 件）\n\n#0 exec_command\n$ cat a\n  | wc\n\ncwd: /w\n\n#1 a ← exec_command\n$ rg x";
-        assert_eq!(shell_commands(exec), vec!["cat a\n  | wc", "rg x"]);
-        assert!(shell_commands("{\"a\": 1}").is_empty());
-    }
-
-    #[test]
     fn short_numbers() {
         assert_eq!(fmt_tokens(9_999), "9,999");
         assert_eq!(fmt_tokens(85_234), "85.2k");
         assert_eq!(fmt_tokens(12_345_678), "12.35M");
+        assert_eq!(fmt_tokens(13_230_930_000), "13.23B");
+        assert_eq!(fmt_usd(7435.094), "$7,435.09");
+        assert_eq!(fmt_usd(0.995), "$1.00");
+        assert_eq!(fmt_usd(0.0012), "$0.0012");
+        assert_eq!(fmt_usd(0.0), "$0.00");
         assert_eq!(exit_code("Exit code 127\nnot found"), Some("127"));
         assert_eq!(exit_code("[exit 1 · 0.2s]\nerr"), Some("1"));
         assert_eq!(exit_code("[0.2s]\nok"), None);

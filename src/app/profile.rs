@@ -75,6 +75,18 @@ const RICH_STAGES: [(&str, usize); 4] = [
     ("calendar_dense_week", 120),
 ];
 const FILE_STAGES: [(&str, usize); 1] = [("detail_files_checks", 240)];
+const SUMMARY_STAGES: [(&str, usize); 2] = [
+    ("detail_summary_selection", 120),
+    ("detail_summary_session", 120),
+];
+const STATISTICS_STAGES: [(&str, usize); 6] = [
+    ("statistics_open", 120),
+    ("statistics_period", 120),
+    ("statistics_scope", 120),
+    ("statistics_source", 120),
+    ("statistics_update", 120),
+    ("statistics_cancel", 120),
+];
 
 fn profile_event(index: usize, start: f64) -> Event {
     let (kind, name, input) = match index % 5 {
@@ -231,7 +243,11 @@ impl Rireki {
                 let _ = this.update_in(cx, |_, _, cx| cx.quit());
                 return;
             }
-            let stages: &[(&str, usize)] = if args.iter().any(|arg| arg == "--profile-files") {
+            let stages: &[(&str, usize)] = if args.iter().any(|arg| arg == "--profile-statistics") {
+                &STATISTICS_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-summary") {
+                &SUMMARY_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-files") {
                 &FILE_STAGES
             } else if args.iter().any(|arg| arg == "--profile-rich") {
                 &RICH_STAGES
@@ -254,6 +270,20 @@ impl Rireki {
                     if this.update_in(cx, |app, window, cx| app.profile_step(stage, step, anchor, window, cx)).is_err() { return; }
                     dispatch.push(t.elapsed().as_secs_f64()*1000.0);
                     if manual && !render_only(cx, stage) { return; }
+                    if (step == 0 || step + 1 == samples) && stage.starts_with("statistics_") {
+                        let wait = Instant::now();
+                        loop {
+                            bg.timer(TICK).await;
+                            if manual && !render_only(cx, stage) { return; }
+                            let Ok(ready) = this.update_in(cx, |app, _, _| app.statistics_profile_ready()) else { return; };
+                            if ready { break; }
+                            if wait.elapsed() > Duration::from_secs(10) {
+                                eprintln!("rireki: 統計計測の集計が完了しません");
+                                let _ = this.update_in(cx, |_, _, cx| cx.quit());
+                                return;
+                            }
+                        }
+                    }
                     if step == 0 && stage.starts_with("detail_") {
                         let wait = Instant::now();
                         loop {
@@ -279,7 +309,7 @@ impl Rireki {
                     println!("{}", serde_json::json!({"ui_profile":"state", "stage":stage,
                         "query_set":!app.query.is_empty(), "results":app.results.as_ref().map(|r| r.total),
                         "detail_ready":app.detail_cache.is_some(), "painted_blocks":app.hits.len(), "active":window.is_window_active(), "cursor":app.result_cursor,
-                        "detail":app.detail_profile_state()}));
+                        "detail":app.detail_profile_state(), "statistics":app.statistics_profile_state()}));
                 });
                 println!("{}", serde_json::json!({"ui_profile":"stage_end","stage":stage}));
                 bg.timer(Duration::from_millis(200)).await;
@@ -290,6 +320,11 @@ impl Rireki {
     }
 
     fn profile_step(&mut self, stage: &str, step: usize, anchor: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if stage.starts_with("statistics_") {
+            self.statistics_profile_step(stage, step, anchor, window, cx);
+            cx.notify();
+            return;
+        }
         if step == 0 {
             window.activate_window();
             cx.activate(true);
@@ -333,6 +368,13 @@ impl Rireki {
             }
         }
         match stage {
+            "detail_summary_selection" | "detail_summary_session" => {
+                if stage == "detail_summary_session" {
+                    self.set_detail_tab(DetailTab::Session, cx);
+                }
+                self.detail_w = 420.0 + (step % 20) as f32 * 2.0;
+                self.detail_changed(cx);
+            }
             "timeline_pan" => self.t0 += self.spp * 2.0,
             "timeline_zoom" => self.spp *= if step < 60 { 0.985 } else { 1.0 / 0.985 },
             "timeline_calls" => {

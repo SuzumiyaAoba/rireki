@@ -194,10 +194,12 @@ impl FileList {
 mod tests {
     use super::*;
     use crate::app::detail::FileStat;
-    use crate::app::rich::{DiffRow, FilePatch};
+    use crate::patch::{DiffRow, FilePatch};
 
     fn cache() -> DetailCache {
         DetailCache {
+            selection_summary: Default::default(),
+            session_summary: Default::default(),
             sel: Selection {
                 session: 0,
                 lane: 0,

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 /// 非対話で起動されたセッションを、同じディレクトリの他セッションで
 /// その時刻に実行中だったツール呼び出しの子とみなす
-pub(crate) fn exec_parents(
+pub fn exec_parents(
     sessions: &[std::sync::Arc<Session>],
     order: &[usize],
 ) -> HashMap<usize, (usize, usize, f64)> {
@@ -29,7 +29,10 @@ pub(crate) fn exec_parents(
                 for (li, l) in p.lanes.iter().enumerate() {
                     let hi = l.events.partition_point(|e| e.start <= t);
                     let lo = l.cum_tool_end[..hi].partition_point(|&m| m < t - SLACK);
-                    for e in l.events[lo..hi].iter().filter(|e| e.end >= t - SLACK && is_launch(e)) {
+                    for e in l.events[lo..hi]
+                        .iter()
+                        .filter(|e| e.end >= t - SLACK && is_launch(e))
+                    {
                         // 直前に起動したものを優先する
                         if best.is_none_or(|b| e.start > b.2) {
                             best = Some((pi, li, e.start));
@@ -120,7 +123,11 @@ mod tests {
             let mut best: Option<(usize, usize, f64)> = None;
             for &parent in order {
                 let session = &sessions[parent];
-                if parent == child || session.cwd != child_session.cwd || session.start > t || session.end < t - 30.0 {
+                if parent == child
+                    || session.cwd != child_session.cwd
+                    || session.start > t
+                    || session.end < t - 30.0
+                {
                     continue;
                 }
                 for (lane, events) in session.lanes.iter().enumerate() {
@@ -168,7 +175,10 @@ mod tests {
             session(
                 "a",
                 false,
-                vec![vec![event(20.0, 20.0, Kind::Tool), event(21.0, 9999.0, Kind::Agent)]],
+                vec![vec![
+                    event(20.0, 20.0, Kind::Tool),
+                    event(21.0, 9999.0, Kind::Agent),
+                ]],
             ),
             session("a", true, vec![vec![event(50.0, 1000.0, Kind::Tool)]]),
             session("a", true, vec![vec![event(50.001, 50.002, Kind::Assistant)]]),

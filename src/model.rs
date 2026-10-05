@@ -8,6 +8,7 @@ pub enum Source {
 }
 
 impl Source {
+    #[inline]
     pub fn label(self) -> &'static str {
         match self {
             Source::Claude => "Claude",
@@ -42,6 +43,7 @@ pub enum Status {
 
 impl Status {
     /// 失敗の扱い（エラー・拒否・中断）か
+    #[inline]
     pub fn failed(self) -> bool {
         matches!(self, Status::Error | Status::Rejected | Status::Interrupted)
     }
@@ -60,18 +62,20 @@ pub struct Usage {
 }
 
 impl Usage {
+    #[inline]
     pub fn is_empty(&self) -> bool {
         *self == Usage::default()
     }
 
     /// 入力（キャッシュ含む）と出力の合計
+    #[inline]
     pub fn total(&self) -> u64 {
         self.input as u64 + self.cache_read as u64 + self.cache_write as u64 + self.output as u64
     }
 }
 
 /// 集計用。u32 の和はあふれうるので u64 で持つ
-#[derive(Clone, Copy, Default, Debug)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct UsageSum {
     pub input: u64,
     pub cache_read: u64,
@@ -87,11 +91,22 @@ pub struct UsageSum {
 }
 
 impl UsageSum {
+    // ライブラリの外で走査する場合も、イベントごとの集計をインライン化できるようにする。
+    #[inline]
     pub fn add(&mut self, u: &Usage, model: Option<&str>) {
         if u.is_empty() {
             return;
         }
-        match model.and_then(crate::pricing::price) {
+        self.add_priced(u, model.and_then(crate::pricing::price));
+    }
+
+    /// 同じモデルの料金を使い回す集計用。空の使用量は呼び出し数に含めない。
+    #[inline]
+    pub fn add_priced(&mut self, u: &Usage, price: Option<crate::pricing::Price>) {
+        if u.is_empty() {
+            return;
+        }
+        match price {
             Some(p) => self.cost += p.cost(u),
             None => self.unpriced += 1,
         }
@@ -101,6 +116,18 @@ impl UsageSum {
         self.output += u.output as u64;
         self.reasoning += u.reasoning as u64;
         self.calls += 1;
+    }
+
+    #[inline]
+    pub fn merge(&mut self, other: &Self) {
+        self.input += other.input;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.output += other.output;
+        self.reasoning += other.reasoning;
+        self.calls += other.calls;
+        self.cost += other.cost;
+        self.unpriced += other.unpriced;
     }
 
     pub fn of<'a>(events: impl IntoIterator<Item = &'a Event>) -> Self {
@@ -132,6 +159,7 @@ impl UsageSum {
         out
     }
 
+    #[inline]
     pub fn total(&self) -> u64 {
         self.input + self.cache_read + self.cache_write + self.output
     }
@@ -197,24 +225,30 @@ impl Stats {
     pub fn of<'a>(events: impl IntoIterator<Item = &'a Event>) -> Self {
         let mut s = Stats::default();
         for e in events {
-            match e.kind {
-                Kind::User => s.turns += 1,
-                Kind::Tool | Kind::Agent => s.tools += 1,
-                _ => {}
-            }
-            match e.status {
-                Status::Error => s.errors += 1,
-                Status::Rejected => s.rejected += 1,
-                Status::Interrupted => s.interrupted += 1,
-                _ => {}
-            }
-            let u = &e.usage;
-            s.peak = s.peak.max(u.input as u64 + u.cache_read as u64 + u.cache_write as u64);
+            s.add(e);
         }
         s
     }
 
+    #[inline]
+    pub fn add(&mut self, e: &Event) {
+        match e.kind {
+            Kind::User => self.turns += 1,
+            Kind::Tool | Kind::Agent => self.tools += 1,
+            _ => {}
+        }
+        match e.status {
+            Status::Error => self.errors += 1,
+            Status::Rejected => self.rejected += 1,
+            Status::Interrupted => self.interrupted += 1,
+            _ => {}
+        }
+        let u = &e.usage;
+        self.peak = self.peak.max(u.input as u64 + u.cache_read as u64 + u.cache_write as u64);
+    }
+
     /// 失敗（エラー・拒否・中断）の数
+    #[inline]
     pub fn failures(&self) -> usize {
         self.errors + self.rejected + self.interrupted
     }
@@ -255,6 +289,7 @@ impl Lane {
         }
     }
 
+    #[inline]
     pub fn range(&self) -> Option<(f64, f64)> {
         Some((self.events.first()?.start, *self.cum_end.last()?))
     }

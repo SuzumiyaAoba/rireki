@@ -106,6 +106,10 @@ impl Results {
     pub fn len(&self) -> usize {
         self.sessions.len() + self.events.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty() && self.events.is_empty()
+    }
 }
 
 impl Index {

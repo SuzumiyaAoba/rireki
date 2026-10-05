@@ -354,7 +354,7 @@ impl Rireki {
         let Some(r) = &self.results else { return div().into_any_element() };
         let count = 1 + r.sessions.len() + r.events.len()
             + usize::from(!r.sessions.is_empty()) + usize::from(!r.events.is_empty())
-            + usize::from(r.len() == 0);
+            + usize::from(r.is_empty());
         let key = (self.search_gen.load(super::Ordering::Relaxed), count, self.pane_full_widths(window).0.to_bits());
         let old = self.result_list_key.replace(key);
         if (old.0, old.1) != (key.0, key.1) {
@@ -378,7 +378,7 @@ impl Rireki {
         if row == 0 {
             let filtered = self.focus.is_some() || self.source != SourceFilter::All;
             let summary = if self.searching { "検索中…".to_string() }
-                else if r.len() == 0 { "一致する履歴はありません".to_string() }
+                else if r.is_empty() { "一致する履歴はありません".to_string() }
                 else if r.total > r.events.len() {
                     format!("{} 件（新しい {} 件を表示）", r.sessions.len() + r.total, r.events.len())
                 } else { format!("{} 件", r.len()) };
@@ -502,7 +502,7 @@ impl Rireki {
                         )
                         .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.click_result(i, window, cx))).into_any_element();
         }
-        if r.len() == 0 { return div()
+        if r.is_empty() { return div()
                     .mx_3()
                     .mt_4()
                     .flex()

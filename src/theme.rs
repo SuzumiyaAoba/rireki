@@ -96,6 +96,12 @@ pub fn tool_icon(name: &str) -> Icon {
     }
 }
 
+/// 統計のグラフで読み込み元を表す色。暗い面（PANEL）での明度・彩度・色覚の区別・コントラストを検査済み
+pub const SERIES_CLAUDE: u32 = 0xd95926;
+pub const SERIES_CODEX: u32 = 0x199e70;
+/// 量を表す青の段階（少 → 多）。読み込み元の色と紛れないよう、量は青だけで表す
+pub const HEAT: [u32; 5] = [0x184f95, 0x256abf, 0x3987e5, 0x6da7ec, 0x9ec5f4];
+
 /// 凡例
 pub const LEGEND: &[(&str, u32, Icon)] = &[
     ("User", 0xe0b341, Icon::User),

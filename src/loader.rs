@@ -68,7 +68,7 @@ pub fn discover() -> Vec<Job> {
 }
 
 /// 計測とテストでは実際のホームを変更せず、同じ形式のルートを指定する
-pub(crate) fn discover_in(claude: &Path, codex: &Path) -> Vec<Job> {
+pub fn discover_in(claude: &Path, codex: &Path) -> Vec<Job> {
     let mut jobs: Vec<Job> = Vec::new();
     for proj in read_dir(claude) {
         for f in read_dir(&proj) {

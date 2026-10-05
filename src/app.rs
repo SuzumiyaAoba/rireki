@@ -20,9 +20,8 @@ mod sidebar;
 mod statistics;
 mod timeline;
 mod widgets;
-pub(crate) mod view_index;
 
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
+use chrono::{Datelike, Duration, Local, NaiveDate};
 use gpui::{
     AnyView, App, Bounds, Context, Entity, FocusHandle, Focusable, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, ScrollHandle, ScrollWheelEvent, StyleRefinement, Window, div, point, prelude::*, px,
@@ -45,7 +44,10 @@ use crate::prefs::{self, DetailTab, Mode, Prefs, SourceFilter};
 use crate::search;
 use crate::theme::{self, c};
 
-use detail::{DetailCache, DetailList, DetailLoader, DetailView, FileList, RowFilter};
+use detail::{DetailList, DetailView, FileList, RowFilter};
+use crate::detail::{DetailCache, DetailLoader, Selection, EVENT_LIMIT as DETAIL_MAX};
+use crate::time::{local, midnight};
+use crate::view_index;
 pub use keymap::init;
 use keymap::{
     Back, CloseWindow, DetailEvents, DetailFiles, DetailSession, Dismiss, FocusSearch, Forward, GoNext, GoPrev,
@@ -82,22 +84,12 @@ const HANDLE_W: f32 = 6.0;
 const ROW_H: f32 = 24.0;
 const HOUR_LABEL_W: f32 = 52.0;
 const MIN_BLOCK: f32 = 3.0;
-/// 詳細パネルに並べるイベント数の上限
-const DETAIL_MAX: usize = 300;
 /// 検索結果に並べるイベント数の上限
 const SEARCH_LIMIT: usize = 300;
 /// 入力が止まってから検索するまでの待ち時間
 const SEARCH_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
 /// リアルタイムファイルの変更を確認する間隔
 const POLL: std::time::Duration = std::time::Duration::from_secs(3);
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-struct Selection {
-    session: usize,
-    lane: usize,
-    first: usize,
-    last: usize,
-}
 
 struct Track {
     session: usize,
@@ -308,14 +300,6 @@ pub struct Rireki {
 
 fn now() -> f64 {
     Local::now().timestamp_millis() as f64 / 1000.0
-}
-
-fn local(t: f64) -> DateTime<Local> {
-    Local.timestamp_millis_opt((t * 1000.0) as i64).single().unwrap_or_else(Local::now)
-}
-
-fn midnight(d: NaiveDate) -> f64 {
-    Local.from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap()).earliest().map(|t| t.timestamp() as f64).unwrap_or(0.0)
 }
 
 fn fmt_dur(s: f64) -> String {
@@ -1132,7 +1116,9 @@ impl Rireki {
     fn sel_range(&self, sel: Selection) -> (f64, f64) {
         let evs = &self.store.sessions[sel.session].lanes[sel.lane].events[sel.first..=sel.last];
         let a = evs.first().map_or(0.0, |e| e.start);
-        (a, evs.iter().map(|e| e.end).fold(a, f64::max))
+        let end = self.detail_cache.as_ref().filter(|d| d.sel == sel)
+            .map_or_else(|| evs.iter().map(|e| e.end).fold(a, f64::max), |d| d.end());
+        (a, end)
     }
 
     /// 選択を表示中のビューに映す。`zoom` なら収まらないときや縮小しすぎのときに拡大率も合わせる。

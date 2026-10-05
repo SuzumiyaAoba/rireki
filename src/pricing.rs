@@ -32,6 +32,7 @@ impl Price {
     }
 
     /// 使用量の料金（USD）
+    #[inline]
     pub fn cost(&self, u: &Usage) -> f64 {
         let w1h = u.cache_write_1h.min(u.cache_write) as f64;
         let w5m = u.cache_write as f64 - w1h;

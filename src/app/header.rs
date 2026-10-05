@@ -97,6 +97,48 @@ impl Rireki {
         }
     }
 
+    /// 注目中のプロジェクトを示し、×で絞り込みを解除するチップ
+    pub(super) fn focus_chip(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let f = self.focus.as_ref()?;
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap_1p5()
+                .pl_1()
+                .pr(px(2.0))
+                .h(px(26.0))
+                .rounded_md()
+                .bg(c(theme::ACCENT_BG))
+                .border_1()
+                .border_color(c(theme::ACCENT).opacity(0.45))
+                .text_xs()
+                .child(project_tile(f, 16.0))
+                .child(
+                    div()
+                        .max_w(px(160.0))
+                        .truncate()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(self.project_name(f)),
+                )
+                .child(
+                    div()
+                        .id("focus-clear")
+                        .p(px(3.0))
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(c(theme::HOVER)))
+                        .child(icons::icon(Icon::X, theme::MUTED).size_3())
+                        .tooltip(tip("プロジェクトの絞り込みを解除", None))
+                        .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
+                            t.set_focus(None, cx);
+                            cx.notify();
+                        })),
+                ),
+        )
+    }
+
     pub(super) fn header(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let timeline = self.mode == Mode::Timeline;
         let w = self.main_width(window);
@@ -121,44 +163,8 @@ impl Rireki {
                 |t, _, cx| t.toggle_sidebar(cx),
             ));
         }
-        if let Some(f) = self.focus.clone() {
-            row = row.child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap_1p5()
-                    .pl_1()
-                    .pr(px(2.0))
-                    .h(px(26.0))
-                    .rounded_md()
-                    .bg(c(theme::ACCENT_BG))
-                    .border_1()
-                    .border_color(c(theme::ACCENT).opacity(0.45))
-                    .text_xs()
-                    .child(project_tile(&f, 16.0))
-                    .child(
-                        div()
-                            .max_w(px(160.0))
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(self.project_name(&f)),
-                    )
-                    .child(
-                        div()
-                            .id("focus-clear")
-                            .p(px(3.0))
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(c(theme::HOVER)))
-                            .child(icons::icon(Icon::X, theme::MUTED).size_3())
-                            .tooltip(tip("プロジェクトの絞り込みを解除", None))
-                            .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
-                                t.set_focus(None, cx);
-                                cx.notify();
-                            })),
-                    ),
-            );
+        if let Some(chip) = self.focus_chip(cx) {
+            row = row.child(chip);
         }
         let nav = div()
             .flex()

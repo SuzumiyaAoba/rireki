@@ -2,43 +2,26 @@
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use gpui::{
-    AnyElement, Bounds, ClickEvent, Corner, Div, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Window,
-    anchored, canvas, deferred, div, fill, point, prelude::*, px, size,
+    AnyElement, Bounds, ClickEvent, Corner, Div, FontWeight, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
+    Window, anchored, canvas, deferred, div, fill, point, prelude::*, px, size,
 };
 
 use super::header::weekday_ja;
 use super::widgets::tip;
 use super::{MINIMAP_H, Popover, Rireki, local, midnight};
 use crate::icons::{self, Icon};
+use crate::histogram::count_bins;
 use crate::prefs::Mode;
 use crate::theme::{self, c};
 
 /// ミニマップの棒 1 本の幅（px）
 const BIN_W: f32 = 2.0;
 
+
 impl Rireki {
     /// 表示中のセッションのイベントを、`edges` で区切った区間ごとに数える（開始時刻で数える）
     fn count_bins(&self, edges: &[f64]) -> Vec<u32> {
-        let mut out = vec![0u32; edges.len().saturating_sub(1)];
-        let (Some(&a), Some(&b)) = (edges.first(), edges.last()) else {
-            return out;
-        };
-        for &si in &self.order {
-            let s = &self.store.sessions[si];
-            if s.end < a || s.start >= b {
-                continue;
-            }
-            for lane in &s.lanes {
-                let evs = &lane.events;
-                let mut prev = evs.partition_point(|e| e.start < a);
-                for (i, &t) in edges[1..].iter().enumerate() {
-                    let next = evs.partition_point(|e| e.start < t);
-                    out[i] += (next - prev) as u32;
-                    prev = next;
-                }
-            }
-        }
-        out
+        count_bins(&self.store, &self.order, edges)
     }
 
     /// ミニマップが表す期間。選んだ期間があればそれ、なければ表示中のセッション全体
@@ -54,7 +37,7 @@ impl Rireki {
     }
 
     /// 日付の範囲を表示期間にする（`a`〜`b` の両日を含む）
-    fn pick_days(&mut self, a: NaiveDate, b: NaiveDate, window: &Window) {
+    pub(super) fn pick_days(&mut self, a: NaiveDate, b: NaiveDate, window: &Window) {
         let (a, b) = if a <= b { (a, b) } else { (b, a) };
         let (start, end) = (midnight(a), midnight(b + Duration::days(1)));
         self.mode = Mode::Timeline;

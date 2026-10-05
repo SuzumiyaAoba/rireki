@@ -1,5 +1,9 @@
 //! GUI を起動せず、読み取り専用の索引と決まった負荷で性能を計測する
 
+mod range;
+mod statistics;
+mod summary;
+
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::hint::black_box;
 use std::path::Path;
@@ -264,7 +268,7 @@ pub fn verify_logs() {
     }
 }
 
-fn measure<T>(name: &str, repetitions: usize, mut f: impl FnMut() -> T) {
+pub(crate) fn measure<T>(name: &str, repetitions: usize, mut f: impl FnMut() -> T) {
     let mut times = Vec::with_capacity(repetitions);
     for _ in 0..repetitions {
         let t = Instant::now();
@@ -325,7 +329,7 @@ pub fn view(index: Option<&Path>) {
         let mut store = Store::default();
         store.replace(db.load_all().unwrap());
         let order = view_order(&store);
-        let links = crate::app::view_index::exec_parents(&store.sessions, &order);
+        let links = crate::view_index::exec_parents(&store.sessions, &order);
         let mut sorted: Vec<_> = links
             .iter()
             .map(|(&child, &(parent, lane, start))| (child, parent, lane, start.to_bits()))
@@ -340,7 +344,7 @@ pub fn view(index: Option<&Path>) {
         );
         measure("view_order", 31, || view_order(&store));
         measure("exec_parents_real", 31, || {
-            crate::app::view_index::exec_parents(&store.sessions, &order)
+            crate::view_index::exec_parents(&store.sessions, &order)
         });
     }
     let mut sessions = Vec::new();
@@ -388,9 +392,9 @@ pub fn view(index: Option<&Path>) {
         sessions.push(std::sync::Arc::new(session));
     }
     let order: Vec<_> = (0..sessions.len()).collect();
-    assert!(crate::app::view_index::exec_parents(&sessions, &order).is_empty());
+    assert!(crate::view_index::exec_parents(&sessions, &order).is_empty());
     measure("exec_parents_overlapping_agent", 7, || {
-        crate::app::view_index::exec_parents(&sessions, &order)
+        crate::view_index::exec_parents(&sessions, &order)
     });
 }
 
@@ -431,6 +435,58 @@ fn synthetic_store(n: usize) -> Store {
         })],
     )]);
     store
+}
+
+/// 表示分布の集計を同じ索引と大量イベントで測る。
+pub fn range(index: &Path) {
+    let db = crate::db::Db::open_index_read(index).expect("計測対象の索引 DB を開けません");
+    let mut store = Store::default();
+    store.replace(db.load_all().unwrap());
+    let order = view_order(&store);
+    println!("{}", serde_json::json!({"dataset":"real", "sessions":order.len()}));
+    range::benchmark(&store.snapshot(), &order);
+    let store = synthetic_store(200_000);
+    println!("{}", serde_json::json!({"dataset":"dense", "sessions":1}));
+    range::benchmark(&store.snapshot(), &[0]);
+}
+
+/// 統計画面と同じ集計を、固定日・読み取り専用 DB と密な履歴で測る。
+pub fn statistics(index: &Path) {
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+    let db = crate::db::Db::open_index_read(index).expect("計測対象の索引 DB を開けません");
+    let mut store = Store::default();
+    store.replace(db.load_all().unwrap());
+    let order = view_order(&store);
+    println!(
+        "{}",
+        serde_json::json!({"dataset":"real", "sessions":order.len(),
+        "events":order.iter().flat_map(|&i| &store.sessions[i].lanes).map(|l| l.events.len()).sum::<usize>()})
+    );
+    statistics::benchmark(&store.snapshot(), &order, today);
+    let mut store = synthetic_store(200_000);
+    let base = chrono::TimeZone::from_local_datetime(
+        &chrono::Local,
+        &(today - chrono::Duration::days(119))
+            .and_hms_opt(0, 0, 0)
+            .unwrap(),
+    )
+    .earliest()
+    .unwrap()
+    .timestamp() as f64;
+    let session = std::sync::Arc::make_mut(&mut store.sessions[0]);
+    for (i, event) in session.lanes[0].events.iter_mut().enumerate() {
+        event.start = base + i as f64 * (119.0 * 86400.0 / 200_000.0);
+        event.end = event.start + 0.5;
+        event.usage.input = 1000;
+        event.usage.output = 100;
+        event.model = Some("gpt-6-sol".into());
+    }
+    session.finalize();
+    println!(
+        "{}",
+        serde_json::json!({"dataset":"dense", "sessions":1, "events":200_000})
+    );
+    statistics::benchmark(&store.snapshot(), &[0], today);
 }
 
 pub fn run(index: Option<&Path>) {
@@ -512,4 +568,25 @@ pub fn run(index: Option<&Path>) {
     measure("truncate_long_text", 31, || {
         crate::model::truncate(black_box(&text), 6000)
     });
+}
+
+pub fn detail_summary(index: &Path) {
+    let db = crate::db::Db::open_index_read(index).expect("計測対象の索引 DB を開けません");
+    let mut store = Store::default();
+    store.replace(db.load_all().unwrap());
+    if let Some(session) = store.sessions.iter().filter(|s| !s.lanes.is_empty())
+        .max_by_key(|s| s.lanes.iter().map(|l| l.events.len()).sum::<usize>()) {
+        let lane = (0..session.lanes.len()).max_by_key(|&li| session.lanes[li].events.len()).unwrap();
+        println!("{}", serde_json::json!({"dataset":"real"}));
+        summary::benchmark(session, lane);
+    }
+    let mut store = synthetic_store(200_000);
+    let session = std::sync::Arc::make_mut(&mut store.sessions[0]);
+    for (i, event) in session.lanes[0].events.iter_mut().enumerate() {
+        event.usage.input = 1000 + i as u32;
+        event.usage.output = 100;
+        event.model = Some("gpt-6-sol".into());
+    }
+    println!("{}", serde_json::json!({"dataset":"dense"}));
+    summary::benchmark(&store.sessions[0], 0);
 }
