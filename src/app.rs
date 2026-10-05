@@ -1,9 +1,9 @@
 //! メインウィンドウ（GPUI のビュー）。Slack のように、左端のアイコンレール・サイドバー・メイン・詳細パネルを並べる
 //!
 //! - 上端の帯: macOS のタイトルバー領域。信号機ボタンと状態表示だけを置き、ドラッグでウィンドウを動かせる
-//! - レール (`rail.rs`): 読み込み元（すべて / Claude / Codex）と表示（タイムライン / カレンダー）の切り替え
+//! - レール (`rail.rs`): 読み込み元（すべて / Claude / Codex）と表示（タイムライン / カレンダー / 統計）の切り替え
 //! - サイドバー (`sidebar.rs`): 検索欄と、進行中・プロジェクト・セッションの一覧、または検索結果
-//! - メイン: 見出しと凡例 (`header.rs`)、タイムライン (`timeline.rs`) / カレンダー (`calendar.rs`)
+//! - メイン: タイムライン (`timeline.rs`) / カレンダー (`calendar.rs`) と見出し・凡例、または統計 (`statistics.rs`)
 //! - 詳細パネル (`detail.rs`): 選択したブロックの内容。選択している間だけ開く
 //! - 重ねて出すもの (`overlay.rs`): ホバーカード、まとめ方のメニュー、ショートカット一覧
 
@@ -17,6 +17,7 @@ mod rail;
 mod range;
 mod rich;
 mod sidebar;
+mod statistics;
 mod timeline;
 mod widgets;
 pub(crate) mod view_index;
@@ -49,7 +50,7 @@ pub use keymap::init;
 use keymap::{
     Back, CloseWindow, DetailEvents, DetailFiles, DetailSession, Dismiss, FocusSearch, Forward, GoNext, GoPrev,
     GoToday, NextEvent, PrevEvent, SearchCancel, SearchConfirm, SearchDown, SearchUp, ShowDay, ShowHelp, ShowTimeline,
-    ShowWeek, ToggleInViewOnly, ToggleSidebar, ZoomIn, ZoomOut,
+    ShowWeek, ShowStatistics, ToggleInViewOnly, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use sidebar::SidebarView;
 
@@ -236,6 +237,8 @@ pub struct Rireki {
     /// ホバーカードを出す位置（ウィンドウ座標）
     hover_at: Point<Pixels>,
     mode: Mode,
+    statistics_open: bool,
+    statistics_state: statistics::State,
     /// カレンダーで最後に使った表示（日 / 週）
     calendar: Mode,
     // タイムライン
@@ -581,6 +584,8 @@ impl Rireki {
             hovered: None,
             hover_at: Point::default(),
             mode: p.mode,
+            statistics_open: p.statistics,
+            statistics_state: statistics::State::new(),
             calendar: if p.calendar == Mode::Day { Mode::Day } else { Mode::Week },
             t0: now(),
             spp: 60.0,
@@ -639,6 +644,7 @@ impl Rireki {
         folded.sort();
         let p = Prefs {
             mode: self.mode,
+            statistics: self.statistics_open,
             calendar: self.calendar,
             sidebar: self.sidebar_open,
             sidebar_w: self.sidebar_w,
@@ -955,6 +961,7 @@ impl Rireki {
 
     /// サイドバーと詳細パネルの実際の幅。ウィンドウが狭いときはメイン列が残るよう、詳細パネル → サイドバーの順に縮める
     fn pane_widths(&self, window: &Window) -> (f32, f32) {
+        if self.statistics_open { return (0.0, 0.0); }
         let (side, detail) = self.pane_full_widths(window);
         (side * ease(self.side_t), detail * ease(self.detail_t))
     }
@@ -1131,6 +1138,10 @@ impl Rireki {
     /// 選択を表示中のビューに映す。`zoom` なら収まらないときや縮小しすぎのときに拡大率も合わせる。
     /// タイムラインではレーンの行までスクロールし、カレンダーではその日の該当時刻を出す
     fn reveal(&mut self, sel: Selection, zoom: bool, window: &Window) {
+        if self.statistics_open {
+            self.statistics_open = false;
+            self.persist();
+        }
         let (a, b) = self.sel_range(sel);
         match self.mode {
             Mode::Timeline => {
@@ -1274,6 +1285,7 @@ impl Rireki {
     }
 
     fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.statistics_open = false;
         self.popover = None;
         if !self.sidebar_open {
             self.sidebar_open = true;
@@ -1281,6 +1293,7 @@ impl Rireki {
         }
         window.focus(&self.search_input.focus_handle(cx));
         self.search_input.update(cx, |i, cx| i.select_all_text(cx));
+        self.persist();
         self.sidebar_changed(cx);
         cx.notify();
     }
@@ -1317,6 +1330,7 @@ impl Rireki {
 
     /// 表示を切り替える。タイムラインとカレンダーの間では、見ていた時刻が画面に残るようにする
     fn set_mode(&mut self, mode: Mode, window: &Window) {
+        self.statistics_open = false;
         let from = self.mode;
         if from == Mode::Timeline && mode != Mode::Timeline {
             let span = self.spp * self.plot_width(window) as f64;
@@ -1386,6 +1400,7 @@ impl Rireki {
     }
 
     fn step(&mut self, dir: f64, window: &Window) {
+        if self.statistics_open { return; }
         match self.mode {
             Mode::Day => self.day0 += Duration::days(dir as i64),
             Mode::Week => self.day0 += Duration::days(7 * dir as i64),
@@ -1422,6 +1437,7 @@ impl Rireki {
     }
 
     fn zoom(&mut self, f: f64, window: &Window) {
+        if self.statistics_open { return; }
         match self.mode {
             Mode::Timeline => {
                 let w = self.plot_width(window) as f64;
@@ -1476,6 +1492,7 @@ impl Rireki {
 
     /// トラックパッドのピンチ。`m` は拡大率の差分（正で拡大）
     fn on_pinch(&mut self, m: f64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.statistics_open { return; }
         let pos = window.mouse_position();
         match self.mode {
             Mode::Timeline => self.zoom_at(pos, 1.0 / (1.0 + m).max(0.1), window),
@@ -1647,6 +1664,9 @@ impl Rireki {
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.popover.take().is_some() {
             cx.notify();
+        } else if self.statistics_open {
+            self.set_mode(self.mode, window);
+            cx.notify();
         } else if self.selected.is_some() {
             self.close_detail(cx);
         } else if !self.query.is_empty() {
@@ -1684,49 +1704,54 @@ impl Drop for Rireki {
 impl Render for Rireki {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.profile_frame(window, cx);
-        let main = match self.mode {
-            Mode::Timeline => self.timeline(window, cx),
-            _ => self.calendar(window, cx),
-        };
         self.step_panes(window);
+        let main_col = if self.statistics_open {
+            self.statistics(window, cx).into_any_element()
+        } else {
+            let main = match self.mode {
+                Mode::Timeline => self.timeline(window, cx),
+                _ => self.calendar(window, cx),
+            };
+            let label_handle = self
+                .resize_handle("resize-label", cx, |t, x| Resize::Label { x, w: t.label_w })
+                .left(px(self.label_w - HANDLE_W / 2.0));
+            let body = div()
+                .id("main")
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .relative()
+                .on_scroll_wheel(cx.listener(Self::on_wheel))
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
+                .on_mouse_move(cx.listener(Self::on_move))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up))
+                .on_hover(cx.listener(|t, hovered: &bool, _, cx| {
+                    if !*hovered && t.hovered.take().is_some() {
+                        cx.notify();
+                    }
+                }))
+                .child(main)
+                .when(self.mode == Mode::Timeline, |d| d.child(label_handle));
+            // 背景はパネルのものを使う（角に接するので、塗ると角丸の枠線を覆ってしまう）
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .flex_col()
+                .child(self.header(window, cx))
+                .when(self.mode == Mode::Timeline, |d| d.child(self.minimap(window, cx)))
+                .child(body)
+                .child(self.footer(window))
+                .into_any_element()
+        };
         let (side_w, detail_w) = self.pane_widths(window);
         let (side_full, detail_full) = self.pane_full_widths(window);
-        let side_shown = self.side_t > 0.0;
-        let detail_shown = self.detail_t > 0.0;
+        let side_shown = !self.statistics_open && self.side_t > 0.0;
+        let detail_shown = !self.statistics_open && self.detail_t > 0.0;
         // 開ききっているときだけ幅を変えるつまみを出す
-        let side_ready = self.sidebar_open && self.side_t == 1.0;
-        let detail_ready = self.selected.is_some() && self.detail_t == 1.0;
-        let label_handle = self
-            .resize_handle("resize-label", cx, |t, x| Resize::Label { x, w: t.label_w })
-            .left(px(self.label_w - HANDLE_W / 2.0));
-        let body = div()
-            .id("main")
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .relative()
-            .on_scroll_wheel(cx.listener(Self::on_wheel))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
-            .on_mouse_move(cx.listener(Self::on_move))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up))
-            .on_hover(cx.listener(|t, hovered: &bool, _, cx| {
-                if !*hovered && t.hovered.take().is_some() {
-                    cx.notify();
-                }
-            }))
-            .child(main)
-            .when(self.mode == Mode::Timeline, |d| d.child(label_handle));
-        // 背景はパネルのものを使う（角に接するので、塗ると角丸の枠線を覆ってしまう）
-        let main_col = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .child(self.header(window, cx))
-            .when(self.mode == Mode::Timeline, |d| d.child(self.minimap(window, cx)))
-            .child(body)
-            .child(self.footer(window));
+        let side_ready = side_shown && self.sidebar_open && self.side_t == 1.0;
+        let detail_ready = detail_shown && self.selected.is_some() && self.detail_t == 1.0;
 
         let mut panel = div()
             .flex_1()
@@ -1795,6 +1820,7 @@ impl Render for Rireki {
                 t.set_mode(Mode::Week, window);
                 cx.notify();
             }))
+            .on_action(cx.listener(|t, _: &ShowStatistics, window, cx| t.show_statistics(window, cx)))
             .on_action(cx.listener(|t, _: &GoToday, window, cx| {
                 t.go_today(window);
                 cx.notify();

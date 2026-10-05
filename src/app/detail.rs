@@ -2152,7 +2152,7 @@ impl Rireki {
 }
 
 /// トークン数を短く（1,234 / 12.3k / 1.23M）
-fn fmt_tokens(n: u64) -> String {
+pub(super) fn fmt_tokens(n: u64) -> String {
     match n {
         0..10_000 => fmt_n(n as usize),
         10_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3),
@@ -2164,7 +2164,7 @@ fn fmt_tokens(n: u64) -> String {
 const USAGE_COLORS: [u32; 4] = [0x5b9cf5, 0x3f6a9e, 0xd29a4a, 0x7fd18b];
 
 /// 使用量の合計・内訳の帯・凡例
-fn usage_view(u: &UsageSum) -> Div {
+pub(super) fn usage_view(u: &UsageSum) -> Div {
     let total = u.total().max(1) as f32;
     let parts = [
         ("入力", u.input, USAGE_COLORS[0]),
@@ -2283,7 +2283,7 @@ fn diff_bar(added: usize, removed: usize) -> Div {
 }
 
 /// 料金（USD）
-fn fmt_usd(v: f64) -> String {
+pub(super) fn fmt_usd(v: f64) -> String {
     if v < 0.01 && v > 0.0 { format!("${v:.4}") } else { format!("${v:.2}") }
 }
 

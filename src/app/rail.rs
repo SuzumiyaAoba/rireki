@@ -51,7 +51,7 @@ impl Rireki {
                 Icon::Timeline,
                 "タイムライン",
                 "⌘1",
-                self.mode == Mode::Timeline,
+                !self.statistics_open && self.mode == Mode::Timeline,
                 cx,
                 |t, w, _| t.set_mode(Mode::Timeline, w),
             ))
@@ -60,9 +60,18 @@ impl Rireki {
                 Icon::Calendar,
                 "カレンダー",
                 "⌘2 / ⌘3",
-                self.mode != Mode::Timeline,
+                !self.statistics_open && self.mode != Mode::Timeline,
                 cx,
                 |t, w, _| t.set_mode(t.calendar, w),
+            ))
+            .child(self.nav_item(
+                "nav-statistics",
+                Icon::Chart,
+                "統計",
+                "⌘4",
+                self.statistics_open,
+                cx,
+                |t, w, cx| t.show_statistics(w, cx),
             ))
             .child(div().flex_1())
             .child(self.nav_item("nav-help", Icon::Keyboard, "キー操作", "?", help, cx, |t, _, _| {

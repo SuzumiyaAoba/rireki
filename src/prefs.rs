@@ -40,6 +40,8 @@ pub enum DetailTab {
 #[serde(default)]
 pub struct Prefs {
     pub mode: Mode,
+    /// 統計画面を開いているか（履歴の表示モードは別に保持する）
+    pub statistics: bool,
     /// カレンダーで最後に使った表示（日 / 週）
     pub calendar: Mode,
     pub sidebar: bool,
@@ -64,6 +66,7 @@ impl Default for Prefs {
     fn default() -> Self {
         Self {
             mode: Mode::Timeline,
+            statistics: false,
             calendar: Mode::Week,
             sidebar: true,
             sidebar_w: 260.0,
@@ -111,11 +114,12 @@ mod tests {
 
     #[test]
     fn roundtrip_and_partial() {
-        let p = Prefs { focus: Some("/w".into()), gran: Granularity::Turn, ..Prefs::default() };
+        let p = Prefs { focus: Some("/w".into()), gran: Granularity::Turn, statistics: true, ..Prefs::default() };
         let s = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&s).unwrap(), p);
         // 足りない項目は既定値で補う（項目を増やしても古いファイルを読める）
         let q: Prefs = serde_json::from_str(r#"{"mode":"day"}"#).unwrap();
         assert_eq!((q.mode, q.sidebar), (Mode::Day, true));
+        assert!(!q.statistics);
     }
 }

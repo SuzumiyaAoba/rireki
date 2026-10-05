@@ -11,6 +11,7 @@ pub enum Icon {
     CalendarWeek,
     Calendar,
     Timeline,
+    Chart,
     ChevronLeft,
     ChevronRight,
     ChevronDown,
@@ -64,11 +65,12 @@ pub enum Icon {
 }
 
 impl Icon {
-    const ALL: [Icon; 53] = [
+    const ALL: [Icon; 54] = [
         Icon::CalendarDay,
         Icon::CalendarWeek,
         Icon::Calendar,
         Icon::Timeline,
+        Icon::Chart,
         Icon::ChevronLeft,
         Icon::ChevronRight,
         Icon::ChevronDown,
@@ -126,6 +128,7 @@ impl Icon {
             Icon::CalendarWeek => "calendar-week",
             Icon::Calendar => "calendar",
             Icon::Timeline => "timeline",
+            Icon::Chart => "chart",
             Icon::ChevronLeft => "chevron-left",
             Icon::ChevronRight => "chevron-right",
             Icon::ChevronDown => "chevron-down",
@@ -203,6 +206,7 @@ impl Icon {
             Icon::Timeline => {
                 r#"<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 7h8"/><path d="M11 12h8"/><path d="M9 17h5"/>"#
             }
+            Icon::Chart => r#"<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M8 16v-3"/><path d="M13 16V8"/><path d="M18 16v-5"/>"#,
             Icon::ChevronLeft => r#"<path d="m15 18-6-6 6-6"/>"#,
             Icon::ChevronRight => r#"<path d="m9 18 6-6-6-6"/>"#,
             Icon::ChevronDown => r#"<path d="m6 9 6 6 6-6"/>"#,
