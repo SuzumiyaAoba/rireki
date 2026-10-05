@@ -149,8 +149,10 @@ pub(super) struct State {
     scroll: ScrollHandle,
     /// 要求中の集計の条件
     key: Option<Key>,
-    /// 表示中の集計の条件。要求中と違う間は前の結果を薄く表示する
+    /// 表示中の集計の条件。データの自動更新では前の結果の明るさを保つ
     shown: Option<Key>,
+    /// 表示中の集計に使った読み込み元とプロジェクト
+    shown_filters: Option<(SourceFilter, Option<String>)>,
     task: Option<gpui::Task<()>>,
     summary: Option<Summary>,
     cache: Arc<Mutex<Cache>>,
@@ -171,6 +173,7 @@ impl State {
             scroll: ScrollHandle::new(),
             key: None,
             shown: None,
+            shown_filters: None,
             task: None,
             summary: None,
             cache: Arc::new(Mutex::new(Cache::default())),
@@ -179,6 +182,15 @@ impl State {
             all_projects: false,
             trend_area: Default::default(),
             hours_area: Default::default(),
+        }
+    }
+
+    fn dimmed(&self, source: SourceFilter, focus: Option<&str>) -> bool {
+        match (self.shown, self.key, &self.shown_filters) {
+            (Some(shown), Some(key), Some((shown_source, shown_focus))) => {
+                shown.1 != key.1 || shown.2 != key.2 || *shown_source != source || shown_focus.as_deref() != focus
+            }
+            _ => false,
         }
     }
 }
@@ -208,8 +220,9 @@ impl Rireki {
         if self.statistics_state.key == Some(key) {
             return;
         }
-        // 前の結果は集計が終わるまで薄く表示し、画面の組み立てを崩さない。
+        // 前の結果は集計が終わるまで保持し、データ更新のたびに明るさを変えない。
         self.statistics_state.key = Some(key);
+        let filters = (self.source, self.focus.clone());
         let snapshot = self.store.clone();
         let order = self.order.clone();
         let cache = self.statistics_state.cache.clone();
@@ -243,6 +256,7 @@ impl Rireki {
                 {
                     state.summary = Some(summary);
                     state.shown = Some(key);
+                    state.shown_filters = Some(filters);
                     cx.notify();
                 }
             });
@@ -337,7 +351,7 @@ impl Rireki {
 
     fn statistics_body(&self, s: &Summary, inner: f32, cx: &mut Context<Self>) -> Div {
         let wide = inner >= WIDE;
-        let stale = self.statistics_state.shown != self.statistics_state.key;
+        let stale = self.statistics_state.dimmed(self.source, self.focus.as_deref());
         let pair = |a: Div, b: Div| {
             div()
                 .flex()

@@ -57,7 +57,7 @@ const STAGES: [(&str, usize); 9] = [
     ("selection", 240),
     ("event_navigation", 120),
 ];
-const DETAIL_STAGES: [(&str, usize); 9] = [
+const DETAIL_STAGES: [(&str, usize); 10] = [
     ("selection", 240),
     ("detail_scroll", 240),
     ("detail_filter", 240),
@@ -67,6 +67,7 @@ const DETAIL_STAGES: [(&str, usize); 9] = [
     ("detail_follow", 240),
     ("detail_follow_cancel", 240),
     ("detail_live_scrolled", 240),
+    ("detail_refresh", 240),
 ];
 const RICH_STAGES: [(&str, usize); 4] = [
     ("detail_file_expand", 240),
@@ -343,7 +344,7 @@ impl Rireki {
             if stage.starts_with("detail_") {
                 let session = if stage == "detail_long_single" {
                     self.profile_rich_session(anchor)
-                } else if matches!(stage, "detail_follow" | "detail_follow_cancel" | "detail_live_scrolled") {
+                } else if matches!(stage, "detail_follow" | "detail_follow_cancel" | "detail_live_scrolled" | "detail_refresh") {
                     self.profile_session(anchor)
                 } else {
                     anchor
@@ -560,6 +561,26 @@ impl Rireki {
                     self.detail_changed(cx);
                 }
             }
+            "detail_refresh" => {
+                if step % 40 == 10 {
+                    self.set_detail_tab([DetailTab::Events, DetailTab::Files, DetailTab::Session][step / 40 % 3], cx);
+                    self.file_open = self.detail_cache.as_ref().and_then(|d| d.files.first()).map(|f| f.path.clone());
+                    self.expanded.insert("file-diff");
+                    self.set_row_filter(Some(super::RowFilter::Name("exec_command".into())), cx);
+                }
+                if step % 40 == 20 {
+                    self.profile_append(10, cx);
+                }
+                if step % 40 == 39 {
+                    let sel = self.selected.unwrap();
+                    assert_eq!(self.detail_cache.as_ref().unwrap().sel, sel);
+                    assert!(std::ptr::eq(self.detail_session(sel), &*self.store.sessions[sel.session]));
+                    assert_eq!(self.detail_cache.as_ref().unwrap().selection_summary.total.stats.tools,
+                        self.store.sessions[sel.session].lanes[sel.lane].events[sel.first..=sel.last].iter()
+                            .filter(|e| matches!(e.kind, Kind::Tool | Kind::Agent)).count());
+                    assert!(self.file_open.is_some() && self.expanded.contains("file-diff") && self.row_filter.is_some());
+                }
+            }
             "detail_follow" | "detail_follow_cancel" | "detail_live_scrolled" => {
                 if step == 40 {
                     self.detail_list.state.scroll_to(ListOffset {
@@ -650,6 +671,10 @@ impl Rireki {
         let Some(sel) = self.selected else {
             return;
         };
+        let shown = self.shown_detail_selection().unwrap();
+        let generation = self.shown_detail_generation();
+        let offset = self.detail_list.state.logical_scroll_top();
+        let shown_snapshot = self.detail_snapshot.as_ref().unwrap().0.clone();
         let mut snapshot = self.store.clone();
         let session = std::sync::Arc::make_mut(&mut snapshot.sessions[sel.session]);
         let start = session.start;
@@ -664,5 +689,12 @@ impl Rireki {
             },
             cx,
         );
+        // 背景処理が完了する前にも、旧版の行・集計・位置をそのまま表示できる。
+        assert_eq!(self.shown_detail_selection(), Some(shown));
+        assert_eq!(self.shown_detail_generation(), generation);
+        assert!(std::ptr::eq(self.detail_session(shown), &*shown_snapshot));
+        let next = self.detail_list.state.logical_scroll_top();
+        assert_eq!(next.item_ix, offset.item_ix);
+        assert_eq!(next.offset_in_item, offset.offset_in_item);
     }
 }

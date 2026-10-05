@@ -130,6 +130,8 @@ impl Rireki {
                 session.finalize();
                 self.store.sessions[anchor] = Arc::new(session);
                 self.rebuild_order();
+                self.request_statistics(cx);
+                assert!(!self.statistics_state.dimmed(self.source, self.focus.as_deref()));
                 println!(
                     "{}",
                     serde_json::json!({"ui_profile":"statistics_expected", "stage":stage,

@@ -39,7 +39,7 @@ use std::sync::{
 use crate::index::{self, Delta, ViewLoader};
 use crate::input::{InputEvent, TextInput};
 use crate::layout::Granularity;
-use crate::model::{Snapshot, Source};
+use crate::model::{Session, Snapshot, Source};
 use crate::prefs::{self, DetailTab, Mode, Prefs, SourceFilter};
 use crate::search;
 use crate::theme::{self, c};
@@ -204,6 +204,8 @@ pub struct Rireki {
     result_list_key: Cell<(u64, usize, u32)>,
     detail_view: Entity<DetailView>,
     detail_cache: Option<DetailCache>,
+    /// 表示中の詳細と同じ版のセッションと、読み込み完了時の世代
+    detail_snapshot: Option<(Arc<Session>, u64)>,
     /// exec の詳細を整形結果ではなく JS 本文で表示する
     show_raw: bool,
     /// 詳細パネルのイベント一覧の絞り込み（選択が変わると解除する）
@@ -553,6 +555,7 @@ impl Rireki {
             result_list_key: Cell::new((0, 0, 0)),
             detail_view,
             detail_cache: None,
+            detail_snapshot: None,
             show_raw: false,
             row_filter: None,
             expanded: HashSet::new(),
@@ -682,13 +685,14 @@ impl Rireki {
                 self.selected = Some(sel);
             }
             if self.valid(sel) {
-                self.detail_cache = None;
-                self.select(sel, cx);
+                // 再読み込みが終わるまで、本文と集計を同じ版のまま表示する。
+                self.refresh_detail(sel, cx);
                 self.detail_follow = following && at_bottom && self.detail_tab == DetailTab::Events;
             } else {
                 self.cancel_detail_load();
                 self.selected = None;
                 self.detail_cache = None;
+                self.detail_snapshot = None;
                 self.detail_changed(cx);
             }
         }
@@ -1108,6 +1112,7 @@ impl Rireki {
             self.forward.clear();
         }
         self.detail_cache = None;
+        self.detail_snapshot = None;
         self.sidebar_changed(cx);
         cx.notify();
     }

@@ -233,7 +233,8 @@ impl Rireki {
     pub(super) fn detail_profile_reorder_files(&mut self, cx: &mut Context<Self>) {
         if let Some(cache) = &mut self.detail_cache && cache.files.len() > 1 {
             cache.files.swap(0, 1);
-            self.detail_gen.fetch_add(1, super::Ordering::Relaxed);
+            let generation = self.detail_gen.fetch_add(1, super::Ordering::Relaxed) + 1;
+            if let Some((_, shown)) = &mut self.detail_snapshot { *shown = generation; }
             self.detail_changed(cx);
         }
     }
@@ -299,7 +300,7 @@ impl Rireki {
     }
 
     pub(super) fn detail_uses_list(&self) -> bool {
-        self.selected.filter(|&sel| self.valid(sel) && sel.first < sel.last)
+        self.shown_detail_selection().filter(|&sel| sel.first < sel.last)
             .is_some_and(|sel| self.detail_tab == DetailTab::Events || (self.detail_tab == DetailTab::Files && self.cache(sel).is_none_or(|cache| cache.files.is_empty())))
     }
 
@@ -363,8 +364,15 @@ impl Rireki {
 
     /// DB 読み込みと JS のモック実行を背景で行い、最新の選択だけを反映する
     pub(super) fn request_detail(&mut self, sel: Selection, cx: &mut Context<Self>) {
-        self.cancel_detail_load();
         self.detail_cache = None;
+        self.detail_snapshot = None;
+        self.refresh_detail(sel, cx);
+    }
+
+    /// 同じ選択の更新では表示中の詳細を保持し、セッションの版ごと差し替える
+    pub(super) fn refresh_detail(&mut self, sel: Selection, cx: &mut Context<Self>) {
+        self.cancel_detail_load();
+        self.detail_changed(cx);
         let generation = self.detail_gen.load(super::Ordering::Relaxed);
         let gen_counter = self.detail_gen.clone();
         let loader = self.detail_loader.clone();
@@ -376,12 +384,14 @@ impl Rireki {
                 let mut loader = loader.lock().unwrap();
                 if !is_current() { return None; }
                 loader.prepare();
-                loader.load_session(sel, &session, is_current)
+                loader.load_session(sel, &session, is_current).map(|cache| (cache, session))
             }).await;
-            let Some(cache) = loaded else { return };
+            let Some((cache, session)) = loaded else { return };
             let _ = this.update(cx, |app, cx| {
                 if app.detail_gen.load(super::Ordering::Relaxed) == generation && app.selected == Some(sel) && app.valid(sel) {
-                    app.detail_cache = Some(cache);
+                    let old_cache = app.detail_cache.replace(cache);
+                    let old_snapshot = app.detail_snapshot.replace((session, generation));
+                    cx.background_executor().spawn(async move { drop((old_cache, old_snapshot)); }).detach();
                     app.detail_changed(cx);
                     if std::mem::take(&mut app.detail_follow) && app.detail_tab == DetailTab::Events {
                         app.animate_to_bottom(cx);
@@ -429,7 +439,7 @@ impl Rireki {
             .text_sm()
             .text_color(c(theme::TEXT))
             .on_scroll_wheel(cx.listener(|app, _: &gpui::ScrollWheelEvent, _, _| app.cancel_detail_follow()));
-        let Some(sel) = self.selected.filter(|&s| self.valid(s)) else {
+        let Some(sel) = self.shown_detail_selection() else {
             return panel.into_any_element();
         };
         let files = self.cache(sel).map_or(0, |d| d.files.len());
@@ -475,7 +485,7 @@ impl Rireki {
             DetailTab::Session => {
                 if self.cache(sel).is_some() {
                     body = body.child(self.session_card(sel, cx));
-                    if self.store.sessions[sel.session].lanes.len() > 1 {
+                    if self.detail_session(sel).lanes.len() > 1 {
                         body = body.child(self.subagent_list(sel, cx));
                     }
                 } else {
@@ -578,9 +588,28 @@ impl Rireki {
         self.detail_cache.as_ref().filter(|d| d.sel == sel)
     }
 
+    pub(super) fn shown_detail_selection(&self) -> Option<Selection> {
+        self.selected.filter(|&sel| self.valid(sel)).map(|sel| {
+            // 末尾へ追従する選択が伸びても、完了前に未読み込みの行を混ぜない。
+            self.detail_cache.as_ref().map_or(sel, |d| d.sel)
+        })
+    }
+
+    pub(super) fn detail_session(&self, sel: Selection) -> &Session {
+        self.detail_snapshot.as_ref().filter(|_| self.cache(sel).is_some())
+            .map_or(&self.store.sessions[sel.session], |(session, _)| session)
+    }
+
+    pub(super) fn shown_detail_generation(&self) -> u64 {
+        self.detail_snapshot.as_ref().map_or_else(
+            || self.detail_gen.load(super::Ordering::Relaxed),
+            |(_, generation)| *generation,
+        )
+    }
+
     /// 見出し。イベント名と状態、前後のイベント・選択の履歴の移動、閉じる
     fn detail_header(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let lane = &s.lanes[sel.lane];
         let evs = &lane.events[sel.first..=sel.last];
         let single = evs.len() == 1;
@@ -726,7 +755,7 @@ impl Rireki {
     /// 見出しの下の文脈。読み込み元・プロジェクト・セッション・サブエージェントをパンくずで出す。
     /// セッション名を押すとセッションのタブへ、サブエージェントの矢印で起動元へ移る
     fn context_bar(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let lane = &s.lanes[sel.lane];
         let (logo, logo_color) = icons::source_icon(s.source);
         let title = if s.title.is_empty() { "(無題)".to_string() } else { s.title.clone() };
@@ -828,7 +857,9 @@ impl Rireki {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let n = self.store.sessions[session].lanes[lane].events.len();
+        let Some(n) = self.store.sessions.get(session).and_then(|s| s.lanes.get(lane)).map(|l| l.events.len()) else {
+            return;
+        };
         if n == 0 {
             return;
         }
@@ -841,7 +872,7 @@ impl Rireki {
 
     /// セッションの詳細。概要の数字 → 操作 → トークン → 属性の順に、よく見るものを上に置く
     fn session_card(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let lane = &s.lanes[sel.lane];
         let summary = &self.cache(sel).unwrap().session_summary;
         let usage = summary.total.usage;
@@ -1002,7 +1033,7 @@ impl Rireki {
 
     /// サブエージェントの一覧。押すとそのレーン全体を選ぶ
     fn subagent_list(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let mut list = div()
             .flex()
             .flex_col()
@@ -1069,7 +1100,7 @@ impl Rireki {
 
     /// 1 イベントの詳細。時刻・トークン数・きっかけの指示と、入力・結果
     fn event_view(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let lane = &s.lanes[sel.lane];
         let e = &lane.events[sel.first];
         let cache = self.cache(sel);
@@ -1170,7 +1201,7 @@ impl Rireki {
                 if e.kind == Kind::Agent
                     && let Some(li) = e.call_id.as_deref().and_then(|id| s.lane_spawned_by(id))
                 {
-                    col = col.child(self.subagent_button(sel.session, li, cx));
+                    col = col.child(self.subagent_button(sel, li, cx));
                 }
                 let lines = cache.and_then(|d| d.out_lines.first()).copied().unwrap_or(0);
                 col = col.child(self.tool_output(e, output, lines, is_live(s.end), &s.cwd, cx));
@@ -1340,8 +1371,9 @@ impl Rireki {
     }
 
     /// サブエージェントのレーンを開くボタン（件数・期間・失敗を添える）
-    fn subagent_button(&self, session: usize, li: usize, cx: &mut Context<Self>) -> Stateful<Div> {
-        let l = &self.store.sessions[session].lanes[li];
+    fn subagent_button(&self, sel: Selection, li: usize, cx: &mut Context<Self>) -> Stateful<Div> {
+        let session = sel.session;
+        let l = &self.detail_session(sel).lanes[li];
         let n = l.events.len();
         let (a, b) = l.range().unwrap_or((0.0, 0.0));
         let st = self.detail_cache.as_ref().unwrap().session_summary.lanes[li].stats;
@@ -1357,6 +1389,7 @@ impl Rireki {
             cx,
             move |t, w, cx| {
                 let sel = Selection { session, lane: li, first: 0, last: n - 1 };
+                if !t.valid(sel) { return; }
                 t.navigate(sel, w, cx);
                 t.reveal(sel, true, w);
             },
@@ -1367,9 +1400,9 @@ impl Rireki {
 
     /// 選択範囲の期間・件数・集計と、絞り込み（名前・失敗）、編集したファイル
     fn selection_summary(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
-        let (start, end) = self.sel_range(sel);
+        let (start, end) = (evs[0].start, self.cache(sel).unwrap().end());
         let summary = &self.cache(sel).unwrap().selection_summary;
         let st = summary.total.stats;
         let counts = &summary.names;
@@ -1463,7 +1496,7 @@ impl Rireki {
     fn files_list(&self, sel: Selection, cache: &DetailCache, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         self.file_list.prepare(FileListKey {
             sel,
-            generation: self.detail_gen.load(super::Ordering::Relaxed),
+            generation: self.shown_detail_generation(),
             width: self.pane_widths(window).1.to_bits(),
             open: self.file_open.clone(),
             all_files: self.expanded.contains("files"),
@@ -1486,7 +1519,7 @@ impl Rireki {
         self.file_list.rendered.set(self.file_list.rendered.get() + 1);
         let Some(row) = self.file_list.row(index) else { return div().into_any_element(); };
         let Some(cache) = self.cache(sel) else { return div().into_any_element(); };
-        let cwd = &self.store.sessions[sel.session].cwd;
+        let cwd = &self.detail_session(sel).cwd;
         match row {
             FileRow::Summary | FileRow::File(_) | FileRow::More => self.file_row_view(cache, cwd, row, cx),
             FileRow::History(file) | FileRow::Edit { file, .. } | FileRow::Empty(file) | FileRow::Expand(file) => {
@@ -1594,9 +1627,9 @@ impl Rireki {
 
     /// 開いたファイルの編集の履歴。選択の期間の上に編集を印で置いた帯と、編集ごとの差分
     fn file_history(&self, sel: Selection, d: &DetailCache, f: &FileStat, cwd: &str, row: FileRow, cx: &mut Context<Self>) -> Div {
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
-        let (start, end) = self.sel_range(sel);
+        let (start, end) = (evs[0].start, d.end());
         let span = (end - start).max(1.0);
         // 各編集でこのファイルに加えた変更
         let edits: Vec<(usize, Vec<&rich::FilePatch>)> = f
@@ -1772,11 +1805,11 @@ impl Rireki {
 
     /// イベントの一覧。絞り込みがなければユーザーの指示ごとに区切って並べる
     fn event_list(&self, sel: Selection, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
         self.detail_list.prepare(DetailListKey {
             sel,
-            generation: self.detail_gen.load(super::Ordering::Relaxed),
+            generation: self.shown_detail_generation(),
             filter: self.row_filter.clone(),
             width: self.pane_widths(window).1.to_bits(),
             live: is_live(s.end),
@@ -1806,7 +1839,7 @@ impl Rireki {
             Some(DetailRow::Event(i)) => i,
             None => return div().into_any_element(),
         };
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let e = &s.lanes[sel.lane].events[sel.first + i];
         let cache = self.cache(sel);
         let touched = cache.and_then(|d| d.touched.get(i)).map_or(&[][..], Vec::as_slice);
@@ -1820,7 +1853,7 @@ impl Rireki {
 
     /// ユーザーの指示の行。次の指示までの件数・時間・失敗を添え、本文を大きめに出す（ターンの区切り）
     fn turn_row(&self, sel: Selection, i: usize, text: &str, cx: &mut Context<Self>) -> Stateful<Div> {
-        let lane = &self.store.sessions[sel.session].lanes[sel.lane];
+        let lane = &self.detail_session(sel).lanes[sel.lane];
         let idx = sel.first + i;
         let e = &lane.events[idx];
         let turns = &self.cache(sel).unwrap().session_summary.turns[sel.lane];
@@ -1870,7 +1903,7 @@ impl Rireki {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let idx = sel.first + i;
-        let s = &self.store.sessions[sel.session];
+        let s = self.detail_session(sel);
         let e = &s.lanes[sel.lane].events[idx];
         let message = matches!(e.kind, Kind::User | Kind::Assistant | Kind::Thinking);
         let status = status_label(e, live, output);
