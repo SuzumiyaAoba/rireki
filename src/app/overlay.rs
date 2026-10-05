@@ -58,13 +58,13 @@ impl Rireki {
         let (color, ic) = (theme::event_color(dom), theme::event_icon(dom));
         let (start, end) = self.sel_range(sel);
         let single = evs.len() == 1;
-        let head = if single { evs[0].name.clone() } else { format!("{} 件", evs.len()) };
+        let head = if single { evs[0].name.to_string() } else { format!("{} 件", evs.len()) };
         let body = if single { evs[0].summary.clone() } else { String::new() };
         // まとめたブロックは、多い順に名前ごとの件数を並べる
         let mut counts: Vec<(&str, usize, u32, Icon)> = Vec::new();
         if !single {
             for e in evs {
-                match counts.iter_mut().find(|(n, ..)| *n == e.name) {
+                match counts.iter_mut().find(|(n, ..)| *n == e.name.as_ref()) {
                     Some(x) => x.1 += 1,
                     None => counts.push((&e.name, 1, theme::event_color(e), theme::event_icon(e))),
                 }

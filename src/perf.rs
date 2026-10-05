@@ -1,8 +1,13 @@
 //! GUI を起動せず、読み取り専用の索引と決まった負荷で性能を計測する
 
 mod range;
+mod search;
 mod statistics;
 mod summary;
+#[cfg(target_os = "macos")]
+mod memory;
+#[cfg(target_os = "macos")]
+pub use memory::db as db_memory;
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::hint::black_box;
@@ -10,7 +15,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::layout::{self, Granularity};
-use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Store};
+use crate::model::{Event, EventText, Kind, Lane, Loaded, Session, Source, Store};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct IngestJob {
@@ -66,6 +71,17 @@ fn items_hash(items: &[Loaded]) -> u64 {
     hash.finish()
 }
 
+fn event_text(e: &Event) -> EventText<'_> { e.text() }
+
+fn event_hash(e: &Event, input: &str, output: &str) -> u64 {
+    let mut hash = DefaultHasher::new();
+    (e.start.to_bits(), e.end.to_bits(), e.kind as u8, e.status as u8).hash(&mut hash);
+    (&e.name, &e.summary, input, output, &e.call_id, &e.model).hash(&mut hash);
+    (e.usage.input, e.usage.cache_read, e.usage.cache_write, e.usage.cache_write_1h,
+        e.usage.output, e.usage.reasoning).hash(&mut hash);
+    hash.finish()
+}
+
 /// 空の隔離キャッシュを要求し、非公開の manifest で計測対象を固定する
 pub(crate) fn ingest_tasks(manifest: &Path) -> Vec<crate::index::Task> {
     let cache = std::env::var_os("RIREKI_CACHE_DIR")
@@ -75,7 +91,13 @@ pub(crate) fn ingest_tasks(manifest: &Path) -> Vec<crate::index::Task> {
         !cache.exists() || std::fs::read_dir(&cache).is_ok_and(|mut entries| entries.next().is_none()),
         "取り込みの計測には空の RIREKI_CACHE_DIR が必要です"
     );
-    let discovered = crate::loader::discover();
+    let discovered = match std::env::var_os("RIREKI_BENCH_LOG_ROOT") {
+        Some(root) => {
+            let root = std::path::PathBuf::from(root);
+            crate::loader::discover_in(&root.join("claude"), &root.join("codex"))
+        }
+        None => crate::loader::discover(),
+    };
     if !manifest.exists() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -126,20 +148,27 @@ pub(crate) fn ingest_tasks(manifest: &Path) -> Vec<crate::index::Task> {
 pub fn ingest(manifest: &Path) {
     let tasks = ingest_tasks(manifest);
     let mut expected = std::collections::BTreeMap::new();
+    // 比較用の元ログの全件走査は取り込み時間に含めず、本文は一ファイルずつ解放する。
+    for task in &tasks {
+        let items = crate::loader::parse(&task.job);
+        if !items.is_empty() { expected.insert(task.job.key(), items_hash(&items)); }
+    }
+    #[cfg(target_os = "macos")]
+    let memory = std::env::args().any(|a| a == "--measure-memory").then(memory::Monitor::start);
     let started = Instant::now();
     let mut indexer = crate::index::Indexer::open();
     let mut store = Store::default();
     for chunk in tasks.chunks(crate::index::CHUNK) {
         let updates = indexer.process(chunk);
-        for update in &updates {
-            if !update.items.is_empty() {
-                expected.insert(update.origin.clone(), items_hash(&update.items));
-            }
-        }
         store.replace(updates.into_iter().map(|u| (u.origin, u.items)));
     }
     drop(indexer); // 書き込み待ちをすべて処理する時間も含める
     let ingest_ms = started.elapsed().as_secs_f64() * 1000.0;
+    #[cfg(target_os = "macos")]
+    let memory = memory.map(memory::Monitor::finish);
+    let resident_text_bytes: usize = store.sessions.iter().flat_map(|s| &s.lanes)
+        .flat_map(|l| &l.events).map(|e| e.input.len() + e.output.len()).sum();
+    let pending_text_bytes = crate::model::pending_text_bytes(store.sessions.iter().flat_map(|s| &s.lanes).flat_map(|l| &l.events));
     let verify = Instant::now();
     let db = crate::db::Db::open_index_read(&crate::db::path()).unwrap();
     let detail_db = crate::db::Db::open_read().unwrap();
@@ -150,6 +179,8 @@ pub fn ingest(manifest: &Path) {
     );
     let mut files = db.load_all().unwrap();
     let mut actual = std::collections::BTreeMap::new();
+    let mut row_hashes = std::collections::HashMap::new();
+    let mut bodies = std::collections::HashMap::<u64, usize>::new();
     for (path, items) in &mut files {
         for item in items.iter_mut() {
             let lanes: &mut [Lane] = match item {
@@ -157,13 +188,16 @@ pub fn ingest(manifest: &Path) {
                 Loaded::Child(_, lane) => std::slice::from_mut(lane),
             };
             for lane in lanes {
-                let ids: Vec<_> = lane.events.iter().filter_map(|e| e.row).collect();
+                let ids: Vec<_> = lane.events.iter().filter_map(|e| e.row()).collect();
                 let mut texts = detail_db.details(&ids);
                 for event in &mut lane.events {
-                    if let Some((input, output)) = event.row.and_then(|id| texts.remove(&id)) {
+                    if let Some((input, output)) = event.row().and_then(|id| texts.remove(&id)) {
                         event.input = input;
                         event.output = output;
                     }
+                    let hash = event_hash(event, &event.input, &event.output);
+                    row_hashes.insert(event.row().unwrap(), hash);
+                    *bodies.entry(hash).or_default() += 1;
                 }
             }
         }
@@ -173,15 +207,45 @@ pub fn ingest(manifest: &Path) {
     }
     assert_eq!(expected.len(), actual.len(), "保存ファイル数が一致しません");
     assert!(expected == actual, "索引への保存・再読み込みで内容が変わりました");
+    // Storeの共有された版からも、保存後の本文をイベントと正しく結び付けて取得できることを確認する。
+    for lane in store.sessions.iter().flat_map(|s| &s.lanes) {
+        let sources: Vec<_> = lane.events.iter().map(event_text).collect();
+        let ids: Vec<_> = sources.iter().filter_map(|t| match t { EventText::Row(id) => Some(*id), _ => None }).collect();
+        let mut texts = detail_db.details(&ids);
+        for (event, source) in lane.events.iter().zip(sources) {
+            let hash = match source {
+                EventText::Inline(i, o) => event_hash(event, i, o),
+                EventText::Pending(i, o) => event_hash(event, &i, &o),
+                EventText::Row(id) => {
+                    let (i, o) = texts.remove(&id).expect("保存後の本文がありません");
+                    let hash = event_hash(event, &i, &o);
+                    assert_eq!(row_hashes[&id], hash, "イベントと保存本文の対応が変わりました");
+                    hash
+                }
+            };
+            let count = bodies.get_mut(&hash).expect("Storeの本文が保存内容と異なります");
+            assert!(*count > 0);
+            *count -= 1;
+        }
+    }
     let mut digest = DefaultHasher::new();
     expected.hash(&mut digest);
-    println!(
-        "{}",
-        serde_json::json!({"files":tasks.len(), "sessions":store.sessions.len(),
+    let result = serde_json::json!({"files":tasks.len(), "sessions":store.sessions.len(),
         "events":store.sessions.iter().flat_map(|s| &s.lanes).map(|l| l.events.len()).sum::<usize>(),
-        "ingest_ms":ingest_ms, "roundtrip_ms":verify.elapsed().as_secs_f64()*1000.0,
-        "content_hash":format!("{:016x}",digest.finish()), "roundtrip_equal":true})
-    );
+        "ingest_ms":ingest_ms, "resident_text_bytes":resident_text_bytes,
+        "pending_text_bytes":pending_text_bytes, "snapshot_texts_equal":true,
+        "roundtrip_ms":verify.elapsed().as_secs_f64()*1000.0,
+        "content_hash":format!("{:016x}",digest.finish()), "roundtrip_equal":true});
+    #[cfg(target_os = "macos")]
+    let result = match memory {
+        Some(memory) => {
+            let mut result = result;
+            result["memory"] = serde_json::to_value(memory).unwrap();
+            result
+        }
+        None => result,
+    };
+    println!("{result}");
 }
 
 fn log_sample() -> Vec<(u64, crate::loader::Job)> {
@@ -219,7 +283,7 @@ pub fn verify_logs() {
             lane.events.len().hash(&mut hash);
             for e in &lane.events {
                 (e.start.to_bits(), e.end.to_bits(), e.kind as u8, e.status as u8).hash(&mut hash);
-                (&e.name, &e.summary, &e.input, &e.output, &e.call_id, &e.row, &e.model).hash(&mut hash);
+                (&e.name, &e.summary, &e.input, &e.output, &e.call_id, &e.row(), &e.model).hash(&mut hash);
                 (
                     e.usage.input,
                     e.usage.cache_read,
@@ -368,7 +432,7 @@ pub fn view(index: Option<&Path>) {
                 input: String::new(),
                 output: String::new(),
                 call_id: None,
-                row: None,
+                text_ref: Default::default(),
                 usage: Default::default(),
                 model: None,
                 status: Default::default(),
@@ -410,7 +474,7 @@ fn synthetic_store(n: usize) -> Store {
             input: String::new(),
             output: String::new(),
             call_id: None,
-            row: None,
+            text_ref: Default::default(),
             usage: Default::default(),
             model: None,
             status: Default::default(),
@@ -570,6 +634,47 @@ pub fn run(index: Option<&Path>) {
     });
 }
 
+/// 固定した索引DBの内容ハッシュと、再読み込み・結果の破棄を計測する。
+pub fn db_load(index: &Path) {
+    let db = crate::db::Db::open_index_read(index).expect("計測対象の索引 DB を開けません");
+    let files = db.load_all().unwrap();
+    let mut contents = std::collections::BTreeMap::new();
+    for (path, items) in &files { contents.insert(path, items_hash(items)); }
+    let mut hash = DefaultHasher::new();
+    contents.hash(&mut hash);
+    println!("{}", serde_json::json!({"files":files.len(), "content_hash":format!("{:016x}",hash.finish())}));
+    drop(files);
+    measure("db_load", 15, || db.load_all().unwrap());
+}
+
+/// 詳細パネルと同じ行IDで本文を読み、内容を出さずにハッシュと所要時間を比較する。
+pub fn details(index: &Path, texts: &Path) {
+    let db = crate::db::Db::open_index_read(index).expect("計測対象の索引 DB を開けません");
+    let mut store = Store::default();
+    store.replace(db.load_all().unwrap());
+    let session = store.sessions.iter().max_by_key(|s| s.lanes.iter().map(|l| l.events.len()).sum::<usize>()).unwrap();
+    let lane = session.lanes.iter().max_by_key(|l| l.events.len()).unwrap();
+    let reader = crate::db::Db::open_index_read(texts).expect("計測対象の本文 DB を開けません");
+    for (name, rows) in [
+        ("detail_texts_single", lane.events.iter().take(1).filter_map(|e| e.row()).collect::<Vec<_>>()),
+        ("detail_texts_300", lane.events.iter().take(crate::detail::EVENT_LIMIT).filter_map(|e| e.row()).collect::<Vec<_>>()),
+        ("detail_texts_selection", lane.events.iter().enumerate().filter(|(i, e)|
+            *i < crate::detail::EVENT_LIMIT || ["Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch"].contains(&e.name.as_ref())
+        ).filter_map(|(_, e)| e.row()).collect::<Vec<_>>()),
+    ] {
+        let fetched = reader.details(&rows);
+        assert_eq!(fetched.len(), rows.len());
+        let mut contents: Vec<_> = fetched.iter().collect();
+        contents.sort_unstable_by_key(|&(id, _)| id);
+        let mut hash = DefaultHasher::new();
+        contents.hash(&mut hash);
+        println!("{}", serde_json::json!({"case":name, "rows":rows.len(),
+            "bytes":fetched.values().map(|(i,o)| i.len()+o.len()).sum::<usize>(),
+            "content_hash":format!("{:016x}",hash.finish())}));
+        measure(name, 31, || reader.details(&rows));
+    }
+}
+
 pub fn detail_summary(index: &Path) {
     let db = crate::db::Db::open_index_read(index).expect("計測対象の索引 DB を開けません");
     let mut store = Store::default();
@@ -589,4 +694,8 @@ pub fn detail_summary(index: &Path) {
     }
     println!("{}", serde_json::json!({"dataset":"dense"}));
     summary::benchmark(&store.sessions[0], 0);
+}
+
+pub fn search(index: &Path) {
+    search::benchmark(index);
 }

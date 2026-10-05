@@ -5,7 +5,7 @@ pub mod summary;
 use crate::db::{Db, JsCache};
 use crate::loader;
 use crate::model::truncate;
-use crate::model::{Event, Session};
+use crate::model::{Event, EventText, Session, TextRef};
 use crate::patch::{FilePatch, parse_patch};
 use std::collections::HashMap;
 use summary::{SelectionSummary, SessionCache, SessionSummary};
@@ -63,7 +63,7 @@ pub struct FileStat {
 }
 
 fn is_edit(e: &Event) -> bool {
-    EDIT_TOOLS.contains(&e.name.as_str())
+    EDIT_TOOLS.contains(&e.name.as_ref())
 }
 
 /// 整形した入力から、実行したシェルコマンドを取り出す。
@@ -96,6 +96,7 @@ pub struct DetailLoader {
 struct DetailEvent {
     index: usize,
     row: Option<i64>,
+    text_ref: TextRef,
     input: String,
     output: String,
     edit: bool,
@@ -149,7 +150,10 @@ impl DetailLoader {
             let i = e.index;
             let (input, output) = match e.row.and_then(|r| fetched.remove(&r)) {
                 Some(v) => v,
-                None => (e.input, e.output),
+                None => match e.text_ref.text() {
+                    EventText::Pending(i, o) => (i, o),
+                    _ => (e.input, e.output),
+                },
             };
             let (input, raw) = match input.strip_prefix(loader::JS_MARK) {
                 Some(js) => (
@@ -227,11 +231,17 @@ impl DetailLoader {
                 let index = ci * 256 + offset;
                 let edit = is_edit(e);
                 if index < shown || edit {
+                    let (row, input, output) = match e.text() {
+                        EventText::Row(row) => (Some(row), e.input.clone(), e.output.clone()),
+                        EventText::Inline(input, output) => (None, input.to_string(), output.to_string()),
+                        EventText::Pending(input, output) => (None, input, output),
+                    };
                     events.push(DetailEvent {
                         index,
-                        row: e.row,
-                        input: e.input.clone(),
-                        output: e.output.clone(),
+                        row,
+                        text_ref: e.text_ref.clone(),
+                        input,
+                        output,
                         edit,
                     });
                 }
@@ -262,7 +272,67 @@ fn exec_detail_cached(cache: Option<&JsCache>, js: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Kind, Source, Status};
+    use crate::model::{Kind, Loaded, Source, Status};
+
+    #[test]
+    fn overwritten_texts_keep_details_captured_before_commit() {
+        let fixture = crate::db::fixtures::Fixture::new();
+        let mut db = fixture.open();
+        let mut items = crate::db::fixtures::items(&[("tool", "旧入力", "旧結果")]);
+        let first = crate::db::pack_files(&[("file".into(), "1".into(), &items)]);
+        first[0].release_texts(&mut items);
+        db.put(&first).unwrap();
+        drop(first);
+        let Loaded::Session(old) = items.remove(0) else { unreachable!() };
+        let old = std::sync::Arc::new(old);
+        let e = &old.lanes[0].events[0];
+        let EventText::Row(id) = e.text() else { unreachable!() };
+        let captured = DetailEvent { index: 0, row: Some(id), text_ref: e.text_ref.clone(),
+            input: String::new(), output: String::new(), edit: false };
+        let new = crate::db::fixtures::items(&[("tool", "new input", "new output")]);
+        db.put(&crate::db::pack_files(&[("file".into(), "2".into(), &new)])).unwrap();
+        let mut loader = DetailLoader { reader: Some(Db::open_index_read(&fixture.texts).unwrap()), ..Default::default() };
+        let sel = Selection { session: 0, lane: 0, first: 0, last: 0 };
+        let captured = loader.load(sel, vec![captured], 1, || true).unwrap();
+        let snapshot = loader.load_session(sel, &old, || true).unwrap();
+        assert_eq!(captured.texts, vec![("旧入力".into(), "旧結果".into())]);
+        assert_eq!(snapshot.texts, captured.texts);
+        assert_eq!(snapshot.out_lines, captured.out_lines);
+    }
+
+    #[test]
+    fn pending_and_committed_texts_match_inline_details_including_late_edits() {
+        let fixture = crate::db::fixtures::Fixture::new();
+        let mut db = fixture.open();
+        let values: Vec<_> = (0..DETAIL_MAX + 2).map(|i| if i == DETAIL_MAX + 1 {
+            ("apply_patch".to_string(), "*** Update File: src/a.rs\n@@\n-old\n+日本語".to_string(), String::new())
+        } else { ("exec_command".into(), format!("$ cargo test {i}"), format!("結果 {i}\n")) }).collect();
+        let refs: Vec<_> = values.iter().map(|(n, i, o)| (n.as_str(), i.as_str(), o.as_str())).collect();
+        let mut items = crate::db::fixtures::items(&refs);
+        let Loaded::Session(inline) = &items[0] else { unreachable!() };
+        let sel = Selection { session: 0, lane: 0, first: 0, last: DETAIL_MAX + 1 };
+        let reference = DetailLoader::default().load_session(sel, &std::sync::Arc::new(inline.clone()), || true).unwrap();
+        let packed = crate::db::pack_files(&[("file".into(), "fp".into(), &items)]);
+        packed[0].release_texts(&mut items);
+        let Loaded::Session(s) = items.remove(0) else { unreachable!() };
+        let snapshot = std::sync::Arc::new(s);
+        let mut loader = DetailLoader { reader: Some(Db::open_index_read(&fixture.texts).unwrap()), ..Default::default() };
+        let pending = loader.load_session(sel, &snapshot, || true).unwrap();
+        db.put(&packed).unwrap();
+        drop(packed);
+        let saved = loader.load_session(sel, &snapshot, || true).unwrap();
+        for actual in [pending, saved] {
+            assert_eq!(actual.texts, reference.texts);
+            assert_eq!(actual.out_lines, reference.out_lines);
+            assert_eq!(actual.commands, reference.commands);
+            assert_eq!(actual.touched, reference.touched);
+            assert_eq!(actual.patches, reference.patches);
+            assert_eq!((actual.files[0].path.as_str(), &actual.files[0].events), ("src/a.rs", &vec![DETAIL_MAX + 1]));
+            assert_eq!(actual.selection_summary.total.stats, reference.selection_summary.total.stats);
+            assert_eq!(actual.selection_summary.total.usage, reference.selection_summary.total.usage);
+        }
+        assert_eq!(crate::model::pending_text_bytes(&snapshot.lanes[0].events), 0);
+    }
 
     fn list_event(name: &str, status: Status) -> Event {
         Event {
@@ -274,7 +344,7 @@ mod tests {
             input: String::new(),
             output: String::new(),
             call_id: None,
-            row: None,
+            text_ref: Default::default(),
             usage: Default::default(),
             model: None,
             status,
@@ -293,6 +363,7 @@ mod tests {
             DetailEvent {
                 index: 0,
                 row: None,
+                text_ref: Default::default(),
                 input: "$ cargo test".into(),
                 output: "one\ntwo".into(),
                 edit: false,
@@ -300,6 +371,7 @@ mod tests {
             DetailEvent {
                 index: DETAIL_MAX,
                 row: None,
+                text_ref: Default::default(),
                 input: "*** Update File: src/a.rs\n@@\n-old\n+new".into(),
                 output: String::new(),
                 edit: true,
@@ -337,6 +409,7 @@ mod tests {
             .map(|index| DetailEvent {
                 index,
                 row: None,
+                text_ref: Default::default(),
                 input: "test".into(),
                 output: String::new(),
                 edit: false,

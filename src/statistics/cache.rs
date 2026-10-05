@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::model::{Event, Kind, Session};
-use crate::pricing::Price;
 use crate::time::midnight;
 use chrono::{Local, TimeZone, Timelike};
 use std::collections::hash_map::Entry;
@@ -245,11 +244,8 @@ impl<K: PartialEq + Copy, V: Default> Tally<K, V> {
 
 /// モデルの料金を引いた使用量。料金表は同じモデルで使い回す
 #[inline]
-fn priced<'a>(e: &'a Event, prices: &mut HashMap<Option<&'a str>, Option<Price>>) -> UsageSum {
-    let model = e.model.as_deref();
-    let price = *prices
-        .entry(model)
-        .or_insert_with(|| model.and_then(crate::pricing::price));
+fn priced<'a>(e: &'a Event, prices: &mut crate::pricing::Cache<'a>) -> UsageSum {
+    let price = prices.get(e.model.as_deref());
     let mut usage = UsageSum::default();
     usage.add_priced(&e.usage, price);
     usage
@@ -259,7 +255,7 @@ impl CachedSession {
     fn build<'a>(
         session: &'a Arc<Session>,
         range: &Range,
-        prices: &mut HashMap<Option<&'a str>, Option<Price>>,
+        prices: &mut crate::pricing::Cache<'a>,
         scratch: &mut Scratch,
         keep_running: &impl Fn() -> bool,
     ) -> Option<Self> {
@@ -325,7 +321,7 @@ impl CachedSession {
                         out.recorded = true;
                     }
                     if tool {
-                        let calls = tools.entry((e.name.as_str(), e.kind == Kind::Agent));
+                        let calls = tools.entry((e.name.as_ref(), e.kind == Kind::Agent));
                         calls.calls += 1;
                         calls.failures += usize::from(failed);
                     }
@@ -414,7 +410,7 @@ impl Cache {
         });
         let range = &cache.range;
         // 先に不足分を作り、キャッシュを借用しながら結果を結合する。
-        let mut prices = HashMap::new();
+        let mut prices = crate::pricing::Cache::default();
         let mut scratch = None;
         for &si in order {
             if !keep_running() {

@@ -3,7 +3,7 @@
 //! 料金は 100 万トークンあたりの USD。Claude の標準料金は組み込みで持ち、
 //! `~/Library/Application Support/rireki/prices.json` で追加・上書きできる（Codex の OpenAI モデルなど）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -24,6 +24,25 @@ pub struct Price {
     /// 1 時間キャッシュの書き込み。省略時は input の 2 倍
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_1h: Option<f64>,
+}
+
+/// 集計中の料金検索。同じモデルが続く間は文字列のハッシュを計算しない。
+#[derive(Default)]
+pub(crate) struct Cache<'a> {
+    prices: HashMap<Option<&'a str>, Option<Price>>,
+    last: Option<(Option<&'a str>, Option<Price>)>,
+}
+
+impl<'a> Cache<'a> {
+    #[inline]
+    pub(crate) fn get(&mut self, model: Option<&'a str>) -> Option<Price> {
+        if let Some((last, price)) = self.last && last == model {
+            return price;
+        }
+        let price = *self.prices.entry(model).or_insert_with(|| model.and_then(self::price));
+        self.last = Some((model, price));
+        price
+    }
 }
 
 impl Price {

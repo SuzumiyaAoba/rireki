@@ -19,32 +19,34 @@ struct Text {
     lanes: Vec<(Vec<u8>, Vec<u32>)>,
 }
 
-fn build(s: &Session) -> Text {
+#[inline(never)]
+fn build(s: &Session, current: &impl Fn() -> bool) -> Option<Text> {
     let mut head = format!("{}\n{}\n{}", s.title, s.cwd, s.id).into_bytes();
     head.make_ascii_lowercase();
-    let lanes = s
-        .lanes
-        .iter()
-        .map(|l| {
-            let bytes = l
-                .events
-                .iter()
-                .map(|e| e.name.len() + e.summary.len() + 2)
-                .sum();
-            let mut buf = Vec::with_capacity(bytes);
-            let mut starts = Vec::with_capacity(l.events.len());
-            for e in &l.events {
+    let mut lanes = Vec::with_capacity(s.lanes.len());
+    for lane in &s.lanes {
+        let mut bytes = 0;
+        for chunk in lane.events.chunks(256) {
+            if !current() { return None; }
+            bytes += chunk.iter().map(|e| e.name.len() + e.summary.len() + 2).sum::<usize>();
+        }
+        let mut buf = Vec::with_capacity(bytes);
+        let mut starts = Vec::with_capacity(lane.events.len());
+        for chunk in lane.events.chunks(256) {
+            if !current() { return None; }
+            let from = buf.len();
+            for e in chunk {
                 starts.push(buf.len() as u32);
                 buf.extend_from_slice(e.name.as_bytes());
                 buf.push(b' ');
                 buf.extend_from_slice(e.summary.as_bytes());
                 buf.push(b'\n');
             }
-            buf.make_ascii_lowercase();
-            (buf, starts)
-        })
-        .collect();
-    Text { head, lanes }
+            buf[from..].make_ascii_lowercase();
+        }
+        lanes.push((buf, starts));
+    }
+    Some(Text { head, lanes })
 }
 
 #[derive(Default)]
@@ -138,7 +140,8 @@ impl Index {
             // 弱参照は旧版の本文を保持しない。同じセッションの版が変われば自動で作り直す
             let version = Arc::downgrade(&sessions[si]);
             if self.sessions[si].as_ref().is_none_or(|(old, _)| !old.ptr_eq(&version)) {
-                self.sessions[si] = Some((version, build(&sessions[si])));
+                // 中断した索引をキャッシュへ公開せず、次の要求では完全な版を作り直す。
+                self.sessions[si] = Some((version, build(&sessions[si], &current)?));
             }
             let text = &self.sessions[si].as_ref().unwrap().1;
             if finder.find(&text.head).is_some()
@@ -229,7 +232,7 @@ mod tests {
                 input: String::new(),
                 output: String::new(),
                 call_id: None,
-                row: None,
+                text_ref: Default::default(),
                 usage: Default::default(),
                 model: None,
                 status: Default::default(),
@@ -308,6 +311,7 @@ mod tests {
         let mut ix = Index::default();
         assert!(ix.search_while(&store.sessions, &[0], "cargo", 10, || false).is_none());
         assert!(ix.sessions.is_empty());
+        assert_eq!(ix.search(&store.sessions, &[0], "cargo", 10).total, 10_000);
         let checks = std::cell::Cell::new(0);
         assert!(ix.search_while(&store.sessions, &[0], "cargo", 10, || {
             checks.set(checks.get() + 1);
@@ -317,6 +321,30 @@ mod tests {
         let r = ix.search(&store.sessions, &[0], "cargo", 10);
         assert_eq!(r.total, 10_000);
         assert_eq!(r.events.iter().map(|h| h.event).collect::<Vec<_>>(), (9990..10000).rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn canceled_text_build_does_not_publish_partial_or_wrong_version() {
+        let mut store = Store::default();
+        store.replace([("a".into(), vec![session("s", "old", &[("Bash", "cargo", 0.0)])])]);
+        let mut ix = Index::default();
+        assert_eq!(ix.search(&store.sessions, &[0], "cargo", 10).total, 1);
+        let old = ix.sessions[0].as_ref().unwrap().0.clone();
+        let events: Vec<_> = (0..1025).map(|i| ("ツール", "NEW Cargo 日本語", i as f64)).collect();
+        store.replace([("a".into(), vec![session("s", "new", &events)])]);
+        // 長さの計算中と、連結・小文字化が一部まで進んだ段階の両方で中断する。
+        for stop in [3, 9] {
+            let checks = std::cell::Cell::new(0);
+            assert!(ix.search_while(&store.sessions, &[0], "new 日本語", 10, || {
+                checks.set(checks.get() + 1);
+                checks.get() < stop
+            }).is_none());
+            assert_eq!(checks.get(), stop);
+            assert!(ix.sessions[0].as_ref().unwrap().0.ptr_eq(&old));
+        }
+        assert_eq!(ix.search(&store.sessions, &[0], "cargo", 10).total, 1025);
+        assert_eq!(ix.search(&store.sessions, &[0], "new 日本語", 10).events[0].at, (10, 13));
+        assert!(!ix.sessions[0].as_ref().unwrap().0.ptr_eq(&old));
     }
 
     #[test]

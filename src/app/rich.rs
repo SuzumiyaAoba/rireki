@@ -426,8 +426,8 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
         let shown = f.rows.len().min(budget);
         hidden += f.rows.len() - shown;
         budget -= shown;
-        let spans = syntax::diff_spans(f, shown);
-        let rows = f.rows[..shown].iter().zip(spans).map(|(r, spans)| {
+        let spans = syntax::cached_diff_spans(f, shown);
+        let rows = f.rows[..shown].iter().zip(spans.iter()).map(|(r, spans)| {
             let (bg, fg, mark) = match r.kind {
                 '+' => (Some(c(ADD).opacity(0.10)), ADD, "+"),
                 '-' => (Some(c(DEL).opacity(0.10)), DEL, "−"),
@@ -457,7 +457,7 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
                         .pr_2()
                         .text_color(c(CODE_TEXT))
                         .when(r.kind == '@', |d| d.text_color(c(theme::SUBTLE)))
-                        .child(styled(if r.text.is_empty() { " ".to_string() } else { r.text.clone() }, spans)),
+                        .child(styled(if r.text.is_empty() { " ".to_string() } else { r.text.clone() }, spans.clone())),
                 )
         });
         col = col.child(

@@ -149,7 +149,7 @@ pub(super) struct State {
     scroll: ScrollHandle,
     /// 要求中の集計の条件
     key: Option<Key>,
-    /// 表示中の集計の条件。データの自動更新では前の結果の明るさを保つ
+    /// 表示中の集計の条件。期間の切り替えやデータの自動更新では前の結果の明るさを保つ
     shown: Option<Key>,
     /// 表示中の集計に使った読み込み元とプロジェクト
     shown_filters: Option<(SourceFilter, Option<String>)>,
@@ -186,9 +186,10 @@ impl State {
     }
 
     fn dimmed(&self, source: SourceFilter, focus: Option<&str>) -> bool {
+        // 期間変更で画面全体を薄くすると、短い集計でも明るさが往復してちらつく。
         match (self.shown, self.key, &self.shown_filters) {
             (Some(shown), Some(key), Some((shown_source, shown_focus))) => {
-                shown.1 != key.1 || shown.2 != key.2 || *shown_source != source || shown_focus.as_deref() != focus
+                shown.2 != key.2 || *shown_source != source || shown_focus.as_deref() != focus
             }
             _ => false,
         }
@@ -210,6 +211,8 @@ impl Rireki {
         self.drag = None;
         self.resize = None;
         window.focus(&self.focus_handle);
+        // 初回の描画を待たず、選択中の期間の集計を開始する。
+        self.request_statistics(cx);
         self.persist();
         cx.notify();
     }
@@ -264,9 +267,10 @@ impl Rireki {
     }
 
     /// 期間を変える。見出しは固定なので、スクロール位置は保って同じ一覧を見比べられるようにする
-    fn set_statistics_period(&mut self, period: Period) {
+    fn set_statistics_period(&mut self, period: Period, cx: &mut Context<Self>) {
         self.statistics_state.period = period;
         self.statistics_state.hover = None;
+        self.request_statistics(cx);
     }
 
     pub(super) fn statistics(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -322,7 +326,7 @@ impl Rireki {
             &[(Period::Week, "7日間"), (Period::Month, "30日間"), (Period::Quarter, "90日間"), (Period::All, "全期間")],
             Some(self.statistics_state.period),
             cx,
-            |t, period, _, _| t.set_statistics_period(period),
+            |t, period, _, cx| t.set_statistics_period(period, cx),
         );
         div()
             .h(px(HEADER_H))

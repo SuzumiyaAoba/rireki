@@ -20,6 +20,22 @@ static PROCESS_STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::Onc
 fn main() {
     PROCESS_STARTED.set(std::time::Instant::now()).unwrap();
     let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|a| a == "--bench-search") {
+        return perf::search(std::path::Path::new(args.get(2).expect("索引 DB を指定してください")));
+    }
+    if args.get(1).is_some_and(|a| a == "--bench-db") {
+        return perf::db_load(std::path::Path::new(args.get(2).expect("索引 DB を指定してください")));
+    }
+    #[cfg(target_os = "macos")]
+    if args.get(1).is_some_and(|a| a == "--bench-db-memory") {
+        return perf::db_memory(std::path::Path::new(args.get(2).expect("索引 DB を指定してください")));
+    }
+    if args.get(1).is_some_and(|a| a == "--bench-details") {
+        return perf::details(
+            std::path::Path::new(args.get(2).expect("索引 DB を指定してください")),
+            std::path::Path::new(args.get(3).expect("本文 DB を指定してください")),
+        );
+    }
     if args.get(1).is_some_and(|a| a == "--bench-summary") {
         return perf::detail_summary(std::path::Path::new(args.get(2).expect("索引 DB を指定してください")));
     }

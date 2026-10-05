@@ -14,13 +14,18 @@ cargo run                   # GUI 起動
 cargo run -- --stats        # GUI を起動せず、索引 DB の読み込みと差分取り込みを行い、件数と所要時間を表示
 cargo run --release -- --bench  # 大量イベント・検索・長文整形を JSON Lines で計測
 cargo run --release -- --bench path/to/index.db  # 読み取り専用の索引と大きいログの計測も加える
+cargo run --release -- --bench-search path/to/index.db  # 初回・再利用・中断の検索を測定し、全件走査と照合
+cargo run --release -- --bench-db path/to/index.db  # 固定した索引DBの読み込みと内容ハッシュだけを計測
+cargo run --release -- --bench-db-memory path/to/index.db  # macOS: 15回の読み込み・破棄前後の使用ヒープと確保領域を記録
 cargo run --release -- --bench-discover claude/projects codex/sessions  # 固定したルートの探索と指紋を比較
 cargo run --release -- --bench-statistics path/to/index.db  # 統計の新規集計・再利用・単一セッション更新を計測
 cargo run --release -- --bench-range path/to/index.db  # ミニマップと期間カレンダーの分布集計を計測
 cargo run --release -- --bench-summary path/to/index.db  # 詳細の選択・セッション集計と再利用を計測
+cargo run --release -- --bench-details path/to/index.db path/to/texts.db  # 詳細本文の読み込みを内容ハッシュと所要時間で比較
 cargo run --release -- --bench-view path/to/index.db  # 並べ替えと非対話セッションの起動元探索を計測
 cargo run --release -- --verify-logs  # 大きい実ログの解析結果を本文なしのハッシュで確認
 cargo run --release -- --bench-ingest manifest.json  # 空の RIREKI_CACHE_DIR へ全件取り込み・再読込の検証
+cargo run --release -- --bench-ingest manifest.json --measure-memory  # macOS: 取り込み中の使用ヒープを2ms間隔で記録
 cargo clippy                # lint
 cargo test                  # GUI を含むテスト
 cargo test --lib --no-default-features  # GUI の依存を外してコアだけをテスト
@@ -28,7 +33,7 @@ cargo test --lib --no-default-features  # GUI の依存を外してコアだけ�
 
 `.cargo/config.toml` で linker / CC を `/usr/bin/cc` に固定している（Nix の cc が libiconv を見つけられないため）。変更しないこと。
 
-`RIREKI_CACHE_DIR` と `RIREKI_CONFIG_DIR` でキャッシュと設定の保存先を分けられる。`--profile-ui` は両方を隔離したディレクトリに指定して使うネイティブ画面計測で、コピーした索引だけを読み、ログの差分取り込みを止める。`--profile-detail` を併用すると詳細のスクロール位置・絞り込み・幅変更・タブ・メモリ内の模擬更新を検証する。OS 入力の注入は行わず、公開 API を使って位置と選択を変える。`ZED_MEASUREMENTS=1` で GPUI のフレーム処理の経過時間も記録する。`--bench-ingest` は空のキャッシュを要求し、manifest に固定した安定ログをパース・保存し、本文を含めて再読み込みと比較する。manifest はログのパスを含むため公開しない。
+`RIREKI_CACHE_DIR` と `RIREKI_CONFIG_DIR` でキャッシュと設定の保存先を分けられる。`--profile-ui` は両方を隔離したディレクトリに指定して使うネイティブ画面計測で、コピーした索引だけを読み、ログの差分取り込みを止める。`--profile-detail` を併用すると詳細のスクロール位置・絞り込み・幅変更・タブ・メモリ内の模擬更新を検証する。OS 入力の注入は行わず、公開 API を使って位置と選択を変える。`ZED_MEASUREMENTS=1` で GPUI のフレーム処理の経過時間も記録する。`--bench-ingest` は空のキャッシュを要求し、manifest に固定した安定ログをパース・保存し、本文を含めて再読み込みと比較する。manifest はログのパスを含むため公開しない。`RIREKI_BENCH_LOG_ROOT` を指定すると、その中の `claude` / `codex` ディレクトリを同じ探索処理で読み、隔離したログのコピーで再現できる。
 
 ## アーキテクチャ
 
@@ -36,10 +41,17 @@ cargo test --lib --no-default-features  # GUI の依存を外してコアだけ�
 
 - **statistics.rs / statistics/cache.rs** — 統計の期間（7 / 30 / 90 日・全期間）・結果型と、セッションの版を弱参照で識別する集計キャッシュ。直前の同じ長さの期間の合計、読み込み元ごとの列（全期間は 92 日を超えると週、371 日を超えると月ごと）、曜日 × 時刻のマスと曜日・時ごとの合計（セッションは重ねずに数える）、ツール名ごとの呼び出しと失敗も集める。日付と時は各日の午前 0 時の表とレーン内のカーソルで求め、境界の直前が前日・境界が当日にならない日（曖昧な午前 0 時など）があればイベントごとに変換する。テストは全イベントを日時変換する参照実装と比べる。GUI は同じキャッシュを保持し、背景で実行する。
 - **detail.rs / detail/summary.rs** — 選択範囲・本文の遅延読み込み・JS キャッシュ・ファイル履歴・選択とセッションの集計。色やアイコンを含めず、名前ごとの先頭イベント位置を返す。GUI はそのイベントの表示を決める。キャンセル確認と本文の表示上限を維持する。
+  - 詳細と統計の料金検索は連続するモデルで再利用し、詳細の名前・モデル別集計も直前の位置を再利用する。集計値や料金の加算順序は変えない。
+  - 詳細本文は読み取りトランザクションでまとめ、17行以上では64行ずつ問い合わせる。空・単一行・欠損行・重複IDを維持する。選択変更時の古い本文・編集履歴の解放はGUI側で背景へ渡す。
 - **patch.rs** — apply_patch / unified diff の解析とファイル・行の構造。描画とシンタックスハイライトは `app/rich.rs` 以下。
 - **histogram.rs / time.rs** — イベント開始時刻の区間集計とローカル日付の境界。ミニマップ・カレンダー・統計が共通の規則を使う。
 - **view_index.rs** — 非対話セッションの起動元を作業ディレクトリとツールの時刻から求める。`Lane::cum_tool_end` で候補を絞り、長時間の Agent が探索範囲を広げないようにする。DB には保存しない。
-- **perf.rs / perf/** — コアの公開 API を直接使う CLI の計測。画面用のモジュールを経由しない。
+- **model.rs / loader.rs / db.rs** — イベント名は `Arc<str>` で共有する。ログのパースはファイルごと、索引の並列読み込みはID範囲ごとに同じ名前を再利用し、メタデータの複製とGPUIの表示でも共有する。DBの値と保存形式は変更しない。
+  - 索引のイベントをレーンへ戻すときは、読み取り済みの行から必要数を数えて一度だけ配列を確保する。追加のSQL走査をせず、未使用の容量と再確保時の配列コピーを減らす。
+- **text.rs / model::Event::text** — 安定ログの保存待ちの本文はファイルごとの圧縮データを共有し、成功したコミット後にDBの行IDへ置き換える。同じ版のスナップショットは保存状態を共有し、コミット後に圧縮本文を解放する。今回書き込んだファイルを更新してDB行を削除する前に、まだ参照されている旧版の本文だけを圧縮して退避する。書き込み接続では削除済みのイベントIDを再利用せず、更新前に取得したIDと新しい本文の取り違えを防ぐ。リアルタイムの本文は通常のString、保存失敗時は圧縮本文から詳細を開く。イベント本文を取得するときは `Event::text()` を使用する。`Event::text_ref` は行IDと保存状態を一つの領域に収め、通常のDB読み込みでもイベントのサイズを増やさない。
+- **index.rs** — 保存待ちの指紋は保存済みと区別し、成功した書き込みだけを保存済みにする。失敗時は次の探索で再試行し、古い保存完了が新しい版やリアルタイムの指紋を書き換えない。安定ログは並列ワーカー内でファイルごとにパース・圧縮・本文解放まで連続して行い、未圧縮本文の一時保持を作業中のファイルに限定する。画面反映とDB書き込みは64ファイル単位を維持する。
+- **search.rs** — 初回の検索索引の長さ計算・連結・小文字化は256イベントごとに中断を確認する。中断した途中の索引は公開せず、完成したセッションの版だけを再利用する。
+- **perf.rs / perf/** — コアの公開 API を直接使う CLI の計測。画面用のモジュールを経由しない。取り込みの比較用の全件パースと内容照合は取り込み時間の外で行い、Storeの共有された版からも保存後の本文とイベントの対応を検証する。
 
 起動計測は `--profile-ui --profile-startup`。`main_to_ready_ms` は main の開始から、データを含むフレームの描画・提示後、次のフレーム要求までの時間。OS のローダーと GPU 完了時間は含まない。`--profile-ingest manifest.json` を加えると空の隔離キャッシュから通常の取り込み経路を動かす。`--profile-idle claude/projects codex/sessions 15` は指定したルートを 3 秒ごとに探索し、指定秒数待つ。全ログが索引済みでなければパース前に停止する。`--profile-rich` は差分展開・単一長文・24 時間の日週表示を検証する。いずれも隔離したキャッシュと設定を指定する。
 
@@ -50,8 +62,9 @@ cargo test --lib --no-default-features  # GUI の依存を外してコアだけ�
 データの流れ: 背景の `index::ViewLoader` が索引 DB の読み込み、`Indexer::plan` / `process`、`model::Store::replace` と描画用の索引化を行う。画面と検索は `model::Snapshot`（`Arc<Session>` の集合）を受け取り、更新前の版は読み終わるまで保つ。3 秒ごとにリアルタイムファイルを再読込する。
 
 - **index.rs** — ファイルを「安定」（最終更新から `LIVE_SECS` 以上経過）と「リアルタイム」に分ける。安定ファイルはパース結果を DB に保存し、指紋（mtime + サイズ）が変わるまで読み直さない。リアルタイムファイルは DB に書かずメモリ上で毎回パースし、更新が止まると安定側へ移る。
-- **db.rs** — 索引 DB (`~/Library/Caches/rireki/index.db`, SQLite/rusqlite)。`files` / `items` / `lanes` / `events` / `texts`。起動時は `events` だけを ID 範囲で分割して並列に読み、大きな input / output (`texts`) は詳細表示のときに `Event::row` で引く。`texts` は lz4 圧縮して別ファイル `texts.db` に置く（同じファイルだと `events` のページが散らばり起動が遅くなる）。書き込みは `Indexer` の専用スレッドで行い、次のチャンクのパースと重ねる。パース結果やスキーマを変えたら `VERSION` を上げる（DB が作り直される）。
+- **db.rs** — 索引 DB (`~/Library/Caches/rireki/index.db`, SQLite/rusqlite)。`files` / `items` / `lanes` / `events` / `texts`。起動時は `events` だけを ID 範囲で分割して並列に読み、大きな input / output (`texts`) は詳細表示のときに `Event::row()` で引く。`texts` は lz4 圧縮して別ファイル `texts.db` に置く（同じファイルだと `events` のページが散らばり起動が遅くなる）。書き込みは `Indexer` の専用スレッドで行い、次のチャンクのパースと重ねる。パース結果やスキーマを変えたら `VERSION` を上げる（DB が作り直される）。
 - **loader.rs** — 読み込み元は `~/.claude/projects/*/*.jsonl` と `$CODEX_HOME/sessions`（既定 `~/.codex/sessions`、再帰探索）。ファイルは mtime の新しい順に `Job` 化される。
+  - JSONのYAML風表示は行を順に生成し、6,000文字の一文字先で止めて従来と同じ位置に省略記号を付ける。長い文字列・キーも必要な先頭だけを複製する。配列の1行表示は80文字を超えると判定を止め、全文を連結しない。日本語・字下げ・空の値・改行の扱いを維持する。
   - Claude のサブエージェントは 2 形式に対応: 新形式 `<session>/subagents/agent-*.jsonl` + `.meta.json`（`toolUseId` を `Lane::spawned_by` に入れる）と、旧形式のプロジェクト直下 `agent-*.jsonl`（`Loaded::Child` として親セッション ID 付きで返す）。
   - ツール呼び出しと結果は `Pending`（call_id → イベント index）で突き合わせ、結果のタイムスタンプで `end` を確定する。テキストは `MAX_TEXT` で切り詰める。
   - 結果から呼び出しの成否（`Status`: 失敗・拒否・中断・結果なし）を判定する。Claude は `is_error` と `toolUseResult`、Codex は終了コード・定型文（`Script failed` など）と、exec の中の各呼び出しの結果を見る。
@@ -69,6 +82,7 @@ cargo test --lib --no-default-features  # GUI の依存を外してコアだけ�
   - `range.rs` — 期間を選ぶカレンダー（ポップオーバー、日ごとのイベント量を棒で表示）と、タイムライン上端のミニマップ（選んだ期間、未選択なら全期間のイベント分布と現在の表示範囲。クリック・ドラッグで移動）
   - `detail.rs` — 詳細パネル（`DetailView`）。選択している間だけ開く。見出しに結果の状態・レーン内の位置と前後のイベントへの移動（J / K）。その下の文脈の帯に「読み込み元 › プロジェクト › セッション › サブエージェント」のパンくず（セッション名でセッションのタブへ、矢印で起動元へ）。その下のタブ（`prefs::DetailTab`、1 / 2 / 3）で「イベント」「ファイル」（編集したファイルと追加・削除の割合。押すとその場で開き、編集の時系列の帯と編集ごとの差分を出す）「セッション」（集計のタイル・操作・サブエージェントの一覧・トークンと料金・属性）を切り替える。イベントのタブは 1 イベントなら時刻・トークン・きっかけの指示と入力・結果、複数なら集計のタイル（失敗は押すと絞り込み）と、名前・失敗で絞り込めるイベント一覧（ユーザーの指示ごとに区切る）。本文は選択時に `request_detail` で背景処理へ渡し、コアの `detail::DetailLoader` が DB 読み込み・JS の整形を行って `DetailCache` に持つ。古い選択の結果は世代で破棄する。複数イベントの一覧は `DetailList` の可変高リストで可視行だけ作り、幅変更や更新では上端のイベントと行内位置を保つ。先頭 300 件に絞り込みを掛ける順序は変えない。末尾にいた場合と追従アニメーション中は連続更新を追い、ユーザーのスクロールや絞り込み・タブ変更で追従を中断する
   - `rich.rs` — 詳細パネルの本文の表示: Markdown（メッセージ・計画・サブエージェントの報告）、行番号付きの差分、ANSI の色、`cat -n` 形式の行番号、YAML 風の引数のキーの色分け。差分解析はコアの `patch.rs`、Markdown / ANSI の装飾と描画は GUI 側で行う
+    - 差分の構文解析はパス・表示行の種類と本文で再利用する。ハッシュ一致だけでは再利用せず内容も比較する。描画スレッドごとのキャッシュ内容を4 MiB・64項目に制限し、大きすぎる結果は保持しない。表示行のない差分は一つの空結果を共有し、本文を持つ項目を追い出さない。
   - `detail/files.rs` — ファイル一覧・編集履歴の可変高リスト。ファイルの見出し、編集の帯、各編集と展開ボタンを別の項目にし、表示範囲だけ組み立てる。選択全体の編集を保持し、先頭 100 ファイルと編集ごとの 120 行の折りたたみは従来どおり。幅・読み込み世代・ファイル順序が変わっても、パスとイベント位置から上端の編集と行内位置を引き継ぐ
   - `statistics.rs` — 統計画面。見出しに期間とプロジェクトの絞り込み、その下に指標のタイル（値・前の期間との差・読み込み元の割合）。押したタイルの指標で推移・時間帯・プロジェクトを表す。集計中は前の結果を薄く表示する。`statistics/charts.rs` は推移（読み込み元ごとに積んだ列。押すとその期間をタイムラインで開く）と時間帯（曜日 × 時刻の濃淡と周辺の合計）を 1 つの canvas に描き、ポインタの位置で当たり判定する。`statistics/lists.rs` はツール・プロジェクト・モデルの一覧と読み込み元の比較表。配色は Claude = `SERIES_CLAUDE`、Codex = `SERIES_CODEX`、量は青の段階 `HEAT` だけで表す（データ可視化の検査済み）
   - `overlay.rs` — ホバーカード・まとめ方メニュー・ショートカット一覧

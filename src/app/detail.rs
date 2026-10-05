@@ -63,6 +63,7 @@ struct DetailListKey {
     sel: Selection,
     generation: u64,
     filter: Option<RowFilter>,
+    reversed: bool,
     width: u32,
     live: bool,
 }
@@ -79,16 +80,17 @@ pub(super) struct DetailList {
     pub(super) rendered: Cell<usize>,
 }
 
-fn detail_rows(events: &[Event], filter: Option<&RowFilter>) -> Vec<DetailRow> {
+fn detail_rows(events: &[Event], filter: Option<&RowFilter>, reversed: bool) -> Vec<DetailRow> {
     let mut rows = vec![DetailRow::Summary];
     for (i, e) in events.iter().take(DETAIL_MAX).enumerate() {
         let keep = match filter {
             None => true,
-            Some(RowFilter::Name(n)) => e.name == *n,
+            Some(RowFilter::Name(n)) => e.name.as_ref() == n,
             Some(RowFilter::Failed) => e.status.failed(),
         };
         if keep { rows.push(DetailRow::Event(i)); }
     }
+    if reversed { rows[1..].reverse(); }
     if rows.len() == 1 { rows.push(DetailRow::Empty); }
     if events.len() > DETAIL_MAX { rows.push(DetailRow::Limit); }
     rows
@@ -119,7 +121,7 @@ impl DetailList {
     fn prepare(&self, key: DetailListKey, events: &[Event]) {
         let mut data = self.data.borrow_mut();
         if data.as_ref().is_some_and(|d| d.key == key) { return; }
-        let rows = detail_rows(events, key.filter.as_ref());
+        let rows = detail_rows(events, key.filter.as_ref(), key.reversed);
         let offset = data.as_ref().filter(|d| {
             d.key.sel.session == key.sel.session && d.key.sel.lane == key.sel.lane && d.key.sel.first == key.sel.first
         }).map(|d| detail_anchor(&d.rows, &rows, self.state.logical_scroll_top())).unwrap_or_default();
@@ -133,6 +135,13 @@ impl DetailList {
         bounds.size.height > px(0.0) && self.state.item_count().checked_sub(1)
             .and_then(|i| self.state.bounds_for_item(i))
             .is_some_and(|last| last.bottom() <= bounds.bottom() + px(4.0))
+    }
+
+    fn at_latest(&self, reversed: bool) -> bool {
+        if !reversed { return self.at_bottom(); }
+        let offset = self.state.logical_scroll_top();
+        self.state.viewport_bounds().size.height > px(0.0)
+            && (offset.item_ix == 0 || (offset.item_ix == 1 && offset.offset_in_item <= px(4.0)))
     }
 }
 
@@ -314,6 +323,14 @@ impl Rireki {
         }
     }
 
+    pub(super) fn detail_at_latest(&self) -> bool {
+        if self.detail_uses_list() {
+            self.detail_list.at_latest(self.detail_reversed)
+        } else {
+            self.detail_at_bottom()
+        }
+    }
+
     /// 未計測の行も少しずつ描きながら追う。ユーザー操作・絞り込み・選択変更で止める
     pub(super) fn animate_list_to_bottom(&mut self, cx: &mut Context<Self>) {
         const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
@@ -356,16 +373,30 @@ impl Rireki {
         self.detail_changed(cx);
     }
 
+    fn toggle_detail_order(&mut self, cx: &mut Context<Self>) {
+        self.detail_reversed = !self.detail_reversed;
+        self.cancel_detail_follow();
+        self.persist();
+        self.detail_changed(cx);
+    }
+
     pub(super) fn cancel_detail_load(&mut self) {
         self.detail_gen.fetch_add(1, super::Ordering::Relaxed);
         self.detail_task = None;
         self.cancel_detail_follow();
     }
 
+    /// 大きな編集履歴と旧版セッションの解放で、選択や閉じる操作を待たせない。
+    pub(super) fn clear_detail_cache(&mut self, cx: &mut Context<Self>) {
+        let old = (self.detail_cache.take(), self.detail_snapshot.take());
+        if old.0.is_some() || old.1.is_some() {
+            cx.background_executor().spawn(async move { drop(old); }).detach();
+        }
+    }
+
     /// DB 読み込みと JS のモック実行を背景で行い、最新の選択だけを反映する
     pub(super) fn request_detail(&mut self, sel: Selection, cx: &mut Context<Self>) {
-        self.detail_cache = None;
-        self.detail_snapshot = None;
+        self.clear_detail_cache(cx);
         self.refresh_detail(sel, cx);
     }
 
@@ -394,20 +425,21 @@ impl Rireki {
                     cx.background_executor().spawn(async move { drop((old_cache, old_snapshot)); }).detach();
                     app.detail_changed(cx);
                     if std::mem::take(&mut app.detail_follow) && app.detail_tab == DetailTab::Events {
-                        app.animate_to_bottom(cx);
+                        app.animate_to_latest(cx);
                     }
                 }
             });
         }));
     }
 
-    /// 同じレーンの次（`dir` = 1）/ 前（-1）のイベントを選ぶ。複数を選んでいるときは、その先頭 / 末尾を選ぶ。
+    /// 表示順で同じレーンの次（`dir` = 1）/ 前（-1）を選ぶ。複数を選んでいるときは、表示上の先頭 / 末尾を選ぶ。
     /// 1 イベントずつ進むときは履歴に積まない（「戻る」で一覧に戻れるようにする）
     pub(super) fn step_event(&mut self, dir: isize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(cur) = self.selected.filter(|&s| self.valid(s)) else {
             return;
         };
         let n = self.store.sessions[cur.session].lanes[cur.lane].events.len();
+        let dir = if self.detail_reversed { -dir } else { dir };
         let i = if cur.first != cur.last {
             if dir > 0 { cur.first } else { cur.last }
         } else {
@@ -614,7 +646,7 @@ impl Rireki {
         let evs = &lane.events[sel.first..=sel.last];
         let single = evs.len() == 1;
         let (title, color) = if single {
-            (evs[0].name.clone(), Some((theme::event_color(&evs[0]), theme::event_icon(&evs[0]))))
+            (evs[0].name.to_string(), Some((theme::event_color(&evs[0]), theme::event_icon(&evs[0]))))
         } else {
             (format!("{} 件", fmt_n(evs.len())), None)
         };
@@ -622,6 +654,7 @@ impl Rireki {
         let status = if single { status_label(&evs[0], is_live(s.end), output) } else { None };
         let n = lane.events.len();
         let (prev, next) = if single { (sel.first > 0, sel.first + 1 < n) } else { (true, true) };
+        let (prev, next) = if self.detail_reversed { (next, prev) } else { (prev, next) };
         let (tile_col, tile_icon) = color.unwrap_or((theme::MUTED, Icon::Layers));
         let pos = if single {
             format!("{} / {}", fmt_n(sel.first + 1), fmt_n(n))
@@ -1278,7 +1311,7 @@ impl Rireki {
         let key = e.summary.trim_end_matches('…');
         let caption =
             (raw.is_none() && !key.is_empty() && !one_line(input, usize::MAX).contains(key)).then(|| e.summary.clone());
-        let markdown = matches!(e.name.as_str(), "ExitPlanMode" | "Agent" | "Task");
+        let markdown = matches!(e.name.as_ref(), "ExitPlanMode" | "Agent" | "Task");
         let (title, body): (&str, AnyElement) = if let Some(raw) = raw {
             // exec は整形した呼び出しと JS 本文を切り替える
             let show = self.show_raw;
@@ -1337,7 +1370,7 @@ impl Rireki {
                 _ => "出力なし",
             };
             div().text_xs().text_color(c(theme::SUBTLE)).child(note).into_any_element()
-        } else if MARKDOWN_OUTPUT.contains(&e.name.as_str()) {
+        } else if MARKDOWN_OUTPUT.contains(&e.name.as_ref()) {
             rich::markdown(output, theme::TEXT).text_size(px(13.0)).into_any_element()
         } else if rich::is_patch(output) {
             let files = rich::parse_patch(output);
@@ -1733,7 +1766,7 @@ impl Rireki {
                                     .child(format!("#{}", n + 1)),
                             )
                             .child(event_icon(theme::event_icon(e), color, 12.0))
-                            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(e.name.clone()))
+                            .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(SharedString::from(e.name.clone())))
                             .child(
                                 div()
                                     .flex_none()
@@ -1811,6 +1844,7 @@ impl Rireki {
             sel,
             generation: self.shown_detail_generation(),
             filter: self.row_filter.clone(),
+            reversed: self.detail_reversed,
             width: self.pane_widths(window).1.to_bits(),
             live: is_live(s.end),
         }, evs);
@@ -1820,9 +1854,50 @@ impl Rireki {
         self.detail_list.state.set_scroll_handler(move |_, _, cx| {
             let _ = scrolling.update(cx, |app, _| app.cancel_detail_follow());
         });
-        list(self.detail_list.state.clone(), move |row, _, cx| {
+        let events = list(self.detail_list.state.clone(), move |row, _, cx| {
             app.update(cx, |app, cx| app.detail_list_item(sel, row, cx)).unwrap_or_else(|_| div().into_any_element())
-        }).flex_1().min_h_0().into_any_element()
+        }).flex_1().min_h_0();
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(label("イベント一覧"))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("detail-order")
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(c(theme::BORDER))
+                            .bg(c(theme::BG))
+                            .text_xs()
+                            .text_color(c(theme::MUTED))
+                            .cursor_pointer()
+                            .hover(|d| d.bg(c(theme::HOVER)).text_color(c(theme::TEXT)))
+                            .child(icons::icon(
+                                if self.detail_reversed { Icon::ChevronUp } else { Icon::ChevronDown }, theme::MUTED,
+                            ).size_3())
+                            .child(if self.detail_reversed { "新しい順" } else { "古い順" })
+                            .tooltip(tip(if self.detail_reversed { "古い順に切り替える" } else { "新しい順に切り替える" }, None))
+                            .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.toggle_detail_order(cx))),
+                    ),
+            )
+            .child(events)
+            .into_any_element()
     }
 
     fn detail_list_item(&self, sel: Selection, row: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1937,7 +2012,7 @@ impl Rireki {
                             .truncate()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(c(if message { theme::MUTED } else { theme::TEXT }))
-                            .child(e.name.clone()),
+                            .child(SharedString::from(e.name.clone())),
                     )
                     .when_some(status, |d, (l, col)| d.child(badge(l, col)))
                     .child(div().flex_1())
@@ -2251,7 +2326,7 @@ mod tests {
     fn list_event(name: &str, status: Status) -> Event {
         Event {
             start: 1.0, end: 2.0, kind: Kind::Tool, name: name.into(), summary: String::new(),
-            input: String::new(), output: String::new(), call_id: None, row: None,
+            input: String::new(), output: String::new(), call_id: None, text_ref: Default::default(),
             usage: Default::default(), model: None, status,
         }
     }
@@ -2264,23 +2339,23 @@ mod tests {
                 3 => Status::Pending, _ => Status::Ok,
             })
         }).collect();
-        let all = detail_rows(&events, None);
+        let all = detail_rows(&events, None, false);
         assert_eq!(all.len(), DETAIL_MAX + 2);
         assert_eq!(all[0], DetailRow::Summary);
         assert_eq!(all[DETAIL_MAX], DetailRow::Event(DETAIL_MAX - 1));
         assert_eq!(all[DETAIL_MAX + 1], DetailRow::Limit);
         for filter in [RowFilter::Name("Edit".into()), RowFilter::Failed] {
-            let rows = detail_rows(&events, Some(&filter));
+            let rows = detail_rows(&events, Some(&filter), false);
             let expected: Vec<_> = events.iter().take(DETAIL_MAX).enumerate().filter(|(_, e)| match &filter {
-                RowFilter::Name(name) => e.name == *name,
+                RowFilter::Name(name) => e.name.as_ref() == name,
                 RowFilter::Failed => matches!(e.status, Status::Error | Status::Rejected | Status::Interrupted),
             }).map(|(i, _)| DetailRow::Event(i)).collect();
             assert_eq!(&rows[1..rows.len() - 1], &expected);
         }
         events[DETAIL_MAX].name = "AfterLimit".into();
-        assert_eq!(detail_rows(&events, Some(&RowFilter::Name("AfterLimit".into()))),
+        assert_eq!(detail_rows(&events, Some(&RowFilter::Name("AfterLimit".into())), false),
             [DetailRow::Summary, DetailRow::Empty, DetailRow::Limit]);
-        assert_eq!(detail_rows(&[], None), [DetailRow::Summary, DetailRow::Empty]);
+        assert_eq!(detail_rows(&[], None, false), [DetailRow::Summary, DetailRow::Empty]);
     }
 
     #[test]
@@ -2288,7 +2363,7 @@ mod tests {
         let events = vec![list_event("Read", Status::Ok), list_event("Edit", Status::Error), list_event("Edit", Status::Ok)];
         let state = DetailList::new();
         let key = |generation, filter, width, last| DetailListKey {
-            sel: Selection { session: 1, lane: 2, first: 10, last }, generation, filter, width, live: false,
+            sel: Selection { session: 1, lane: 2, first: 10, last }, generation, filter, reversed: false, width, live: false,
         };
         state.prepare(key(1, None, 400, 12), &events);
         state.state.scroll_to(ListOffset { item_ix: 2, offset_in_item: px(17.0) });
@@ -2305,6 +2380,51 @@ mod tests {
         state.prepare(key(3, None, 400, 12), &events);
         let offset = state.state.logical_scroll_top();
         assert_eq!((offset.item_ix, offset.offset_in_item), (0, px(0.0)));
+    }
+
+    #[test]
+    fn reversed_detail_list_keeps_display_limit_and_filters() {
+        let mut events: Vec<_> = (0..DETAIL_MAX + 1).map(|_| list_event("Read", Status::Ok)).collect();
+        events[0] = list_event("Edit", Status::Error);
+        events[DETAIL_MAX - 1] = list_event("Edit", Status::Ok);
+        events[DETAIL_MAX] = list_event("Edit", Status::Error);
+        let rows = detail_rows(&events, None, true);
+        assert_eq!(rows.len(), DETAIL_MAX + 2);
+        assert_eq!(rows[0], DetailRow::Summary);
+        assert_eq!(rows[1], DetailRow::Event(DETAIL_MAX - 1));
+        assert_eq!(rows[DETAIL_MAX], DetailRow::Event(0));
+        assert_eq!(rows[DETAIL_MAX + 1], DetailRow::Limit);
+        assert_eq!(detail_rows(&events, Some(&RowFilter::Name("Edit".into())), true),
+            [DetailRow::Summary, DetailRow::Event(DETAIL_MAX - 1), DetailRow::Event(0), DetailRow::Limit]);
+        assert_eq!(detail_rows(&events, Some(&RowFilter::Failed), true),
+            [DetailRow::Summary, DetailRow::Event(0), DetailRow::Limit]);
+        assert_eq!(detail_rows(&events, Some(&RowFilter::Name("Missing".into())), true),
+            [DetailRow::Summary, DetailRow::Empty, DetailRow::Limit]);
+        assert_eq!(detail_rows(&[], None, true), [DetailRow::Summary, DetailRow::Empty]);
+    }
+
+    #[test]
+    fn detail_list_keeps_event_anchor_when_reversed_and_extended() {
+        let mut events = vec![list_event("Read", Status::Ok), list_event("Edit", Status::Error), list_event("Edit", Status::Ok)];
+        let state = DetailList::new();
+        let key = |generation, last, reversed| DetailListKey {
+            sel: Selection { session: 1, lane: 2, first: 10, last }, generation, filter: None, reversed,
+            width: 400, live: false,
+        };
+        state.prepare(key(1, 12, false), &events);
+        state.state.scroll_to(ListOffset { item_ix: 1, offset_in_item: px(17.0) });
+        state.prepare(key(1, 12, true), &events);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (3, px(17.0)));
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows[offset.item_ix], DetailRow::Event(0));
+        events.push(list_event("Read", Status::Ok));
+        state.prepare(key(2, 13, true), &events);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (4, px(17.0)));
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows[offset.item_ix], DetailRow::Event(0));
+        state.prepare(key(2, 13, false), &events);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (1, px(17.0)));
     }
 
     #[test]

@@ -216,6 +216,8 @@ pub struct Rireki {
     file_open: Option<String>,
     /// 詳細パネルで開いているタブ
     detail_tab: DetailTab,
+    /// 詳細パネルのイベントを新しい順に表示するか
+    detail_reversed: bool,
     detail_scroll: ScrollHandle,
     detail_list: DetailList,
     file_list: FileList,
@@ -561,6 +563,7 @@ impl Rireki {
             expanded: HashSet::new(),
             file_open: None,
             detail_tab: p.detail_tab,
+            detail_reversed: p.detail_reversed,
             detail_scroll: ScrollHandle::new(),
             detail_list: DetailList::new(),
             file_list: FileList::new(),
@@ -644,6 +647,7 @@ impl Rireki {
             collapsed,
             folded,
             detail_tab: self.detail_tab,
+            detail_reversed: self.detail_reversed,
         };
         if p != self.saved {
             prefs::save(&p);
@@ -660,8 +664,8 @@ impl Rireki {
                 && self.valid(*s)
                 && s.last + 1 == self.store.sessions[s.session].lanes[s.lane].events.len()
         });
-        // イベントの一覧が一番下までスクロールされていれば、増えたイベントまでスクロールして追う
-        let at_bottom = self.detail_at_bottom() || self.detail_following || self.detail_follow;
+        // 表示順に応じて最新のイベント側にいれば、増えたイベントまでスクロールして追う
+        let at_latest = self.detail_at_latest() || self.detail_following || self.detail_follow;
         let Delta { snapshot, touched } = delta;
         if touched.is_empty() {
             return false;
@@ -687,12 +691,11 @@ impl Rireki {
             if self.valid(sel) {
                 // 再読み込みが終わるまで、本文と集計を同じ版のまま表示する。
                 self.refresh_detail(sel, cx);
-                self.detail_follow = following && at_bottom && self.detail_tab == DetailTab::Events;
+                self.detail_follow = following && at_latest && self.detail_tab == DetailTab::Events;
             } else {
                 self.cancel_detail_load();
                 self.selected = None;
-                self.detail_cache = None;
-                self.detail_snapshot = None;
+                self.clear_detail_cache(cx);
                 self.detail_changed(cx);
             }
         }
@@ -704,10 +707,15 @@ impl Rireki {
         true
     }
 
-    /// 詳細パネルを一番下まで滑らかにスクロールする。途中でユーザーがスクロールしたら止める
-    fn animate_to_bottom(&mut self, cx: &mut Context<Self>) {
+    /// 表示順に応じて最新のイベント側へ移る。途中でユーザーがスクロールしたら止める
+    fn animate_to_latest(&mut self, cx: &mut Context<Self>) {
         if self.detail_uses_list() {
-            self.animate_list_to_bottom(cx);
+            if self.detail_reversed {
+                self.detail_list.state.scroll_to(gpui::ListOffset::default());
+                self.detail_changed(cx);
+            } else {
+                self.animate_list_to_bottom(cx);
+            }
             return;
         }
         const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
@@ -1111,8 +1119,7 @@ impl Rireki {
             self.push_back(cur);
             self.forward.clear();
         }
-        self.detail_cache = None;
-        self.detail_snapshot = None;
+        self.clear_detail_cache(cx);
         self.sidebar_changed(cx);
         cx.notify();
     }

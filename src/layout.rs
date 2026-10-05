@@ -81,8 +81,8 @@ impl NameIndex {
         let mut index = HashMap::new();
         let mut names: Vec<(String, Vec<usize>)> = Vec::new();
         for (i, e) in lane.events.iter().enumerate() {
-            let k = *index.entry(e.name.as_str()).or_insert_with(|| {
-                names.push((e.name.clone(), Vec::new()));
+            let k = *index.entry(e.name.as_ref()).or_insert_with(|| {
+                names.push((e.name.to_string(), Vec::new()));
                 names.len() - 1
             });
             names[k].1.push(i);
@@ -232,7 +232,7 @@ pub fn aggregate(lane: &Lane, view: (f64, f64), spp: f64, g: Granularity) -> Vec
             None => false,
             Some(b) => {
                 let gap = e.start - b.end;
-                let same = prev_name == Some(e.name.as_str());
+                let same = prev_name == Some(e.name.as_ref());
                 match g {
                     Granularity::Call => false,
                     Granularity::SameTool => same && e.kind == Kind::Tool && gap < (120.0f64).max(30.0 * spp),
@@ -252,7 +252,7 @@ pub fn aggregate(lane: &Lane, view: (f64, f64), spp: f64, g: Granularity) -> Vec
             }
             out.push(Block { start: e.start, end: e.end, first: i, last: i });
         }
-        prev_name = Some(e.name.as_str());
+        prev_name = Some(e.name.as_ref());
     }
     if out.last().is_some_and(|b| b.end < view.0) {
         out.pop();
@@ -265,7 +265,7 @@ pub fn label(events: &[Event], b: &Block) -> String {
     let evs = &events[b.first..=b.last];
     if evs.len() == 1 {
         let e = &evs[0];
-        return if e.summary.is_empty() { e.name.clone() } else { format!("{}: {}", e.name, e.summary) };
+        return if e.summary.is_empty() { e.name.to_string() } else { format!("{}: {}", e.name, e.summary) };
     }
     let counts = name_counts(evs);
     if counts.len() == 1 {
@@ -283,7 +283,7 @@ pub fn dominant(events: &[Event], b: &Block) -> usize {
     let evs = &events[b.first..=b.last];
     let counts = name_counts(evs);
     let top = counts[0].0;
-    b.first + evs.iter().position(|e| e.name == top).unwrap_or(0)
+    b.first + evs.iter().position(|e| e.name.as_ref() == top).unwrap_or(0)
 }
 
 /// 色とラベルに必要な名前の集計を一度だけ行う
@@ -293,7 +293,7 @@ pub fn describe(events: &[Event], b: &Block, show_label: bool) -> (usize, Option
     }
     let evs = &events[b.first..=b.last];
     let counts = name_counts(evs);
-    let dominant = b.first + evs.iter().position(|e| e.name == counts[0].0).unwrap_or(0);
+    let dominant = b.first + evs.iter().position(|e| e.name.as_ref() == counts[0].0).unwrap_or(0);
     let text = show_label.then(|| {
         if counts.len() == 1 {
             format!("{} ×{}", counts[0].0, counts[0].1)
@@ -313,9 +313,9 @@ fn name_counts(evs: &[Event]) -> Vec<(&str, usize)> {
     let mut m: HashMap<&str, usize> = HashMap::new();
     let mut order: Vec<&str> = Vec::new();
     for e in evs {
-        let c = m.entry(e.name.as_str()).or_insert(0);
+        let c = m.entry(e.name.as_ref()).or_insert(0);
         if *c == 0 {
-            order.push(e.name.as_str());
+            order.push(e.name.as_ref());
         }
         *c += 1;
     }
@@ -341,12 +341,12 @@ mod tests {
                     (i % 19) as f64
                 },
                 kind: if i % 83 == 0 { Kind::User } else { Kind::Tool },
-                name: format!("tool-{}", i % 5),
+                name: format!("tool-{}", i % 5).into(),
                 summary: "日本語の要約".into(),
                 input: String::new(),
                 output: String::new(),
                 call_id: None,
-                row: None,
+                text_ref: Default::default(),
                 usage: Default::default(),
                 model: None,
                 status: Default::default(),

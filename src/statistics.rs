@@ -394,7 +394,7 @@ impl Summary {
                 }
                 if tool {
                     let calls = &mut tools
-                        .entry((e.name.as_str(), e.kind == Kind::Agent))
+                        .entry((e.name.as_ref(), e.kind == Kind::Agent))
                         .or_default()[src];
                     calls.calls += 1;
                     calls.failures += usize::from(e.status.failed());
@@ -461,12 +461,12 @@ mod tests {
             end: start,
             kind,
             usage,
-            name: String::new(),
+            name: "".into(),
             summary: String::new(),
             input: String::new(),
             output: String::new(),
             call_id: None,
-            row: None,
+            text_ref: Default::default(),
             model: Some("statistics-test-unknown-model".into()),
             status: Status::Ok,
         }
@@ -667,7 +667,7 @@ mod tests {
                 };
                 event.name =
                     ["exec_command", "Read", "apply_patch", "spawn_agent"][i as usize % 4].into();
-                if event.name == "spawn_agent" && event.kind == Kind::Tool {
+                if event.name.as_ref() == "spawn_agent" && event.kind == Kind::Tool {
                     event.kind = Kind::Agent;
                 }
                 if i % 13 == 0 {

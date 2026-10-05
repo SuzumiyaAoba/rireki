@@ -117,7 +117,7 @@ fn profile_event(index: usize, start: f64) -> Event {
         input,
         output: "[exit 1 · 0.1s]\nresult".into(),
         call_id: None,
-        row: None,
+        text_ref: Default::default(),
         usage: Default::default(),
         model: None,
         status: if index.is_multiple_of(7) {

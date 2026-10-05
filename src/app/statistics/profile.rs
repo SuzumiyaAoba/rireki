@@ -43,8 +43,8 @@ impl Rireki {
     ) {
         if step == 0 {
             self.close_detail(cx);
-            self.show_statistics(window, cx);
             self.statistics_state.period = Period::All;
+            self.show_statistics(window, cx);
             self.statistics_state
                 .scroll
                 .set_offset(point(px(0.0), px(0.0)));
@@ -67,6 +67,7 @@ impl Rireki {
                 if step.is_multiple_of(30) {
                     self.set_statistics_period(
                         [Period::Week, Period::Month, Period::Quarter, Period::All][step / 30],
+                        cx,
                     );
                 }
                 if step % 30 == 29 {
@@ -118,7 +119,7 @@ impl Rireki {
                     input: String::new(),
                     output: String::new(),
                     call_id: None,
-                    row: None,
+                    text_ref: Default::default(),
                     usage: crate::model::Usage {
                         input: 333,
                         output: 111,

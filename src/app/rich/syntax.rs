@@ -1,6 +1,10 @@
 //! 履歴のファイル名から構文を選び、差分の変更前・変更後をそれぞれ解析する。
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use gpui::{FontStyle, FontWeight, UnderlineStyle, px};
@@ -11,6 +15,76 @@ use two_face::re_exports::syntect::{
 };
 
 use super::{CODE_TEXT, FilePatch, Spans, color};
+
+const CACHE_BYTES: usize = 4 * 1024 * 1024;
+const CACHE_ENTRIES: usize = 64;
+
+struct Cached {
+    hash: u64,
+    path: String,
+    rows: Vec<(char, String)>,
+    spans: Rc<Vec<Spans>>,
+    bytes: usize,
+}
+
+struct Cache {
+    entries: VecDeque<Cached>,
+    empty: Rc<Vec<Spans>>,
+    bytes: usize,
+    limit: usize,
+}
+
+impl Cache {
+    fn new(limit: usize) -> Self {
+        Self { entries: VecDeque::new(), empty: Rc::new(Vec::new()), bytes: 0, limit }
+    }
+
+    fn get(&mut self, patch: &FilePatch, limit: usize) -> Rc<Vec<Spans>> {
+        let rows = &patch.rows[..patch.rows.len().min(limit)];
+        if rows.is_empty() { return self.empty.clone(); }
+        let mut hash = DefaultHasher::new();
+        patch.path.hash(&mut hash);
+        rows.len().hash(&mut hash);
+        for row in rows { (row.kind, &row.text).hash(&mut hash); }
+        let hash = hash.finish();
+        if let Some(i) = self.entries.iter().position(|entry| {
+            entry.hash == hash && entry.path == patch.path && entry.rows.len() == rows.len()
+                && entry.rows.iter().zip(rows).all(|((kind, text), row)| *kind == row.kind && *text == row.text)
+        }) {
+            let entry = self.entries.remove(i).unwrap();
+            let spans = entry.spans.clone();
+            self.entries.push_back(entry);
+            return spans;
+        }
+        let spans = Rc::new(diff_spans(patch, limit));
+        let bytes = std::mem::size_of::<Cached>() + patch.path.len()
+            + rows.len() * std::mem::size_of::<(char, String)>()
+            + rows.iter().map(|row| row.text.len()).sum::<usize>()
+            + std::mem::size_of::<Vec<Spans>>() + 2 * std::mem::size_of::<usize>()
+            + spans.capacity() * std::mem::size_of::<Spans>()
+            + spans.iter().map(|line| line.capacity() * std::mem::size_of::<(std::ops::Range<usize>, gpui::HighlightStyle)>()).sum::<usize>();
+        if bytes <= self.limit {
+            while self.entries.len() >= CACHE_ENTRIES || self.bytes + bytes > self.limit {
+                self.bytes -= self.entries.pop_front().unwrap().bytes;
+            }
+            self.entries.push_back(Cached {
+                hash,
+                path: patch.path.clone(),
+                rows: rows.iter().map(|row| (row.kind, row.text.clone())).collect(),
+                spans: spans.clone(),
+                bytes,
+            });
+            self.bytes += bytes;
+        }
+        spans
+    }
+}
+
+/// 表示中の差分だけを再利用し、本文と装飾の保持量を4 MiB・64項目に制限する。
+pub(super) fn cached_diff_spans(patch: &FilePatch, limit: usize) -> Rc<Vec<Spans>> {
+    thread_local! { static CACHE: RefCell<Cache> = RefCell::new(Cache::new(CACHE_BYTES)); }
+    CACHE.with(|cache| cache.borrow_mut().get(patch, limit))
+}
 
 fn syntaxes() -> &'static SyntaxSet {
     static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
@@ -115,6 +189,72 @@ mod tests {
 
     fn style_at(spans: &Spans, offset: usize) -> HighlightStyle {
         spans.iter().find(|(range, _)| range.contains(&offset)).unwrap().1
+    }
+
+    #[test]
+    fn cached_diff_matches_direct_analysis_after_content_path_and_limit_changes() {
+        let (mut patch, expected) = highlighted("src/main.rs", "@@\n-let message = \"旧\";\n+let message = \"日本語\";\n message");
+        let mut cache = Cache::new(CACHE_BYTES);
+        let first = cache.get(&patch, usize::MAX);
+        assert_eq!(&*first, &expected);
+        assert!(Rc::ptr_eq(&first, &cache.get(&patch.clone(), usize::MAX)));
+        assert_eq!(&*cache.get(&patch, 2), &diff_spans(&patch, 2));
+        assert!(Rc::ptr_eq(&first, &cache.get(&patch, usize::MAX)));
+        patch.rows[1].text = "/* コメント開始".into();
+        assert_eq!(&*cache.get(&patch, usize::MAX), &diff_spans(&patch, usize::MAX));
+        patch.path = "renamed.rs → renamed.py".into();
+        assert_eq!(&*cache.get(&patch, usize::MAX), &diff_spans(&patch, usize::MAX));
+        patch.rows[1].kind = '+';
+        assert_eq!(&*cache.get(&patch, usize::MAX), &diff_spans(&patch, usize::MAX));
+    }
+
+    #[test]
+    fn empty_diffs_reuse_one_result_without_evicting_highlighted_rows() {
+        let (patch, _) = highlighted("src/main.rs", "@@\n+let value = 1;");
+        let mut cache = Cache::new(CACHE_BYTES);
+        let highlighted = Rc::downgrade(&cache.get(&patch, usize::MAX));
+        let bytes = cache.bytes;
+        let empty = cache.get(&patch, 0);
+        let mut header = patch.clone();
+        header.rows.clear();
+        for i in 0..CACHE_ENTRIES * 2 {
+            header.path = format!("different-{i}.rs");
+            assert!(Rc::ptr_eq(&empty, &cache.get(&header, usize::MAX)));
+        }
+        assert!(empty.is_empty());
+        assert!(highlighted.upgrade().is_some());
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(cache.bytes, bytes);
+        let weak = Rc::downgrade(&empty);
+        drop(empty);
+        drop(cache);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn diff_cache_releases_evicted_and_oversized_results() {
+        let (mut patch, _) = highlighted("src/main.rs", "@@\n+let value = 1;");
+        let mut cache = Cache::new(CACHE_BYTES);
+        let first = Rc::downgrade(&cache.get(&patch, usize::MAX));
+        for i in 0..CACHE_ENTRIES {
+            patch.rows[0].text = format!("let value = {};", i + 2);
+            cache.get(&patch, usize::MAX);
+        }
+        assert!(first.upgrade().is_none());
+        let mut cache = Cache::new(4096);
+        let first = Rc::downgrade(&cache.get(&patch, usize::MAX));
+        for i in 0..20 {
+            patch.rows[0].text = format!("let other_value = {i};");
+            cache.get(&patch, usize::MAX);
+        }
+        assert!(first.upgrade().is_none());
+        assert!(cache.bytes <= 4096);
+        patch.rows[0].text = "あ".repeat(4096);
+        let oversized = cache.get(&patch, usize::MAX);
+        assert_eq!(&*oversized, &diff_spans(&patch, usize::MAX));
+        let weak = Rc::downgrade(&oversized);
+        drop(oversized);
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]

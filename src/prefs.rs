@@ -60,6 +60,8 @@ pub struct Prefs {
     pub folded: Vec<String>,
     /// 詳細パネルで開いているタブ
     pub detail_tab: DetailTab,
+    /// 詳細パネルのイベントを新しい順に表示するか
+    pub detail_reversed: bool,
 }
 
 impl Default for Prefs {
@@ -79,6 +81,7 @@ impl Default for Prefs {
             collapsed: Vec::new(),
             folded: Vec::new(),
             detail_tab: DetailTab::Events,
+            detail_reversed: false,
         }
     }
 }
@@ -114,12 +117,16 @@ mod tests {
 
     #[test]
     fn roundtrip_and_partial() {
-        let p = Prefs { focus: Some("/w".into()), gran: Granularity::Turn, statistics: true, ..Prefs::default() };
+        let p = Prefs {
+            focus: Some("/w".into()), gran: Granularity::Turn, statistics: true,
+            detail_reversed: true, ..Prefs::default()
+        };
         let s = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&s).unwrap(), p);
         // 足りない項目は既定値で補う（項目を増やしても古いファイルを読める）
         let q: Prefs = serde_json::from_str(r#"{"mode":"day"}"#).unwrap();
         assert_eq!((q.mode, q.sidebar), (Mode::Day, true));
         assert!(!q.statistics);
+        assert!(!q.detail_reversed);
     }
 }

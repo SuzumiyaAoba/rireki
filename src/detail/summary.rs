@@ -36,22 +36,25 @@ impl SelectionSummary {
             ..Self::default()
         };
         let mut names = HashMap::new();
-        let mut prices = HashMap::new();
+        let mut prices = crate::pricing::Cache::default();
+        let mut last_name: Option<usize> = None;
         let mut event_index = 0;
         for chunk in events.chunks(256) {
             if !is_current() {
                 return None;
             }
             for event in chunk {
-                let price = *prices
-                    .entry(event.model.as_deref())
-                    .or_insert_with(|| event.model.as_deref().and_then(crate::pricing::price));
+                let price = if event.usage.is_empty() { None } else { prices.get(event.model.as_deref()) };
                 out.total.add(event, price);
                 out.end = out.end.max(event.end);
-                let index = *names.entry(event.name.as_str()).or_insert_with(|| {
-                    out.names.push((event.name.clone(), 0, event_index));
-                    out.names.len() - 1
-                });
+                let index = match last_name.filter(|&i| out.names[i].0 == event.name.as_ref()) {
+                    Some(i) => i,
+                    None => *names.entry(event.name.as_ref()).or_insert_with(|| {
+                        out.names.push((event.name.to_string(), 0, event_index));
+                        out.names.len() - 1
+                    }),
+                };
+                last_name = Some(index);
                 out.names[index].1 += 1;
                 event_index += 1;
             }
@@ -81,7 +84,8 @@ impl SessionSummary {
     pub fn build(session: &Session, is_current: &impl Fn() -> bool) -> Option<Self> {
         let mut out = Self::default();
         let mut models = HashMap::new();
-        let mut prices = HashMap::new();
+        let mut prices = crate::pricing::Cache::default();
+        let mut last_model: Option<usize> = None;
         for lane in &session.lanes {
             let mut total = Totals::default();
             let mut turns: Vec<TurnSummary> = Vec::new();
@@ -104,17 +108,19 @@ impl SessionSummary {
                         turn.failures += usize::from(event.status.failed());
                     }
                     index += 1;
-                    let price = *prices
-                        .entry(event.model.as_deref())
-                        .or_insert_with(|| event.model.as_deref().and_then(crate::pricing::price));
+                    let price = if event.usage.is_empty() { None } else { prices.get(event.model.as_deref()) };
                     total.add(event, price);
                     out.total.add(event, price);
                     if !event.usage.is_empty() {
                         let model = event.model.as_deref().unwrap_or("");
-                        let index = *models.entry(model).or_insert_with(|| {
-                            out.models.push((model.to_owned(), UsageSum::default()));
-                            out.models.len() - 1
-                        });
+                        let index = match last_model.filter(|&i| out.models[i].0 == model) {
+                            Some(i) => i,
+                            None => *models.entry(model).or_insert_with(|| {
+                                out.models.push((model.to_owned(), UsageSum::default()));
+                                out.models.len() - 1
+                            }),
+                        };
+                        last_model = Some(index);
                         out.models[index].1.add_priced(&event.usage, price);
                     }
                 }
@@ -181,7 +187,7 @@ mod tests {
                     input: String::new(),
                     output: String::new(),
                     call_id: None,
-                    row: None,
+                    text_ref: Default::default(),
                     status: [
                         Status::Ok,
                         Status::Error,
@@ -282,10 +288,10 @@ mod tests {
             );
             let mut reference: Vec<(String, usize, usize)> = Vec::new();
             for (index, e) in events.iter().enumerate() {
-                if let Some((_, n, _)) = reference.iter_mut().find(|(name, _, _)| *name == e.name) {
+                if let Some((_, n, _)) = reference.iter_mut().find(|(name, _, _)| *name == e.name.as_ref()) {
                     *n += 1;
                 } else {
-                    reference.push((e.name.clone(), 1, index));
+                    reference.push((e.name.to_string(), 1, index));
                 }
             }
             reference.sort_by_key(|(_, n, _)| std::cmp::Reverse(*n));
@@ -311,6 +317,35 @@ mod tests {
         let weak = Arc::downgrade(&session);
         drop(session);
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn repeated_names_and_models_match_full_scans_across_chunks_and_lanes() {
+        let mut session = session();
+        for (li, lane) in Arc::make_mut(&mut session).lanes.iter_mut().enumerate() {
+            for (i, event) in lane.events.iter_mut().enumerate() {
+                event.name = ["exec_command", "User", "exec_command"][i / 300].into();
+                event.model = match (i / 100 + li) % 5 {
+                    0 => None,
+                    1 => Some("".into()),
+                    2 => Some("unknown".into()),
+                    3 => Some("gpt-6-sol".into()),
+                    _ => Some("claude-opus-5-5".into()),
+                };
+            }
+        }
+        let all = || session.lanes.iter().flat_map(|l| &l.events);
+        let summary = SessionSummary::build(&session, &|| true).unwrap();
+        assert_eq!(summary.total.stats, Stats::of(all()));
+        assert_eq!(summary.total.usage, UsageSum::of(all()));
+        assert_eq!(summary.models, UsageSum::by_model(all()));
+        for (total, lane) in summary.lanes.iter().zip(&session.lanes) {
+            assert_eq!(total.usage, UsageSum::of(&lane.events));
+            let selected = SelectionSummary::build(&lane.events, &|| true).unwrap();
+            assert_eq!(selected.total.stats, Stats::of(&lane.events));
+            assert_eq!(selected.total.usage, UsageSum::of(&lane.events));
+            assert_eq!(selected.names, vec![("exec_command".into(), 500, 0), ("User".into(), 300, 300)]);
+        }
     }
 
     #[test]

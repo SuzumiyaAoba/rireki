@@ -249,50 +249,110 @@ fn ts(v: &Value) -> Option<f64> {
 fn pretty(v: &Value) -> String {
     match v {
         Value::String(s) => truncate(s, MAX_TEXT),
-        other => truncate(&yaml(other).join("\n"), MAX_TEXT),
+        other => bounded_yaml(other, MAX_TEXT),
     }
 }
 
 /// JSON を YAML 風の読みやすい行に整形する（文字列は引用符を外し、複数行はそのまま字下げする）
+#[cfg(test)]
 fn yaml(v: &Value) -> Vec<String> {
+    yaml_lines(v, usize::MAX).collect()
+}
+
+fn yaml_lines(v: &Value, line_limit: usize) -> Box<dyn Iterator<Item = String> + '_> {
     match v {
-        Value::Object(m) if !m.is_empty() => m.iter().flat_map(|(k, v)| entry(k, v)).collect(),
+        Value::Object(m) if !m.is_empty() => Box::new(m.iter().flat_map(move |(k, v)| entry_lines(k, v, line_limit))),
         Value::Array(a) if !a.is_empty() => {
             if let Some(s) = inline_list(a) {
-                return vec![s];
+                return Box::new(std::iter::once(s));
             }
-            a.iter()
-                .flat_map(|x| {
-                    let mut ls = yaml(x).into_iter();
+            Box::new(a.iter()
+                .flat_map(move |x| {
+                    let mut ls = yaml_lines(x, line_limit);
                     let first = ls.next().unwrap_or_default();
                     std::iter::once(format!("- {first}")).chain(ls.map(|l| format!("  {l}")))
-                })
-                .collect()
+                }))
         }
-        other => vec![scalar(other)],
+        other => Box::new(std::iter::once(scalar_prefix(other, line_limit))),
     }
 }
 
 fn entry(k: &str, v: &Value) -> Vec<String> {
-    let nested = |ls: Vec<String>| std::iter::once(format!("{k}:")).chain(ls.into_iter().map(|l| format!("  {l}"))).collect();
+    entry_lines(k, v, usize::MAX).collect()
+}
+
+fn entry_lines<'a>(k: &'a str, v: &'a Value, line_limit: usize) -> Box<dyn Iterator<Item = String> + 'a> {
+    let k = text_prefix(k, line_limit);
+    let nested = |ls: Box<dyn Iterator<Item = String> + 'a>| -> Box<dyn Iterator<Item = String> + 'a> {
+        Box::new(std::iter::once(format!("{k}:")).chain(ls.map(|l| format!("  {l}"))))
+    };
     match v {
-        Value::String(s) if s.contains('\n') => nested(s.lines().map(String::from).collect()),
-        Value::Object(m) if !m.is_empty() => nested(yaml(v)),
+        Value::String(s) if s.contains('\n') => nested(Box::new(s.lines().map(move |line| text_prefix(line, line_limit).to_owned()))),
+        Value::Object(m) if !m.is_empty() => nested(yaml_lines(v, line_limit)),
         Value::Array(a) if !a.is_empty() => match inline_list(a) {
-            Some(s) => vec![format!("{k}: {s}")],
-            None => nested(yaml(v)),
+            Some(s) => Box::new(std::iter::once(format!("{k}: {s}"))),
+            None => nested(yaml_lines(v, line_limit)),
         },
-        other => vec![format!("{k}: {}", scalar(other))],
+        other => Box::new(std::iter::once(format!("{k}: {}", scalar_prefix(other, line_limit)))),
     }
+}
+
+fn text_prefix(text: &str, limit: usize) -> &str {
+    if text.len() <= limit { text } else {
+        let end = text.char_indices().nth(limit).map_or(text.len(), |(i, _)| i);
+        &text[..end]
+    }
+}
+
+fn scalar_prefix(value: &Value, limit: usize) -> String {
+    match value {
+        Value::String(text) if !text.is_empty() => text_prefix(text, limit).to_owned(),
+        _ => scalar(value),
+    }
+}
+
+/// 表示上限の一文字先まで生成し、元の切り詰めと同じ位置に省略記号を付ける。
+fn bounded_yaml(v: &Value, limit: usize) -> String {
+    let mut out = String::new();
+    let mut chars = 0;
+    for (i, line) in yaml_lines(v, limit.saturating_add(1)).enumerate() {
+        if i != 0 {
+            out.push('\n');
+            chars += 1;
+            if chars > limit { return truncate(&out, limit); }
+        }
+        for c in line.chars() {
+            out.push(c);
+            chars += 1;
+            if chars > limit { return truncate(&out, limit); }
+        }
+    }
+    out
 }
 
 /// 短いスカラーだけの配列は 1 行にまとめる
 fn inline_list(a: &[Value]) -> Option<String> {
-    if a.iter().any(|x| x.is_object() || x.is_array() || x.as_str().is_some_and(|s| s.contains('\n'))) {
-        return None;
+    let mut out = String::from("[");
+    let mut chars = 1;
+    for (i, value) in a.iter().enumerate() {
+        if value.is_object() || value.is_array() { return None; }
+        if i != 0 {
+            out.push_str(", ");
+            chars += 2;
+        }
+        // 閉じ括弧を含めて80文字。長い配列や文字列を全て複製・連結せずに判定する。
+        let remaining = 80usize.checked_sub(chars + 1)?;
+        if let Some(text) = value.as_str()
+            && (text.chars().take(remaining + 1).count() > remaining || text.contains('\n'))
+        { return None; }
+        let text = scalar(value);
+        let count = text.chars().count();
+        if count > remaining { return None; }
+        chars += count;
+        out.push_str(&text);
     }
-    let s = format!("[{}]", a.iter().map(scalar).collect::<Vec<_>>().join(", "));
-    (s.chars().count() <= 80).then_some(s)
+    out.push(']');
+    Some(out)
 }
 
 fn scalar(v: &Value) -> String {
@@ -311,7 +371,7 @@ fn pretty_output(s: &str) -> String {
     if (t.starts_with('{') || t.starts_with('['))
         && let Ok(v) = serde_json::from_str::<Value>(t)
     {
-        return yaml(&v).join("\n");
+        return bounded_yaml(&v, MAX_TEXT);
     }
     // Codex の "[exit 0 · 0.1s]" 見出しの後ろが JSON の場合
     if let Some((head, body)) = s.split_once('\n').filter(|(h, _)| h.starts_with('[') && h.ends_with(']')) {
@@ -378,17 +438,17 @@ fn is_agent_tool(name: &str) -> bool {
     matches!(name, "Agent" | "Task" | "spawn_agent")
 }
 
-fn message_event(t: f64, kind: Kind, name: &str, text: &str) -> Event {
+fn message_event(t: f64, kind: Kind, name: Arc<str>, text: &str) -> Event {
     Event {
         start: t,
         end: t,
         kind,
-        name: name.into(),
+        name,
         summary: one_line(text, 160),
         input: truncate(text, MAX_TEXT),
         output: String::new(),
         call_id: None,
-        row: None,
+        text_ref: Default::default(),
         usage: Usage::default(),
         model: None,
         status: Status::Ok,
@@ -398,7 +458,7 @@ fn message_event(t: f64, kind: Kind, name: &str, text: &str) -> Event {
 /// 結果を受け取るまでは Pending
 fn tool_event(
     t: f64,
-    name: &str,
+    name: Arc<str>,
     call_id: Option<String>,
     summary: String,
     input: String,
@@ -406,13 +466,13 @@ fn tool_event(
     Event {
         start: t,
         end: t,
-        kind: if is_agent_tool(name) { Kind::Agent } else { Kind::Tool },
-        name: name.into(),
+        kind: if is_agent_tool(&name) { Kind::Agent } else { Kind::Tool },
+        name,
         summary,
         input,
         output: String::new(),
         call_id,
-        row: None,
+        text_ref: Default::default(),
         usage: Usage::default(),
         model: None,
         status: Status::Pending,
@@ -636,7 +696,7 @@ fn claude_status(item: &Value, result: Option<&Value>, out: &str) -> Status {
 
 // ---------------------------------------------------------------- Claude
 
-/// モデル名の共有（イベントごとに文字列を複製しない）
+/// モデル名やイベント名の共有（イベントごとに文字列を複製しない）
 #[derive(Default)]
 pub struct Interner(HashMap<String, Arc<str>>);
 
@@ -715,6 +775,7 @@ struct ClaudeParse {
 fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
     let mut lane = Lane::new(lane_name);
     let mut pending = Pending(HashMap::new());
+    let mut names = Interner::default();
     let mut cwd = String::new();
     let mut title = String::new();
     let mut session_id = String::new();
@@ -812,7 +873,7 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                     if title.is_empty() {
                         title = one_line(text, 80);
                     }
-                    lane.events.push(message_event(t, Kind::User, "User", text));
+                    lane.events.push(message_event(t, Kind::User, names.get("User"), text));
                 }
             }
             "assistant" => {
@@ -825,13 +886,13 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                         Some("text") => {
                             let text = it.get("text").and_then(|x| x.as_str()).unwrap_or("");
                             if !text.trim().is_empty() {
-                                lane.events.push(message_event(t, Kind::Assistant, "Assistant", text));
+                                lane.events.push(message_event(t, Kind::Assistant, names.get("Assistant"), text));
                             }
                         }
                         Some("thinking") => {
                             let text = it.get("thinking").and_then(|x| x.as_str()).unwrap_or("");
                             if !text.trim().is_empty() {
-                                lane.events.push(message_event(t, Kind::Thinking, "Thinking", text));
+                                lane.events.push(message_event(t, Kind::Thinking, names.get("Thinking"), text));
                             }
                         }
                         Some("tool_use") => {
@@ -843,7 +904,7 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                             }
                             lane.events.push(tool_event(
                                 t,
-                                name,
+                                names.get(name),
                                 id,
                                 summarize_input(name, input),
                                 claude_input(name, input),
@@ -972,6 +1033,7 @@ fn codex_output_text(o: Option<&Value>) -> String {
 fn load_codex(p: &Path) -> Option<Loaded> {
     let mut lane = Lane::new("main");
     let mut pending = Pending(HashMap::new());
+    let mut names = Interner::default();
     let mut id = String::new();
     let mut cwd = String::new();
     let mut title = String::new();
@@ -1045,7 +1107,7 @@ fn load_codex(p: &Path) -> Option<Loaded> {
                         if title.is_empty() {
                             title = one_line(obj, 80);
                         }
-                        lane.events.push(message_event(t, Kind::User, "User", obj));
+                        lane.events.push(message_event(t, Kind::User, names.get("User"), obj));
                     }
                 }
                 "turn_aborted" => {
@@ -1092,9 +1154,9 @@ fn load_codex(p: &Path) -> Option<Loaded> {
                         if title.is_empty() {
                             title = one_line(text, 80);
                         }
-                        lane.events.push(message_event(t, Kind::User, "User", text));
+                        lane.events.push(message_event(t, Kind::User, names.get("User"), text));
                     }
-                    "assistant" => lane.events.push(message_event(t, Kind::Assistant, "Assistant", text)),
+                    "assistant" => lane.events.push(message_event(t, Kind::Assistant, names.get("Assistant"), text)),
                     _ => {}
                 }
             }
@@ -1116,8 +1178,9 @@ fn load_codex(p: &Path) -> Option<Loaded> {
                     pending.0.insert(c.clone(), lane.events.len());
                 }
                 let (display_name, summary, formatted) = codex_tool(name, input);
-                let mut ev = tool_event(t, name, call_id, summary, formatted);
-                ev.name = display_name;
+                let mut ev = tool_event(t, names.get(&display_name), call_id, summary, formatted);
+                // exec の中の名前が Agent でも、元の呼び出しが exec ならツールのままにする。
+                ev.kind = if is_agent_tool(name) { Kind::Agent } else { Kind::Tool };
                 lane.events.push(ev);
             }
             "function_call_output" | "custom_tool_call_output" => {
@@ -1740,6 +1803,55 @@ mod tests {
     }
 
     #[test]
+    fn parsed_event_names_share_storage_and_preserve_display_names() {
+        let fixture = DiscoveryFixture::new();
+        let claude = fixture.file("claude.jsonl", 0, 1000);
+        let content = serde_json::json!([
+            {"type":"text", "text":"first"}, {"type":"text", "text":"second"},
+            {"type":"thinking", "thinking":"first"}, {"type":"thinking", "thinking":"second"},
+            {"type":"tool_use", "name":"独自ツール", "input":{}},
+            {"type":"tool_use", "name":"独自ツール", "input":{}},
+            {"type":"tool_use", "name":"Agent", "input":{}}
+        ]);
+        fs::write(&claude, serde_json::json!({"timestamp":"2026-10-05T00:00:00Z",
+            "type":"assistant", "message":{"content":content}}).to_string()).unwrap();
+        let lane = parse_claude_file(&claude, "main").lane;
+        assert_eq!(lane.events.iter().map(|e| e.name.as_ref()).collect::<Vec<_>>(),
+            ["Assistant", "Assistant", "Thinking", "Thinking", "独自ツール", "独自ツール", "Agent"]);
+        for (a, b) in [(0, 1), (2, 3), (4, 5)] {
+            assert!(Arc::ptr_eq(&lane.events[a].name, &lane.events[b].name));
+        }
+        assert_eq!(lane.events[6].kind, Kind::Agent);
+
+        let codex = fixture.file("codex.jsonl", 0, 1000);
+        let payloads = [
+            serde_json::json!({"type":"message", "role":"user", "content":[{"text":"first"}]}),
+            serde_json::json!({"type":"message", "role":"user", "content":[{"text":"second"}]}),
+            serde_json::json!({"type":"function_call", "name":"exec", "arguments":"await tools.exec_command({cmd: 'cargo test'});"}),
+            serde_json::json!({"type":"function_call", "name":"exec", "arguments":"await tools.exec_command({cmd: 'cargo check'});"}),
+            serde_json::json!({"type":"function_call", "name":"spawn_agent", "arguments":"{}"}),
+            serde_json::json!({"type":"function_call", "name":"exec", "arguments":"await tools.spawn_agent({task_name: 'test'});"})
+        ];
+        let lines = payloads.into_iter().map(|payload| serde_json::json!({
+            "timestamp":"2026-10-05T00:00:00Z", "type":"response_item", "payload":payload
+        }).to_string()).collect::<Vec<_>>().join("\n");
+        fs::write(&codex, lines).unwrap();
+        let Loaded::Session(session) = load_codex(&codex).unwrap() else { panic!("session expected") };
+        let events = &session.lanes[0].events;
+        assert_eq!(events.iter().map(|e| e.name.as_ref()).collect::<Vec<_>>(),
+            ["User", "User", "exec_command", "exec_command", "spawn_agent", "spawn_agent"]);
+        assert!(Arc::ptr_eq(&events[0].name, &events[1].name));
+        assert!(Arc::ptr_eq(&events[2].name, &events[3].name));
+        assert_eq!(events[4].kind, Kind::Agent);
+        assert_eq!(events[5].kind, Kind::Tool);
+        assert!(Arc::ptr_eq(&events[4].name, &events[5].name));
+        let mut cloned = events[2].clone_meta();
+        assert!(Arc::ptr_eq(&cloned.name, &events[2].name));
+        cloned.name = "replacement".into();
+        assert_eq!(events[2].name.as_ref(), "exec_command");
+    }
+
+    #[test]
     fn discovery_keeps_fingerprints_subagent_order_and_detects_changes() {
         let fixture = DiscoveryFixture::new();
         fixture.file("claude/project/one.jsonl", 1, 1000);
@@ -1904,6 +2016,42 @@ mod tests {
         assert_eq!(n, "update_plan");
         assert_eq!(s, "1/2 B");
         assert_eq!(detail(&d), "✓ A\n▶ B");
+    }
+
+    #[test]
+    fn bounded_yaml_preserves_unicode_indentation_and_truncation() {
+        let value = serde_json::json!({"前":"あ\r\nい\n", "rows":[
+            {"kind":"日本語", "values":[true, 1, null]},
+            {"empty":{}, "text":"x\n\ny\n"}], "empty":[]});
+        let expected = "前:\n  あ\n  い\nrows:\n  - kind: 日本語\n    values: [true, 1, null]\n  - empty: {}\n    text:\n      x\n      \n      y\nempty: []";
+        assert_eq!(yaml(&value).join("\n"), expected);
+        for limit in 0..=expected.chars().count() + 2 {
+            assert_eq!(bounded_yaml(&value, limit), truncate(expected, limit), "limit={limit}");
+        }
+        assert_eq!(bounded_yaml(&serde_json::json!(["a\nb", [2, 3]]), 100), "- a\nb\n- [2, 3]");
+        for value in [serde_json::json!({"rows":(0..10_000).collect::<Vec<_>>(), "tail":"省略される"}),
+            serde_json::json!({"日本語":"あ".repeat(6001)}),
+            serde_json::json!({"lines":"日本語\n".repeat(6001)}),
+            Value::Object(std::iter::once(("あ".repeat(6001), Value::Bool(true))).collect())] {
+            let full = yaml(&value).join("\n");
+            assert_eq!(bounded_yaml(&value, MAX_TEXT), truncate(&full, MAX_TEXT));
+        }
+    }
+
+    #[test]
+    fn inline_arrays_preserve_character_limit_and_scalar_formatting() {
+        let short = serde_json::json!(["", null, true, -42, 1.25, "日本語"]);
+        assert_eq!(inline_list(short.as_array().unwrap()).as_deref(), Some("[\"\", null, true, -42, 1.25, 日本語]"));
+        assert_eq!(inline_list(&[]).as_deref(), Some("[]"));
+        let boundary = "あ".repeat(78);
+        assert_eq!(inline_list(&[Value::String(boundary.clone())]), Some(format!("[{boundary}]")));
+        assert!(inline_list(&[Value::String("あ".repeat(79))]).is_none());
+        assert_eq!(inline_list(&[Value::String("x".repeat(74)), Value::String("".into())]),
+            Some(format!("[{}, \"\"]", "x".repeat(74))));
+        for value in [serde_json::json!(["x\ny"]), serde_json::json!([{}]), serde_json::json!([[]]),
+            serde_json::json!(["x".repeat(100_000)]), serde_json::json!(vec![0; 100_000])] {
+            assert!(inline_list(value.as_array().unwrap()).is_none());
+        }
     }
 
     #[test]

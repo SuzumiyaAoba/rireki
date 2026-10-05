@@ -79,7 +79,7 @@ mod tests {
             input: String::new(),
             output: String::new(),
             call_id: None,
-            row: None,
+            text_ref: Default::default(),
             usage: Default::default(),
             model: None,
             status: Default::default(),

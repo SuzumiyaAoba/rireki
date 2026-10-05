@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub use crate::text::{EventText, TextRef};
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
     Claude,
@@ -171,15 +173,15 @@ pub struct Event {
     pub start: f64,
     pub end: f64,
     pub kind: Kind,
-    /// ツール名、または "User" / "Assistant" など
-    pub name: String,
+    /// ツール名、または "User" / "Assistant" など。同じ名前はイベント間で共有する
+    pub name: Arc<str>,
     pub summary: String,
     pub input: String,
     pub output: String,
     /// ツール呼び出し ID（サブエージェントとの紐付けに使う）
     pub call_id: Option<String>,
-    /// 索引 DB 上の行 ID。DB から読んだイベントは input / output が空で、詳細表示時に取り出す
-    pub row: Option<i64>,
+    /// 索引DBの行IDまたは保存待ちの共有本文。本文は詳細表示時に取り出す。
+    pub text_ref: TextRef,
     /// この時点の API 呼び出しのトークン使用量（なければ空）
     pub usage: Usage,
     /// 使用量を計上したモデル（使用量のあるイベントだけ）
@@ -199,12 +201,28 @@ impl Event {
             input: String::new(),
             output: String::new(),
             call_id: self.call_id.clone(),
-            row: self.row,
+            text_ref: self.text_ref.clone(),
             usage: self.usage,
             model: self.model.clone(),
             status: self.status,
         }
     }
+
+    pub fn text(&self) -> EventText<'_> {
+        match self.text_ref.text() {
+            EventText::Inline(_, _) => EventText::Inline(&self.input, &self.output),
+            text => text,
+        }
+    }
+
+    pub fn row(&self) -> Option<i64> { self.text_ref.row_id() }
+}
+
+/// 圧縮本文はファイルごとに共有されるため、同じ保持元を一回だけ数える。
+pub fn pending_text_bytes<'a>(events: impl IntoIterator<Item = &'a Event>) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    events.into_iter().filter_map(|e| e.text_ref.key().map(|key| (key, &e.text_ref)))
+        .filter(|(key, _)| seen.insert(*key)).map(|(_, text)| text.pending_bytes()).sum()
 }
 
 /// イベント列の集計（詳細パネルの概要に出す）。トークン数は `UsageSum` で数える
@@ -615,7 +633,7 @@ mod tests {
         lane.events.push(Event {
             start, end: start + 1.0, kind: Kind::Tool, name: name.into(), summary: name.into(),
             input: format!("input-{name}"), output: format!("output-{name}"), call_id: None,
-            row: None, usage: Default::default(), model: None, status: Default::default(),
+            text_ref: Default::default(), usage: Default::default(), model: None, status: Default::default(),
         });
         lane
     }
@@ -677,7 +695,7 @@ mod tests {
     fn finalize_preserves_nested_parents_spawn_times_and_duplicate_ids() {
         let event = |start, id: &str| Event {
             start, end: start + 1.0, kind: Kind::Agent, name: "Agent".into(), summary: String::new(),
-            input: String::new(), output: String::new(), call_id: Some(id.into()), row: None,
+            input: String::new(), output: String::new(), call_id: Some(id.into()), text_ref: Default::default(),
             usage: Default::default(), model: None, status: Default::default(),
         };
         let mut main = Lane::new("main");

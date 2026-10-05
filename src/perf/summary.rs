@@ -58,7 +58,7 @@ pub(crate) fn benchmark(session: &Arc<Session>, lane: usize) {
     crate::perf::measure("detail_selection_reference", 31, || {
         let mut counts = Vec::<(&str, usize)>::new();
         for e in events {
-            if let Some((_, count)) = counts.iter_mut().find(|(name, _)| *name == e.name) {
+            if let Some((_, count)) = counts.iter_mut().find(|(name, _)| *name == e.name.as_ref()) {
                 *count += 1;
             } else {
                 counts.push((&e.name, 1));

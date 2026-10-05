@@ -12,5 +12,6 @@ pub mod patch;
 pub mod pricing;
 pub mod search;
 pub mod statistics;
+mod text;
 pub mod time;
 pub mod view_index;
