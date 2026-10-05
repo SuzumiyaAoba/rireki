@@ -8,7 +8,6 @@ use super::widgets::tip;
 use super::{AXIS_H, BlockPaint, HOUR_LABEL_W, MIN_BLOCK, Rireki, Selection, Track, midnight, now};
 use std::collections::HashMap;
 
-use crate::layout;
 use crate::prefs::Mode;
 use crate::theme::{self, c};
 
@@ -203,7 +202,8 @@ impl Rireki {
             for (ti, tr) in tracks.iter().enumerate() {
                 let lane = &self.store.sessions[tr.session].lanes[tr.lane];
                 let mine: Vec<usize> = (0..groups.len()).filter(|&k| groups[k].lanes.contains(&ti)).collect();
-                for b in layout::aggregate(lane, (v0.max(ds), v1.min(de)), spp, self.gran) {
+                let grouped = self.layout_cache.borrow_mut().aggregate((tr.session, tr.lane), lane, (v0.max(ds), v1.min(de)), spp, self.gran);
+                for b in grouped {
                     let bs = b.start.max(ds);
                     let Some(k) = mine.iter().rev().find(|&&k| groups[k].start <= bs).or(mine.first()).copied() else {
                         continue;

@@ -12,12 +12,14 @@ mod detail;
 mod header;
 mod keymap;
 mod overlay;
+mod profile;
 mod rail;
 mod range;
 mod rich;
 mod sidebar;
 mod timeline;
 mod widgets;
+pub(crate) mod view_index;
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone};
 use gpui::{
@@ -25,22 +27,24 @@ use gpui::{
     MouseUpEvent, Pixels, Point, ScrollHandle, ScrollWheelEvent, StyleRefinement, Window, div, point, prelude::*, px,
 };
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 
-use crate::db::{Db, JsCache};
-use crate::index::{self, Indexer, Update};
+use crate::index::{self, Delta, ViewLoader};
 use crate::input::{InputEvent, TextInput};
 use crate::layout::Granularity;
-use crate::model::{Source, Store};
+use crate::model::{Snapshot, Source};
 use crate::prefs::{self, DetailTab, Mode, Prefs, SourceFilter};
 use crate::search;
 use crate::theme::{self, c};
 
-use detail::{DetailCache, DetailView, RowFilter};
+use detail::{DetailCache, DetailList, DetailLoader, DetailView, FileList, RowFilter};
 pub use keymap::init;
 use keymap::{
     Back, CloseWindow, DetailEvents, DetailFiles, DetailSession, Dismiss, FocusSearch, Forward, GoNext, GoPrev,
@@ -171,7 +175,8 @@ struct Project {
 type MinimapKey = (u64, u64, usize, u64);
 
 pub struct Rireki {
-    store: Store,
+    store: Snapshot,
+    layout_cache: RefCell<crate::layout::Cache>,
     /// 読み込み元で絞り込んだセッション（開始順）
     scope: Vec<usize>,
     /// scope をさらにプロジェクトで絞り込んだ、表示するセッション（開始順）
@@ -181,13 +186,17 @@ pub struct Rireki {
     /// `codex exec` などで起動された子セッション → 起動元 (セッション, レーン, 時刻)
     exec_parent: HashMap<usize, (usize, usize, f64)>,
     loading: Option<(usize, usize)>,
-    /// 詳細表示で input / output を引くための読み取り専用接続
-    reader: Option<Db>,
-    /// exec の JS をモック実行した結果のキャッシュ
-    js_cache: Option<JsCache>,
+    profile: Option<profile::State>,
+    detail_loader: Arc<Mutex<DetailLoader>>,
+    detail_gen: Arc<AtomicU64>,
+    detail_task: Option<gpui::Task<()>>,
+    detail_follow: bool,
+    detail_following: bool,
     focus_handle: FocusHandle,
     search_input: Entity<TextInput>,
-    search: search::Index,
+    search: Arc<Mutex<search::Index>>,
+    search_task: Option<gpui::Task<()>>,
+    searching: bool,
     /// 前後の空白を除いた検索語
     query: String,
     /// 検索結果。検索語が空なら None
@@ -195,9 +204,11 @@ pub struct Rireki {
     /// 検索結果のうち、キーボードで選んでいる項目
     result_cursor: usize,
     /// 検索語を変えるたびに増やす。待っている間に次の入力があった検索は捨てる
-    search_gen: u64,
+    search_gen: Arc<AtomicU64>,
     sidebar_view: Entity<SidebarView>,
     sidebar_scroll: ScrollHandle,
+    result_list: gpui::ListState,
+    result_list_key: Cell<(u64, usize, u32)>,
     detail_view: Entity<DetailView>,
     detail_cache: Option<DetailCache>,
     /// exec の詳細を整形結果ではなく JS 本文で表示する
@@ -211,6 +222,8 @@ pub struct Rireki {
     /// 詳細パネルで開いているタブ
     detail_tab: DetailTab,
     detail_scroll: ScrollHandle,
+    detail_list: DetailList,
+    file_list: FileList,
     /// 詳細パネルを最新のイベントまでスクロールするアニメーション（差し替えると前のものは止まる）
     follow_anim: Option<gpui::Task<()>>,
     /// 直前にコピーしたボタンの ID（しばらくチェックマークを出す）
@@ -383,7 +396,7 @@ fn is_live(end: f64) -> bool {
 }
 
 impl Rireki {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, mut profile_tasks: Option<Vec<index::Task>>) -> Self {
         // トラックパッドのピンチでズームする（溜まった分はまとめて反映）
         let pinch = crate::pinch::listen();
         cx.spawn_in(window, async move |this, cx| {
@@ -397,16 +410,20 @@ impl Rireki {
             }
         })
         .detach();
+        let profile_ui = std::env::args().any(|a| a == "--profile-ui");
+        let args: Vec<_> = std::env::args().collect();
+        let profile_roots = profile_ui.then(|| args.iter().position(|a| a == "--profile-idle")).flatten().map(|i| {
+            (std::path::PathBuf::from(args.get(i + 1).expect("Claude の探索先を指定してください")),
+             std::path::PathBuf::from(args.get(i + 2).expect("Codex の探索先を指定してください")))
+        });
         cx.spawn(async move |this, cx| {
             let bg = cx.background_executor().clone();
             // 1. 索引 DB から安定した履歴を読む
-            let indexer = bg.spawn(async { Arc::new(Mutex::new(Indexer::open())) }).await;
+            let indexer = bg.spawn(async { Arc::new(Mutex::new(ViewLoader::open())) }).await;
             let ix = indexer.clone();
             let stable = bg.spawn(async move { ix.lock().unwrap().load_stable() }).await;
-            let has_db = indexer.lock().unwrap().has_db();
             let alive = this
                 .update(cx, |app, cx| {
-                    app.reader = if has_db { Db::open_read().ok() } else { None };
                     app.apply(stable, cx);
                     cx.notify();
                 })
@@ -419,8 +436,23 @@ impl Rireki {
             let mut minute = 0;
             loop {
                 let ix = indexer.clone();
-                let tasks = bg.spawn(async move { ix.lock().unwrap().plan() }).await;
+                let planned = profile_ui.then(std::time::Instant::now);
+                let tasks = if let Some(tasks) = profile_tasks.take() {
+                    tasks
+                } else if let Some((claude, codex)) = &profile_roots {
+                    let (claude, codex) = (claude.clone(), codex.clone());
+                    bg.spawn(async move { ix.lock().unwrap().plan_in(&claude, &codex) }).await
+                } else if profile_ui {
+                    Vec::new()
+                } else {
+                    bg.spawn(async move { ix.lock().unwrap().plan() }).await
+                };
                 let total = tasks.len();
+                assert!(profile_roots.is_none() || total == 0, "アイドル計測の固定ログはすべて索引済みである必要があります");
+                if let Some(planned) = planned {
+                    println!("{}", serde_json::json!({"ui_profile":"poll", "tasks":total,
+                        "ms":planned.elapsed().as_secs_f64()*1000.0}));
+                }
                 let mut done = 0;
                 let mut tasks = tasks.into_iter().peekable();
                 while tasks.peek().is_some() {
@@ -475,8 +507,11 @@ impl Rireki {
                 return;
             }
             this.query = q;
-            this.search_gen += 1;
-            let generation = this.search_gen;
+            let generation = this.search_gen.fetch_add(1, Ordering::Relaxed) + 1;
+            this.search_task = None;
+            this.results = (!this.query.is_empty()).then(search::Results::default);
+            this.searching = !this.query.is_empty();
+            this.sidebar_changed(cx);
             if this.query.is_empty() {
                 this.run_search(cx);
                 return;
@@ -484,7 +519,7 @@ impl Rireki {
             cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(SEARCH_DELAY).await;
                 let _ = this.update(cx, |t, cx| {
-                    if t.search_gen == generation {
+                    if t.search_gen.load(Ordering::Relaxed) == generation {
                         t.result_cursor = 0;
                         t.sidebar_scroll.set_offset(point(px(0.0), px(0.0)));
                         t.run_search(cx);
@@ -503,23 +538,32 @@ impl Rireki {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
         let mut this = Self {
-            store: Store::default(),
+            store: Snapshot::default(),
+            layout_cache: RefCell::default(),
             scope: Vec::new(),
             order: Vec::new(),
             projects: Vec::new(),
             exec_parent: Default::default(),
             loading: Some((0, 0)),
-            reader: None,
-            js_cache: JsCache::open().ok(),
+            profile: profile_ui.then(profile::State::new),
+            detail_loader: Arc::new(Mutex::new(DetailLoader::default())),
+            detail_gen: Arc::new(AtomicU64::new(0)),
+            detail_task: None,
+            detail_follow: false,
+            detail_following: false,
             focus_handle,
             search_input,
-            search: search::Index::default(),
+            search: Arc::new(Mutex::new(search::Index::default())),
+            search_task: None,
+            searching: false,
             query: String::new(),
             results: None,
             result_cursor: 0,
-            search_gen: 0,
+            search_gen: Arc::new(AtomicU64::new(0)),
             sidebar_view,
             sidebar_scroll: ScrollHandle::new(),
+            result_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
+            result_list_key: Cell::new((0, 0, 0)),
             detail_view,
             detail_cache: None,
             show_raw: false,
@@ -528,6 +572,8 @@ impl Rireki {
             file_open: None,
             detail_tab: p.detail_tab,
             detail_scroll: ScrollHandle::new(),
+            detail_list: DetailList::new(),
+            file_list: FileList::new(),
             follow_anim: None,
             copied: None,
             hits: Vec::new(),
@@ -579,6 +625,9 @@ impl Rireki {
         };
         // 現在時刻が右寄りに見えるように始める
         this.go_today(window);
+        if std::env::args().any(|a| a == "--profile-ui") {
+            this.start_profile(window, cx);
+        }
         this
     }
 
@@ -610,7 +659,8 @@ impl Rireki {
     }
 
     /// 読み込み結果を Store に反映する
-    fn apply(&mut self, updates: Vec<Update>, cx: &mut Context<Self>) -> bool {
+    fn apply(&mut self, delta: Delta, cx: &mut Context<Self>) -> bool {
+        let started = self.profile.as_ref().map(|_| std::time::Instant::now());
         // 複数イベントの選択がレーンの末尾まで届いていれば、増えたイベントも選択に含めて追従させる
         let follow = self.selected.filter(|s| {
             s.first < s.last
@@ -618,48 +668,58 @@ impl Rireki {
                 && s.last + 1 == self.store.sessions[s.session].lanes[s.lane].events.len()
         });
         // イベントの一覧が一番下までスクロールされていれば、増えたイベントまでスクロールして追う
-        let at_bottom = {
-            let h = &self.detail_scroll;
-            -h.offset().y >= h.max_offset().height - px(4.0)
-        };
-        let touched = self.store.replace(updates.into_iter().map(|u| (u.origin, u.items)));
+        let at_bottom = self.detail_at_bottom() || self.detail_following || self.detail_follow;
+        let Delta { snapshot, touched } = delta;
         if touched.is_empty() {
             return false;
         }
-        self.search.invalidate(&touched);
+        let old = std::mem::replace(&mut self.store, snapshot);
+        // 旧版の大きい本文の解放も UI スレッドで行わない
+        cx.background_executor().spawn(async move { drop(old); }).detach();
+        self.layout_cache.get_mut().invalidate(&touched);
         self.rebuild_order();
         if !self.query.is_empty() {
-            self.refresh_results();
+            self.refresh_results(cx);
         }
         // 選択中のセッションが更新されたら、範囲を確かめて詳細を作り直す
         if let Some(mut sel) = self.selected.filter(|s| touched.contains(&s.session)) {
+            let following = follow == Some(sel);
             if follow == Some(sel) {
                 if let Some(l) = self.store.sessions.get(sel.session).and_then(|s| s.lanes.get(sel.lane)) {
                     sel.last = sel.last.max(l.events.len().saturating_sub(1));
                 }
                 // 選択が伸びただけなので、絞り込みや開閉・スクロール位置は保つ
                 self.selected = Some(sel);
-                if at_bottom && self.detail_tab == DetailTab::Events {
-                    self.animate_to_bottom(cx);
-                }
             }
             if self.valid(sel) {
+                self.detail_cache = None;
                 self.select(sel, cx);
+                self.detail_follow = following && at_bottom && self.detail_tab == DetailTab::Events;
             } else {
+                self.cancel_detail_load();
                 self.selected = None;
                 self.detail_cache = None;
                 self.detail_changed(cx);
             }
         }
         self.sidebar_changed(cx);
+        if let Some(started) = started {
+            println!("{}", serde_json::json!({"ui_profile":"apply", "ms":started.elapsed().as_secs_f64()*1000.0,
+                "touched":touched.len(), "sessions":self.store.sessions.len()}));
+        }
         true
     }
 
     /// 詳細パネルを一番下まで滑らかにスクロールする。途中でユーザーがスクロールしたら止める
     fn animate_to_bottom(&mut self, cx: &mut Context<Self>) {
+        if self.detail_uses_list() {
+            self.animate_list_to_bottom(cx);
+            return;
+        }
         const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
         const MAX_FRAMES: usize = 40;
         let h = self.detail_scroll.clone();
+        self.detail_following = true;
         self.follow_anim = Some(cx.spawn(async move |this, cx| {
             // 増えたイベントがレイアウトされ、max_offset が更新されるのを待つ
             cx.background_executor().timer(FRAME).await;
@@ -679,6 +739,7 @@ impl Rireki {
                 }
                 cx.background_executor().timer(FRAME).await;
             }
+            let _ = this.update(cx, |app, _| app.detail_following = false);
         }));
     }
 
@@ -691,6 +752,7 @@ impl Rireki {
     }
 
     fn rebuild_order(&mut self) {
+        let started = self.profile.as_ref().map(|_| std::time::Instant::now());
         let scope: Vec<usize> = (0..self.store.sessions.len())
             .filter(|&i| self.store.visible(i))
             .filter(|&i| match (self.source, self.store.sessions[i].source) {
@@ -712,6 +774,10 @@ impl Rireki {
         self.exec_parent = self.find_exec_parents();
         self.live_sources = self.find_live_sources();
         self.data_gen += 1;
+        if let Some(started) = started {
+            println!("{}", serde_json::json!({"ui_profile":"rebuild_order", "ms":started.elapsed().as_secs_f64()*1000.0,
+                "visible":self.order.len(), "links":self.exec_parent.len()}));
+        }
     }
 
     /// セッションをプロジェクトごとにまとめる（最近作業した順）
@@ -763,58 +829,8 @@ impl Rireki {
         self.projects.iter().find(|p| p.cwd == cwd).map_or_else(|| base_name(cwd).to_string(), |p| p.name.clone())
     }
 
-    /// 非対話で起動されたセッションを、同じディレクトリの他セッションで
-    /// その時刻に実行中だったツール呼び出しの子とみなす
     fn find_exec_parents(&self) -> HashMap<usize, (usize, usize, f64)> {
-        // 起動コマンドはすぐ制御を返すことがあるので、呼び出し終了後もしばらくは候補にする
-        const SLACK: f64 = 30.0;
-        let is_launch = |e: &crate::model::Event| e.kind == crate::model::Kind::Tool;
-        let mut by_cwd: HashMap<&str, Vec<usize>> = Default::default();
-        for &si in &self.order {
-            by_cwd.entry(self.store.sessions[si].cwd.as_str()).or_default().push(si);
-        }
-        let mut out = HashMap::new();
-        for group in by_cwd.values() {
-            for &ci in group.iter().filter(|&&ci| self.store.sessions[ci].headless) {
-                let t = self.store.sessions[ci].start;
-                let mut best: Option<(usize, usize, f64)> = None;
-                for &pi in group {
-                    let p = &self.store.sessions[pi];
-                    if pi == ci || p.start > t || p.end < t - SLACK {
-                        continue;
-                    }
-                    for (li, l) in p.lanes.iter().enumerate() {
-                        let hi = l.events.partition_point(|e| e.start <= t);
-                        let lo = l.cum_end[..hi].partition_point(|&m| m < t - SLACK);
-                        for e in l.events[lo..hi].iter().filter(|e| e.end >= t - SLACK && is_launch(e)) {
-                            // 直前に起動したものを優先する
-                            if best.is_none_or(|b| e.start > b.2) {
-                                best = Some((pi, li, e.start));
-                            }
-                        }
-                    }
-                }
-                if let Some(b) = best {
-                    out.insert(ci, b);
-                }
-            }
-        }
-        // 循環を断つ
-        let keys: Vec<usize> = out.keys().copied().collect();
-        for k in keys {
-            let mut cur = k;
-            for _ in 0..=out.len() {
-                match out.get(&cur) {
-                    Some(&(p, _, _)) if p == k => {
-                        out.remove(&k);
-                        break;
-                    }
-                    Some(&(p, _, _)) => cur = p,
-                    None => break,
-                }
-            }
-        }
-        out
+        view_index::exec_parents(&self.store.sessions, &self.order)
     }
 
     /// 期間内にイベントを持つレーンを、セッション → レーンの順で並べる。
@@ -905,10 +921,14 @@ impl Rireki {
     fn rows_in(&self, v0: f64, v1: f64) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
         let mut cur: Option<String> = None;
+        let mut header = 0;
+        let mut seen = HashSet::new();
         for t in self.tracks_in(v0, v1) {
             let cwd = &self.store.sessions[t.session].cwd;
             if cur.as_ref() != Some(cwd) {
                 cur = Some(cwd.clone());
+                header = rows.len();
+                seen.clear();
                 rows.push(Row::Header {
                     cwd: cwd.clone(),
                     sessions: Vec::new(),
@@ -916,13 +936,12 @@ impl Rireki {
                     active: false,
                 });
             }
-            let Some(Row::Header { sessions, collapsed, active, .. }) =
-                rows.iter_mut().rev().find(|r| matches!(r, Row::Header { .. }))
+            let Some(Row::Header { sessions, collapsed, active, .. }) = rows.get_mut(header)
             else {
                 unreachable!()
             };
             *active |= t.active;
-            if !sessions.contains(&t.session) {
+            if seen.insert(t.session) {
                 sessions.push(t.session);
             }
             if !*collapsed {
@@ -1023,6 +1042,9 @@ impl Rireki {
     }
 
     fn select(&mut self, sel: Selection, cx: &mut Context<Self>) {
+        if self.selected == Some(sel) && self.detail_cache.is_some() {
+            return;
+        }
         self.detail_changed(cx);
         self.sidebar_changed(cx);
         if self.selected != Some(sel) {
@@ -1030,9 +1052,11 @@ impl Rireki {
             self.expanded.clear();
             self.file_open = None;
             self.detail_scroll.set_offset(point(px(0.0), px(0.0)));
+            self.detail_list.reset();
+            self.file_list.reset();
         }
         self.selected = Some(sel);
-        self.detail_cache = Some(self.load_detail(sel));
+        self.request_detail(sel, cx);
     }
 
     /// 現在の選択を履歴に積んでから選択する。詳細パネルが開いて表示幅が縮むときは、選択が隠れないようにする
@@ -1087,6 +1111,7 @@ impl Rireki {
 
     /// 詳細パネルを閉じる。閉じた選択は「戻る」で開き直せる
     fn close_detail(&mut self, cx: &mut Context<Self>) {
+        self.cancel_detail_load();
         if let Some(cur) = self.selected.take() {
             self.push_back(cur);
             self.forward.clear();
@@ -1207,15 +1232,40 @@ impl Rireki {
 
     // ------------------------------------------------------------ 検索
 
-    fn refresh_results(&mut self) {
-        self.results =
-            (!self.query.is_empty()).then(|| self.search.search(&self.store, &self.order, &self.query, SEARCH_LIMIT));
-        let n = self.results.as_ref().map_or(0, |r| r.len());
-        self.result_cursor = self.result_cursor.min(n.saturating_sub(1));
+    fn refresh_results(&mut self, cx: &mut Context<Self>) {
+        let generation = self.search_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        self.search_task = None;
+        self.results = (!self.query.is_empty()).then(search::Results::default);
+        self.searching = !self.query.is_empty();
+        if self.query.is_empty() { return; }
+        let snapshot = self.store.clone();
+        let scope = self.order.clone();
+        let query = self.query.clone();
+        let index = self.search.clone();
+        let counter = self.search_gen.clone();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let results = cx.background_executor().spawn(async move {
+                let current = || counter.load(Ordering::Relaxed) == generation;
+                if !current() { return None; }
+                let mut index = index.lock().unwrap();
+                index.search_while(&snapshot.sessions, &scope, &query, SEARCH_LIMIT, current)
+            }).await;
+            let Some(results) = results else { return };
+            let _ = this.update(cx, |app, cx| {
+                if app.search_gen.load(Ordering::Relaxed) == generation {
+                    let n = results.len();
+                    app.result_cursor = app.result_cursor.min(n.saturating_sub(1));
+                    app.results = Some(results);
+                    app.searching = false;
+                    app.sidebar_changed(cx);
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn run_search(&mut self, cx: &mut Context<Self>) {
-        self.refresh_results();
+        self.refresh_results(cx);
         if self.results.is_some() {
             self.sidebar_open = true;
         }
@@ -1259,7 +1309,7 @@ impl Rireki {
             return;
         }
         self.result_cursor = (self.result_cursor as isize + d).clamp(0, n as isize - 1) as usize;
-        self.sidebar_scroll.scroll_to_item(self.result_row(self.result_cursor));
+        self.result_list.scroll_to_reveal_item(self.result_row(self.result_cursor));
         self.sidebar_changed(cx);
     }
 
@@ -1302,7 +1352,7 @@ impl Rireki {
         self.source = s;
         self.rebuild_order();
         if !self.query.is_empty() {
-            self.refresh_results();
+            self.refresh_results(cx);
         }
         self.row_scroll = 0.0;
         self.persist();
@@ -1313,7 +1363,7 @@ impl Rireki {
         self.focus = f;
         self.rebuild_order();
         if !self.query.is_empty() {
-            self.refresh_results();
+            self.refresh_results(cx);
         }
         self.row_scroll = 0.0;
         self.session_limit = 50;
@@ -1624,8 +1674,16 @@ impl Focusable for Rireki {
     }
 }
 
+impl Drop for Rireki {
+    fn drop(&mut self) {
+        self.detail_gen.fetch_add(1, Ordering::Relaxed);
+        self.search_gen.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 impl Render for Rireki {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.profile_frame(window, cx);
         let main = match self.mode {
             Mode::Timeline => self.timeline(window, cx),
             _ => self.calendar(window, cx),

@@ -8,6 +8,7 @@ mod layout;
 mod loader;
 mod model;
 mod pinch;
+mod perf;
 mod prefs;
 mod pricing;
 mod search;
@@ -17,11 +18,44 @@ use gpui::{
     App, Application, Bounds, Focusable, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size,
 };
 
+static PROCESS_STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 fn main() {
+    PROCESS_STARTED.set(std::time::Instant::now()).unwrap();
+    let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|a| a == "--bench-discover") {
+        return perf::discover(args.get(2).map(std::path::Path::new), args.get(3).map(std::path::Path::new));
+    }
+    if args.get(1).is_some_and(|a| a == "--bench-view") {
+        return perf::view(args.get(2).map(std::path::Path::new));
+    }
+    if args.get(1).is_some_and(|a| a == "--bench-ingest") {
+        return perf::ingest(std::path::Path::new(args.get(2).expect("manifest の保存先を指定してください")));
+    }
+    if args.get(1).is_some_and(|a| a == "--verify-logs") {
+        return perf::verify_logs();
+    }
+    if args.get(1).is_some_and(|a| a == "--bench") {
+        return perf::run(args.get(2).map(std::path::Path::new));
+    }
     if std::env::args().any(|a| a == "--stats") {
         return print_stats();
     }
-    Application::new().with_assets(icons::Assets).run(|cx: &mut App| {
+    let profile_ui = args.iter().any(|a| a == "--profile-ui");
+    if args.iter().any(|a| matches!(a.as_str(), "--profile-startup" | "--profile-ingest" | "--profile-idle" | "--profile-render" | "--profile-eager-files" | "--profile-detail" | "--profile-rich" | "--profile-files")) && !profile_ui {
+        eprintln!("画面計測には --profile-ui も指定してください");
+        std::process::exit(1);
+    }
+    if profile_ui
+        && (std::env::var_os("RIREKI_CACHE_DIR").is_none() || std::env::var_os("RIREKI_CONFIG_DIR").is_none())
+    {
+        eprintln!("--profile-ui は RIREKI_CACHE_DIR と RIREKI_CONFIG_DIR に隔離した計測用ディレクトリを指定してください");
+        std::process::exit(1);
+    }
+    let profile_tasks = args.iter().position(|a| a == "--profile-ingest").map(|i| {
+        perf::ingest_tasks(std::path::Path::new(args.get(i + 1).expect("manifest を指定してください")))
+    });
+    Application::new().with_assets(icons::Assets).run(move |cx: &mut App| {
         app::init(cx);
         let bounds = Bounds::centered(None, size(px(1500.0), px(920.0)), cx);
         cx.open_window(
@@ -36,8 +70,8 @@ fn main() {
                 window_min_size: Some(size(px(960.0), px(600.0))),
                 ..Default::default()
             },
-            |window, cx| {
-                let view = cx.new(|cx| app::Rireki::new(window, cx));
+            move |window, cx| {
+                let view = cx.new(|cx| app::Rireki::new(window, cx, profile_tasks));
                 window.focus(&view.focus_handle(cx));
                 view
             },

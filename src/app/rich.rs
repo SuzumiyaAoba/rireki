@@ -503,7 +503,7 @@ pub fn rel_path<'a>(path: &'a str, cwd: &str) -> &'a str {
 }
 
 /// 差分の表示。`limit` 行を超える分は省き、省いた行数を返す
-pub fn diff_view(files: &[FilePatch], cwd: &str, limit: usize) -> (Div, usize) {
+pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, limit: usize) -> (Div, usize) {
     let mut col = div().flex().flex_col().gap_2().min_w_0();
     let mut budget = limit;
     let mut hidden = 0;
@@ -982,7 +982,7 @@ mod tests {
         // OSC のハイパーリンクと 256 色
         let (t, s) = ansi("\x1b]8;;http://x\x07link\x1b]8;;\x07 \x1b[38;5;196mX\x1b[39m");
         assert_eq!(t, "link X");
-        assert_eq!(ranges(&s), [5..6]);
+        assert_eq!(ranges(&s).as_slice(), std::slice::from_ref(&(5..6)));
         // 進捗表示の上書き
         assert_eq!(ansi("10%\r50%\r100%\ndone").0, "100%\ndone");
         // 文字集合の指定（`ESC ( B`）

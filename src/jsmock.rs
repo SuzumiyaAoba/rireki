@@ -103,7 +103,8 @@ pub fn run(js: &str) -> Option<Vec<Call>> {
     // 打ち切り後でも記録を読めるよう、割り込みを解除する
     rt.set_interrupt_handler(None);
     let json: String = ctx.with(|ctx| ctx.eval("JSON.stringify(__calls)").ok())?;
-    let raw: Vec<(String, Value, Option<(usize, usize)>, Option<String>)> = serde_json::from_str(&json).ok()?;
+    type RecordedCall = (String, Value, Option<(usize, usize)>, Option<String>);
+    let raw: Vec<RecordedCall> = serde_json::from_str(&json).ok()?;
     let calls: Vec<Call> = raw
         .into_iter()
         .map(|(name, args, pos, label)| Call { name, args, at: pos.and_then(|(l, c)| offset(js, l, c)), label })

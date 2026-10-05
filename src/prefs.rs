@@ -81,6 +81,7 @@ impl Default for Prefs {
 }
 
 fn path() -> PathBuf {
+    if let Some(dir) = std::env::var_os("RIREKI_CONFIG_DIR") { return PathBuf::from(dir).join("prefs.json"); }
     let base = dirs::config_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"));
     base.join("rireki").join("prefs.json")
 }

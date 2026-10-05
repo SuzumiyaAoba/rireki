@@ -9,7 +9,7 @@ use gpui::{
 use super::widgets::{project_tile, tip};
 use super::{AXIS_H, BlockPaint, MIN_BLOCK, ROW_H, Rireki, Row, Selection, fmt_dur, local, now};
 use crate::icons::{self, Icon};
-use crate::layout::{self, Block};
+use crate::layout::Block;
 use crate::model::one_line;
 use crate::theme::{self, c};
 
@@ -21,18 +21,39 @@ const ICON_MIN_W: f32 = 16.0;
 const LANE_MAP_W: f32 = 12.0;
 
 impl Rireki {
-    pub(super) fn block_paint(&self, sel: Selection, rect: (f32, f32, f32, f32), vertical: bool) -> BlockPaint {
+    pub(super) fn block_paint(
+        &self,
+        sel: Selection,
+        rect: (f32, f32, f32, f32),
+        vertical: bool,
+    ) -> BlockPaint {
         let (_, _, w, h) = rect;
         let lane = &self.store.sessions[sel.session].lanes[sel.lane];
-        let b = Block { start: 0.0, end: 0.0, first: sel.first, last: sel.last };
-        let dom = &lane.events[layout::dominant(&lane.events, &b)];
+        let b = Block {
+            start: 0.0,
+            end: 0.0,
+            first: sel.first,
+            last: sel.last,
+        };
+        let show_text = if vertical {
+            h >= 14.0 && w >= 24.0
+        } else {
+            w >= 28.0
+        };
+        let (dominant, text) =
+            self.layout_cache
+                .borrow_mut()
+                .describe((sel.session, sel.lane), lane, &b, show_text);
+        let dom = &lane.events[dominant];
         let (color, icon) = (theme::event_color(dom), theme::event_icon(dom));
         let selected = self.selected.is_some_and(|s| {
-            s.session == sel.session && s.lane == sel.lane && s.first <= sel.last && sel.first <= s.last
+            s.session == sel.session
+                && s.lane == sel.lane
+                && s.first <= sel.last
+                && sel.first <= s.last
         });
-        let show_text = if vertical { h >= 14.0 && w >= 24.0 } else { w >= 28.0 };
         // 幅に収まる程度の文字数だけ整形する
-        let label = show_text.then(|| one_line(&layout::label(&lane.events, &b), (w / 5.0) as usize + 1).into());
+        let label = text.map(|s| one_line(&s, (w / 5.0) as usize + 1).into());
         BlockPaint {
             rect,
             sel,
@@ -56,54 +77,112 @@ impl Rireki {
                 let font_size = window.rem_size() * 0.75;
                 let line_h = px(16.0);
                 window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                    for b in &blocks {
+                    let rect = |b: &BlockPaint| {
                         let (x, y, w, h) = b.rect;
-                        let r = Bounds::new(bounds.origin + point(px(x), px(y)), size(px(w), px(h)));
-                        let col = c(b.color);
-                        let alpha = if b.hovered {
-                            1.0
-                        } else if b.multi {
-                            0.75
+                        Bounds::new(bounds.origin + point(px(x), px(y)), size(px(w), px(h)))
+                    };
+                    let plain = |b: &BlockPaint| {
+                        b.label.is_none() && (b.rect.2 < ICON_MIN_W || b.rect.3 < ICON + 2.0)
+                    };
+                    let mut first = 0;
+                    while first < blocks.len() {
+                        let mut end = first + 1;
+                        let mut layer = rect(&blocks[first]);
+                        if plain(&blocks[first]) {
+                            // 装飾のない連続した矩形は同じ種類の描画命令だけになる。
+                            // 重なりと挿入順を保ち、GPUI の境界木への登録をまとめる。
+                            while end < blocks.len() && plain(&blocks[end]) {
+                                layer = layer.union(&rect(&blocks[end]));
+                                end += 1;
+                            }
+                        }
+                        let mut paint = |window: &mut Window| {
+                            for b in &blocks[first..end] {
+                                let (x, y, w, h) = b.rect;
+                                let r = Bounds::new(
+                                    bounds.origin + point(px(x), px(y)),
+                                    size(px(w), px(h)),
+                                );
+                                let col = c(b.color);
+                                let alpha = if b.hovered {
+                                    1.0
+                                } else if b.multi {
+                                    0.75
+                                } else {
+                                    0.9
+                                };
+                                let mut q = fill(r, col.opacity(alpha)).corner_radii(px(2.0));
+                                if b.selected {
+                                    q = q.border_widths(px(1.5)).border_color(gpui::white());
+                                } else if b.hovered {
+                                    q = q
+                                        .border_widths(px(1.0))
+                                        .border_color(gpui::white().opacity(0.6));
+                                } else if b.multi {
+                                    q = q
+                                        .border_widths(gpui::Edges {
+                                            left: px(2.0),
+                                            ..Default::default()
+                                        })
+                                        .border_color(col);
+                                }
+                                window.paint_quad(q);
+                                // 収まるならアイコンを左端に出し、ラベルはその右に続ける
+                                let mut text_x = 4.0;
+                                if w >= ICON_MIN_W && h >= ICON + 2.0 {
+                                    let top = (h - ICON) / 2.0;
+                                    let ib = Bounds::new(
+                                        r.origin + point(px(3.0), px(top)),
+                                        size(px(ICON), px(ICON)),
+                                    );
+                                    let _ = window.paint_svg(
+                                        ib,
+                                        b.icon.path().into(),
+                                        gpui::TransformationMatrix::unit(),
+                                        gpui::black().opacity(0.8),
+                                        cx,
+                                    );
+                                    text_x = 3.0 + ICON + 3.0;
+                                }
+                                let Some(label) = &b.label else { continue };
+                                let run = TextRun {
+                                    len: label.len(),
+                                    font: font.clone(),
+                                    color: gpui::black(),
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
+                                let line = window.text_system().shape_line(
+                                    label.clone(),
+                                    font_size,
+                                    &[run],
+                                    None,
+                                );
+                                let top = if h > line_h.into() {
+                                    (h - f32::from(line_h)) / 2.0
+                                } else {
+                                    0.0
+                                };
+                                window.with_content_mask(
+                                    Some(ContentMask { bounds: r }),
+                                    |window| {
+                                        let _ = line.paint(
+                                            r.origin + point(px(text_x), px(top)),
+                                            line_h,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                );
+                            }
+                        };
+                        if plain(&blocks[first]) {
+                            window.paint_layer(layer, paint);
                         } else {
-                            0.9
-                        };
-                        let mut q = fill(r, col.opacity(alpha)).corner_radii(px(2.0));
-                        if b.selected {
-                            q = q.border_widths(px(1.5)).border_color(gpui::white());
-                        } else if b.hovered {
-                            q = q.border_widths(px(1.0)).border_color(gpui::white().opacity(0.6));
-                        } else if b.multi {
-                            q = q.border_widths(gpui::Edges { left: px(2.0), ..Default::default() }).border_color(col);
+                            paint(window);
                         }
-                        window.paint_quad(q);
-                        // 収まるならアイコンを左端に出し、ラベルはその右に続ける
-                        let mut text_x = 4.0;
-                        if w >= ICON_MIN_W && h >= ICON + 2.0 {
-                            let top = (h - ICON) / 2.0;
-                            let ib = Bounds::new(r.origin + point(px(3.0), px(top)), size(px(ICON), px(ICON)));
-                            let _ = window.paint_svg(
-                                ib,
-                                b.icon.path().into(),
-                                gpui::TransformationMatrix::unit(),
-                                gpui::black().opacity(0.8),
-                                cx,
-                            );
-                            text_x = 3.0 + ICON + 3.0;
-                        }
-                        let Some(label) = &b.label else { continue };
-                        let run = TextRun {
-                            len: label.len(),
-                            font: font.clone(),
-                            color: gpui::black(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let line = window.text_system().shape_line(label.clone(), font_size, &[run], None);
-                        let top = if h > line_h.into() { (h - f32::from(line_h)) / 2.0 } else { 0.0 };
-                        window.with_content_mask(Some(ContentMask { bounds: r }), |window| {
-                            let _ = line.paint(r.origin + point(px(text_x), px(top)), line_h, window, cx);
-                        });
+                        first = end;
                     }
                 });
             },
@@ -274,7 +353,8 @@ impl Rireki {
                     if collapsed {
                         for &si in sessions {
                             let lane = &self.store.sessions[si].lanes[0];
-                            for b in layout::aggregate(lane, (v0, v1), self.spp, self.gran) {
+                            let grouped = self.layout_cache.borrow_mut().aggregate((si, 0), lane, (v0, v1), self.spp, self.gran);
+                            for b in grouped {
                                 let x = x_of(b.start).max(-2.0);
                                 let w = (x_of(b.end).min(pw + 2.0) - x).max(MIN_BLOCK);
                                 let sel = Selection { session: si, lane: 0, first: b.first, last: b.last };
@@ -362,7 +442,8 @@ impl Rireki {
                     div().absolute().left_0().right_0().top(px(y)).h(px(ROW_H)).bg(c(theme::ACCENT).opacity(0.07)),
                 );
             }
-            for b in layout::aggregate(lane, (v0, v1), self.spp, self.gran) {
+            let grouped = self.layout_cache.borrow_mut().aggregate((tr.session, tr.lane), lane, (v0, v1), self.spp, self.gran);
+            for b in grouped {
                 let x = x_of(b.start).max(-2.0);
                 let x2 = x_of(b.end).min(pw + 2.0);
                 let w = (x2 - x).max(MIN_BLOCK);

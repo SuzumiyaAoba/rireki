@@ -7,20 +7,25 @@
 //! - 1 イベント: 時刻・トークン数・きっかけになった指示と、入力・結果（差分・Markdown・ANSI の色・行番号）
 //! - 複数: 集計と、名前・失敗での絞り込み、ユーザーの指示で区切ったイベントの一覧
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use gpui::{
-    AnyElement, ClickEvent, ClipboardItem, Context, Div, ElementId, FontWeight, SharedString, Stateful, WeakEntity,
-    Window, div, prelude::*, px,
+    AnyElement, ClickEvent, ClipboardItem, Context, Div, ElementId, FontWeight, ListAlignment, ListOffset,
+    ListState, SharedString, Stateful, WeakEntity, Window, div, list, prelude::*, px,
 };
 
 use super::rich;
 use super::widgets::{dot, event_icon, project_tile, tip};
 use super::{DETAIL_MAX, HEADER_H, INNER_RADIUS, Rireki, Selection, fmt_dur, fmt_n, is_live, local, tilde};
-use crate::db::JsCache;
+use crate::db::{Db, JsCache};
 use crate::icons::{self, Icon};
 use crate::loader;
 use crate::model::{Event, Kind, Session, Source, Stats, Status, Usage, UsageSum, one_line, truncate};
+
+mod files;
+pub(super) use files::FileList;
+use files::{FILE_MAX, FileListKey, FileRow, PER_EDIT};
 use crate::prefs::DetailTab;
 use crate::theme::{self, c};
 
@@ -30,9 +35,9 @@ pub struct DetailView {
 }
 
 impl Render for DetailView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.app.upgrade() {
-            Some(app) => app.update(cx, |app, cx| app.detail(cx)),
+            Some(app) => app.update(cx, |app, cx| app.detail(window, cx)),
             None => div().into_any_element(),
         }
     }
@@ -74,6 +79,92 @@ pub(super) enum RowFilter {
     Name(String),
     /// 失敗・拒否・中断
     Failed,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum DetailRow {
+    Summary,
+    Event(usize),
+    Empty,
+    Limit,
+}
+
+#[derive(PartialEq)]
+struct DetailListKey {
+    sel: Selection,
+    generation: u64,
+    filter: Option<RowFilter>,
+    width: u32,
+    live: bool,
+}
+
+struct DetailListData {
+    key: DetailListKey,
+    rows: Vec<DetailRow>,
+}
+
+/// 高さの違う行を可視範囲だけ描く。更新時は同じイベントを上端に保つ
+pub(super) struct DetailList {
+    pub(super) state: ListState,
+    data: RefCell<Option<DetailListData>>,
+    pub(super) rendered: Cell<usize>,
+}
+
+fn detail_rows(events: &[Event], filter: Option<&RowFilter>) -> Vec<DetailRow> {
+    let mut rows = vec![DetailRow::Summary];
+    for (i, e) in events.iter().take(DETAIL_MAX).enumerate() {
+        let keep = match filter {
+            None => true,
+            Some(RowFilter::Name(n)) => e.name == *n,
+            Some(RowFilter::Failed) => e.status.failed(),
+        };
+        if keep { rows.push(DetailRow::Event(i)); }
+    }
+    if rows.len() == 1 { rows.push(DetailRow::Empty); }
+    if events.len() > DETAIL_MAX { rows.push(DetailRow::Limit); }
+    rows
+}
+
+fn detail_anchor(old: &[DetailRow], new: &[DetailRow], offset: ListOffset) -> ListOffset {
+    old.get(offset.item_ix)
+        .and_then(|row| new.iter().position(|next| next == row))
+        .map(|item_ix| ListOffset { item_ix, ..offset })
+        .unwrap_or_default()
+}
+
+impl DetailList {
+    pub(super) fn new() -> Self {
+        Self {
+            state: ListState::new(0, ListAlignment::Top, px(200.0)),
+            data: RefCell::new(None),
+            rendered: Cell::new(0),
+        }
+    }
+
+    pub(super) fn reset(&self) {
+        *self.data.borrow_mut() = None;
+        self.rendered.set(0);
+        self.state.reset(0);
+    }
+
+    fn prepare(&self, key: DetailListKey, events: &[Event]) {
+        let mut data = self.data.borrow_mut();
+        if data.as_ref().is_some_and(|d| d.key == key) { return; }
+        let rows = detail_rows(events, key.filter.as_ref());
+        let offset = data.as_ref().filter(|d| {
+            d.key.sel.session == key.sel.session && d.key.sel.lane == key.sel.lane && d.key.sel.first == key.sel.first
+        }).map(|d| detail_anchor(&d.rows, &rows, self.state.logical_scroll_top())).unwrap_or_default();
+        self.state.splice(0..self.state.item_count(), rows.len());
+        self.state.scroll_to(offset);
+        *data = Some(DetailListData { key, rows });
+    }
+
+    fn at_bottom(&self) -> bool {
+        let bounds = self.state.viewport_bounds();
+        bounds.size.height > px(0.0) && self.state.item_count().checked_sub(1)
+            .and_then(|i| self.state.bounds_for_item(i))
+            .is_some_and(|last| last.bottom() <= bounds.bottom() + px(4.0))
+    }
 }
 
 /// ファイルを編集するツール
@@ -176,15 +267,31 @@ fn stat(name: &'static str, value: String, color: Option<u32>) -> Div {
         .child(div().truncate().text_xs().text_color(c(theme::SUBTLE)).child(name))
 }
 
-impl Rireki {
-    /// 選択の詳細テキストを DB から引いて整える。編集したファイルは選択全体から数える
-    /// （先頭 DETAIL_MAX 件より後ろは、編集系のツールの本文だけを引く）
-    pub(super) fn load_detail(&self, sel: Selection) -> DetailCache {
-        let evs = &self.store.sessions[sel.session].lanes[sel.lane].events[sel.first..=sel.last];
-        let limit = if evs.len() == 1 { 6000 } else { 400 };
-        let shown = evs.len().min(DETAIL_MAX);
-        let wanted = |i: usize, e: &Event| i < shown || is_edit(e);
-        let rows: Vec<i64> = evs.iter().enumerate().filter(|&(i, e)| wanted(i, e)).filter_map(|(_, e)| e.row).collect();
+#[derive(Default)]
+pub(super) struct DetailLoader {
+    reader: Option<Db>,
+    js_cache: Option<JsCache>,
+}
+
+struct DetailEvent {
+    index: usize,
+    row: Option<i64>,
+    input: String,
+    output: String,
+    edit: bool,
+}
+
+impl DetailLoader {
+    fn prepare(&mut self) {
+        if self.reader.is_none() { self.reader = Db::open_read().ok(); }
+        if self.js_cache.is_none() { self.js_cache = JsCache::open().ok(); }
+    }
+
+    fn load(&self, sel: Selection, events: Vec<DetailEvent>, count: usize, is_current: impl Fn() -> bool) -> Option<DetailCache> {
+        if !is_current() { return None; }
+        let limit = if count == 1 { 6000 } else { 400 };
+        let shown = count.min(DETAIL_MAX);
+        let rows: Vec<i64> = events.iter().filter_map(|e| e.row).collect();
         let mut fetched = self.reader.as_ref().map(|db| db.details(&rows)).unwrap_or_default();
         let mut d = DetailCache {
             sel,
@@ -197,16 +304,18 @@ impl Rireki {
             patches: HashMap::new(),
         };
         let mut at: HashMap<String, usize> = HashMap::new();
-        for (i, e) in evs.iter().enumerate().filter(|&(i, e)| wanted(i, e)) {
+        for e in events {
+            if !is_current() { return None; }
+            let i = e.index;
             let (input, output) = match e.row.and_then(|r| fetched.remove(&r)) {
                 Some(v) => v,
-                None => (e.input.clone(), e.output.clone()),
+                None => (e.input, e.output),
             };
             let (input, raw) = match input.strip_prefix(loader::JS_MARK) {
                 Some(js) => (exec_detail_cached(self.js_cache.as_ref(), js), Some(js.to_string())),
                 None => (input, None),
             };
-            let patches = if is_edit(e) || raw.is_some() { rich::parse_patch(&input) } else { Vec::new() };
+            let patches = if e.edit || raw.is_some() { rich::parse_patch(&input) } else { Vec::new() };
             let patches: Vec<rich::FilePatch> = patches.into_iter().filter(|p| !p.path.is_empty()).collect();
             let touched: Vec<(String, usize, usize)> =
                 patches.iter().map(|p| (p.path.clone(), p.added, p.removed)).collect();
@@ -235,7 +344,182 @@ impl Rireki {
             }
         }
         d.files.sort_by(|a, b| b.edits.cmp(&a.edits).then((b.added + b.removed).cmp(&(a.added + a.removed))));
-        d
+        is_current().then_some(d)
+    }
+}
+
+impl Rireki {
+    pub(super) fn detail_profile_open_file(&mut self, cx: &mut Context<Self>) {
+        self.file_open = self.detail_cache.as_ref().and_then(|d| d.files.first()).map(|f| f.path.clone());
+        self.detail_changed(cx);
+    }
+
+    pub(super) fn detail_profile_scroll_files(&self, delta: gpui::Pixels, cx: &mut Context<Self>) {
+        if self.profile_eager_files() {
+            let h = &self.detail_scroll;
+            h.set_offset(gpui::point(h.offset().x, (h.offset().y - delta).max(-h.max_offset().height)));
+        } else {
+            self.file_list.state.scroll_by(delta);
+        }
+        self.detail_changed(cx);
+    }
+
+    pub(super) fn detail_profile_reorder_files(&mut self, cx: &mut Context<Self>) {
+        if let Some(cache) = &mut self.detail_cache && cache.files.len() > 1 {
+            cache.files.swap(0, 1);
+            self.detail_gen.fetch_add(1, super::Ordering::Relaxed);
+            self.detail_changed(cx);
+        }
+    }
+
+    pub(super) fn detail_profile_open_file_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(sel) = self.selected && let Some(event) = self.file_list.top_event() {
+            self.open_edit(sel.session, sel.lane, sel.first + event, window, cx);
+        }
+    }
+
+    pub(super) fn detail_profile_state(&self) -> serde_json::Value {
+        let offset = self.detail_list.state.logical_scroll_top();
+        let data = self.detail_list.data.borrow();
+        let top_event = data.as_ref().and_then(|d| d.rows.get(offset.item_ix).map(|r| (d.key.sel, r)))
+            .and_then(|(sel, row)| match row { DetailRow::Event(i) => Some(sel.first + i), _ => None });
+        let opened = self.detail_cache.as_ref().and_then(|d| {
+            let path = self.file_open.as_ref()?;
+            let file = d.files.iter().find(|f| &f.path == path)?;
+            let rows: usize = file.events.iter().filter_map(|i| d.patches.get(i))
+                .flat_map(|ps| ps.iter().filter(|p| &p.path == path)).map(|p| p.rows.len()).sum();
+            Some((file.events.len(), rows))
+        });
+        serde_json::json!({
+            "list_count":self.detail_list.state.item_count(), "rendered":self.detail_list.rendered.get(),
+            "item_ix":offset.item_ix, "offset_px":f32::from(offset.offset_in_item), "top_event":top_event,
+            "at_bottom":self.detail_at_bottom(), "tab":format!("{:?}", self.detail_tab),
+            "following":self.detail_following, "follow_pending":self.detail_follow,
+            "files":self.detail_cache.as_ref().map(|d| d.files.len()),
+            "file_list_count":self.file_list.state.item_count(), "file_rendered":self.file_list.rendered.get(),
+            "file_item_ix":self.file_list.state.logical_scroll_top().item_ix,
+            "file_offset_px":f32::from(self.file_list.state.logical_scroll_top().offset_in_item),
+            "file_top_event":self.file_list.top_event(),
+            "file_open":self.file_open.is_some(), "open_edits_rows":opened,
+            "expanded_in":self.expanded.contains("in"), "expanded_out":self.expanded.contains("out"),
+            "expanded_diff":self.expanded.contains("file-diff"),
+            "text_chars":self.detail_cache.as_ref().and_then(|d| d.texts.first()).map(|(a,b)| (a.chars().count(),b.chars().count())),
+            "selected_count":self.selected.map(|s| s.last - s.first + 1),
+            "selected_kind":self.selected.filter(|&s| self.valid(s)).map(|s| format!("{:?}", self.store.sessions[s.session].lanes[s.lane].events[s.first].kind)),
+            "row_filter":match &self.row_filter { None => "none", Some(RowFilter::Failed) => "failed", Some(RowFilter::Name(_)) => "name" },
+        })
+    }
+
+    pub(super) fn detail_profile_click(&self) -> Option<(gpui::Point<gpui::Pixels>, usize)> {
+        let list = &self.detail_list.state;
+        let viewport = list.viewport_bounds();
+        let data = self.detail_list.data.borrow();
+        let data = data.as_ref()?;
+        data.rows.iter().enumerate().skip(list.logical_scroll_top().item_ix).find_map(|(row, kind)| {
+            let DetailRow::Event(i) = kind else { return None; };
+            let bounds = list.bounds_for_item(row)?;
+            let center = bounds.center();
+            (center.y >= viewport.top() && center.y < viewport.bottom()).then_some((center, data.key.sel.first + i))
+        })
+    }
+
+    pub(super) fn detail_uses_list(&self) -> bool {
+        self.selected.filter(|&sel| self.valid(sel) && sel.first < sel.last)
+            .is_some_and(|sel| self.detail_tab == DetailTab::Events || (self.detail_tab == DetailTab::Files && self.cache(sel).is_none_or(|cache| cache.files.is_empty())))
+    }
+
+    pub(super) fn detail_at_bottom(&self) -> bool {
+        if self.detail_tab == DetailTab::Files && self.detail_cache.as_ref().is_some_and(|d| !d.files.is_empty()) {
+            self.file_list.at_bottom()
+        } else if self.detail_uses_list() {
+            self.detail_list.at_bottom()
+        } else {
+            -self.detail_scroll.offset().y >= self.detail_scroll.max_offset().height - px(4.0)
+        }
+    }
+
+    /// 未計測の行も少しずつ描きながら追う。ユーザー操作・絞り込み・選択変更で止める
+    pub(super) fn animate_list_to_bottom(&mut self, cx: &mut Context<Self>) {
+        const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+        const MAX_FRAMES: usize = 40;
+        self.detail_following = true;
+        self.follow_anim = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FRAME).await;
+            for frame in 0..MAX_FRAMES {
+                let Ok(keep_going) = this.update(cx, |app, cx| {
+                    if !app.detail_uses_list() || app.detail_list.at_bottom() { return None; }
+                    let list = &app.detail_list.state;
+                    if frame + 1 == MAX_FRAMES {
+                        list.scroll_to(ListOffset { item_ix: list.item_count(), offset_in_item: px(0.0) });
+                    } else {
+                        let bounds = list.viewport_bounds();
+                        let distance = list.item_count().checked_sub(1).and_then(|i| list.bounds_for_item(i))
+                            .map(|last| ((last.bottom() - bounds.bottom()) * 0.2).max(px(1.0)))
+                            .unwrap_or_else(|| (bounds.size.height * 0.15).clamp(px(40.0), px(100.0)));
+                        list.scroll_by(distance);
+                    }
+                    app.detail_changed(cx);
+                    Some(())
+                }) else { return; };
+                if keep_going.is_none() { break; }
+                cx.background_executor().timer(FRAME).await;
+            }
+            let _ = this.update(cx, |app, _| app.detail_following = false);
+        }));
+    }
+
+    pub(super) fn cancel_detail_follow(&mut self) {
+        self.detail_follow = false;
+        self.detail_following = false;
+        self.follow_anim = None;
+    }
+
+    pub(super) fn set_row_filter(&mut self, filter: Option<RowFilter>, cx: &mut Context<Self>) {
+        self.row_filter = filter;
+        self.cancel_detail_follow();
+        self.detail_changed(cx);
+    }
+
+    pub(super) fn cancel_detail_load(&mut self) {
+        self.detail_gen.fetch_add(1, super::Ordering::Relaxed);
+        self.detail_task = None;
+        self.cancel_detail_follow();
+    }
+
+    /// DB 読み込みと JS のモック実行を背景で行い、最新の選択だけを反映する
+    pub(super) fn request_detail(&mut self, sel: Selection, cx: &mut Context<Self>) {
+        self.cancel_detail_load();
+        self.detail_cache = None;
+        let generation = self.detail_gen.load(super::Ordering::Relaxed);
+        let gen_counter = self.detail_gen.clone();
+        let loader = self.detail_loader.clone();
+        let evs = &self.store.sessions[sel.session].lanes[sel.lane].events[sel.first..=sel.last];
+        let count = evs.len();
+        let shown = count.min(DETAIL_MAX);
+        let events = evs.iter().enumerate().filter_map(|(i, e)| {
+            let edit = is_edit(e);
+            (i < shown || edit).then(|| DetailEvent { index: i, row: e.row, input: e.input.clone(), output: e.output.clone(), edit })
+        }).collect();
+        self.detail_task = Some(cx.spawn(async move |this, cx| {
+            let loaded = cx.background_executor().spawn(async move {
+                let is_current = || gen_counter.load(super::Ordering::Relaxed) == generation;
+                if !is_current() { return None; }
+                let mut loader = loader.lock().unwrap();
+                if !is_current() { return None; }
+                loader.prepare();
+                loader.load(sel, events, count, is_current)
+            }).await;
+            let Some(cache) = loaded else { return };
+            let _ = this.update(cx, |app, cx| {
+                if app.detail_gen.load(super::Ordering::Relaxed) == generation && app.selected == Some(sel) && app.valid(sel) {
+                    app.detail_cache = Some(cache);
+                    app.detail_changed(cx);
+                    if std::mem::take(&mut app.detail_follow) && app.detail_tab == DetailTab::Events {
+                        app.animate_to_bottom(cx);
+                    }
+                }
+            });
+        }));
     }
 
     /// 同じレーンの次（`dir` = 1）/ 前（-1）のイベントを選ぶ。複数を選んでいるときは、その先頭 / 末尾を選ぶ。
@@ -263,8 +547,9 @@ impl Rireki {
         self.reveal(sel, false, window);
     }
 
-    pub(super) fn detail(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn detail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let panel = div()
+            .id("detail-panel")
             .size_full()
             .flex()
             .flex_col()
@@ -273,7 +558,8 @@ impl Rireki {
             .border_l_1()
             .border_color(c(theme::BORDER))
             .text_sm()
-            .text_color(c(theme::TEXT));
+            .text_color(c(theme::TEXT))
+            .on_scroll_wheel(cx.listener(|app, _: &gpui::ScrollWheelEvent, _, _| app.cancel_detail_follow()));
         let Some(sel) = self.selected.filter(|&s| self.valid(s)) else {
             return panel.into_any_element();
         };
@@ -294,15 +580,27 @@ impl Rireki {
             .gap_3();
         match tab {
             DetailTab::Events => {
-                if sel.first == sel.last {
+                if self.cache(sel).is_none() {
+                    body = body.child(div().text_xs().text_color(c(theme::MUTED)).child("詳細を読み込み中…"));
+                } else if sel.first == sel.last {
                     body = body.child(self.event_view(sel, cx));
                 } else {
-                    body = body.child(self.selection_summary(sel, cx)).child(self.event_list(sel, cx));
+                    return panel
+                        .child(self.detail_header(sel, cx))
+                        .child(self.context_bar(sel, cx))
+                        .child(self.detail_tabs(sel, tab, files, cx))
+                        .child(div().flex_1().min_h_0().p_3().flex().flex_col().child(self.event_list(sel, window, cx)))
+                        .into_any_element();
                 }
             }
             DetailTab::Files => {
                 if let Some(d) = self.cache(sel) {
-                    body = body.child(self.file_list(sel, d, &self.store.sessions[sel.session].cwd, cx));
+                    return panel
+                        .child(self.detail_header(sel, cx))
+                        .child(self.context_bar(sel, cx))
+                        .child(self.detail_tabs(sel, tab, files, cx))
+                        .child(div().flex_1().min_h_0().p_3().flex().flex_col().child(self.files_list(sel, d, window, cx)))
+                        .into_any_element();
                 }
             }
             DetailTab::Session => {
@@ -312,8 +610,17 @@ impl Rireki {
                 }
             }
         }
+        panel
+            .child(self.detail_header(sel, cx))
+            .child(self.context_bar(sel, cx))
+            .child(self.detail_tabs(sel, tab, files, cx))
+            .child(body)
+            .into_any_element()
+    }
+
+    fn detail_tabs(&self, sel: Selection, tab: DetailTab, files: usize, cx: &mut Context<Self>) -> Div {
         let n_events = (sel.first != sel.last).then(|| sel.last - sel.first + 1);
-        let tabs = div().flex_none().px_3().py_2().border_b_1().border_color(c(theme::BORDER)).child(
+        div().flex_none().px_3().py_2().border_b_1().border_color(c(theme::BORDER)).child(
             div()
                 .flex()
                 .gap_0p5()
@@ -325,13 +632,7 @@ impl Rireki {
                 .child(self.tab_button(DetailTab::Events, "イベント", n_events, "1", tab, true, cx))
                 .child(self.tab_button(DetailTab::Files, "ファイル", Some(files), "2", tab, files > 0, cx))
                 .child(self.tab_button(DetailTab::Session, "セッション", None, "3", tab, true, cx)),
-        );
-        panel
-            .child(self.detail_header(sel, cx))
-            .child(self.context_bar(sel, cx))
-            .child(tabs)
-            .child(body)
-            .into_any_element()
+        )
     }
 
     /// タブ。区切られた選択肢の形にし、選んでいるものを浮かせる。件数は小さい丸の中に出す
@@ -392,6 +693,9 @@ impl Rireki {
         if self.detail_tab != tab {
             self.detail_tab = tab;
             self.detail_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+            self.detail_list.state.scroll_to(ListOffset::default());
+            self.file_list.state.scroll_to(ListOffset::default());
+            self.cancel_detail_follow();
             self.persist();
         }
         self.detail_changed(cx);
@@ -657,7 +961,7 @@ impl Rireki {
         }
         let sel = Selection { session, lane, first: 0, last: n - 1 };
         self.navigate(sel, w, cx);
-        self.row_filter = filter;
+        self.set_row_filter(filter, cx);
         self.set_detail_tab(DetailTab::Events, cx);
         self.reveal(sel, true, w);
     }
@@ -1216,8 +1520,7 @@ impl Rireki {
                 .when_some(col, |d, (col, ic)| d.child(event_icon(ic, col, 11.0)))
                 .child(text)
                 .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
-                    t.row_filter = if t.row_filter == f { None } else { f.clone() };
-                    t.detail_changed(cx);
+                    t.set_row_filter(if t.row_filter == f { None } else { f.clone() }, cx);
                 }))
         };
         let mut chips = div().flex().flex_wrap().gap_1().child(chip(
@@ -1258,8 +1561,7 @@ impl Rireki {
                     .hover(|d| d.border_color(c(theme::ERR)))
                     .tooltip(tip(if on { "絞り込みを外す" } else { "失敗したイベントだけを表示" }, None))
                     .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
-                        t.row_filter = if on { None } else { Some(RowFilter::Failed) };
-                        t.detail_changed(cx);
+                        t.set_row_filter(if on { None } else { Some(RowFilter::Failed) }, cx);
                     }))
                     .into_any_element(),
             );
@@ -1286,11 +1588,46 @@ impl Rireki {
     }
 
     /// 選択の中で編集したファイル。押すとその場で開き、編集の時系列と、編集ごとの差分を出す
-    fn file_list(&self, sel: Selection, d: &DetailCache, cwd: &str, cx: &mut Context<Self>) -> Div {
-        const MAX: usize = 100;
+    fn files_list(&self, sel: Selection, cache: &DetailCache, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        self.file_list.prepare(FileListKey {
+            sel,
+            generation: self.detail_gen.load(super::Ordering::Relaxed),
+            width: self.pane_widths(window).1.to_bits(),
+            open: self.file_open.clone(),
+            all_files: self.expanded.contains("files"),
+            all_diffs: self.expanded.contains("file-diff"),
+        }, cache);
+        self.file_list.rendered.set(0);
+        if self.profile_eager_files() {
+            return div().id("profile-eager-files").track_scroll(&self.detail_scroll)
+                .size_full().overflow_y_scroll().flex().flex_col()
+                .children((0..self.file_list.state.item_count()).map(|i| div().flex_none().min_w_0().child(self.file_list_item(sel, i, cx))))
+                .into_any_element();
+        }
+        let app = cx.entity().downgrade();
+        gpui::list(self.file_list.state.clone(), move |index, _, cx| {
+            app.update(cx, |app, cx| app.file_list_item(sel, index, cx)).unwrap_or_else(|_| div().into_any_element())
+        }).size_full().into_any_element()
+    }
+
+    fn file_list_item(&self, sel: Selection, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        self.file_list.rendered.set(self.file_list.rendered.get() + 1);
+        let Some(row) = self.file_list.row(index) else { return div().into_any_element(); };
+        let Some(cache) = self.cache(sel) else { return div().into_any_element(); };
+        let cwd = &self.store.sessions[sel.session].cwd;
+        match row {
+            FileRow::Summary | FileRow::File(_) | FileRow::More => self.file_row_view(cache, cwd, row, cx),
+            FileRow::History(file) | FileRow::Edit { file, .. } | FileRow::Empty(file) | FileRow::Expand(file) => {
+                let Some(file) = cache.files.get(file) else { return div().into_any_element(); };
+                self.file_history(sel, cache, file, cwd, row, cx)
+            }
+        }.into_any_element()
+    }
+
+    fn file_row_view(&self, d: &DetailCache, cwd: &str, row: FileRow, cx: &mut Context<Self>) -> Div {
         let all = self.expanded.contains("files");
         let (added, removed) = d.files.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-        let mut list = div().flex().flex_col().gap_1().child(
+        let mut list = div().flex().flex_col().gap_1().when(row == FileRow::Summary, |list| list.child(
             div()
                 .flex()
                 .items_center()
@@ -1301,8 +1638,9 @@ impl Rireki {
                 .child(div().text_xs().text_color(c(theme::ERR)).child(format!("−{}", fmt_n(removed))))
                 .child(div().flex_1())
                 .child(div().text_xs().text_color(c(theme::SUBTLE)).child("押すと差分を表示")),
-        );
-        for (i, f) in d.files.iter().enumerate().take(if all { usize::MAX } else { MAX }) {
+        ));
+        for (i, f) in d.files.iter().enumerate().take(if all { usize::MAX } else { FILE_MAX }) {
+            if row != FileRow::File(i) { continue; }
             let open = self.file_open.as_deref() == Some(f.path.as_str());
             let path = rich::rel_path(&f.path, cwd);
             let (dir, base) = match path.rsplit_once('/') {
@@ -1354,11 +1692,8 @@ impl Rireki {
                     t.detail_changed(cx);
                 }));
             list = list.child(row);
-            if open {
-                list = list.child(self.file_history(sel, d, f, cwd, cx));
-            }
         }
-        if !all && d.files.len() > MAX {
+        if row == FileRow::More && !all && d.files.len() > FILE_MAX {
             list = list.child(
                 div()
                     .id("more-files")
@@ -1367,14 +1702,14 @@ impl Rireki {
                     .text_color(c(theme::ACCENT))
                     .cursor_pointer()
                     .hover(|s| s.underline())
-                    .child(format!("ほか {} ファイル", d.files.len() - MAX))
+                    .child(format!("ほか {} ファイル", d.files.len() - FILE_MAX))
                     .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
                         t.expanded.insert("files");
                         t.detail_changed(cx);
                     })),
             );
         }
-        list
+        list.pb_1()
     }
 
     /// 1 イベントを選んでイベントのタブを開く
@@ -1386,19 +1721,18 @@ impl Rireki {
     }
 
     /// 開いたファイルの編集の履歴。選択の期間の上に編集を印で置いた帯と、編集ごとの差分
-    fn file_history(&self, sel: Selection, d: &DetailCache, f: &FileStat, cwd: &str, cx: &mut Context<Self>) -> Div {
-        const PER_EDIT: usize = 120;
+    fn file_history(&self, sel: Selection, d: &DetailCache, f: &FileStat, cwd: &str, row: FileRow, cx: &mut Context<Self>) -> Div {
         let s = &self.store.sessions[sel.session];
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
         let (start, end) = self.sel_range(sel);
         let span = (end - start).max(1.0);
         // 各編集でこのファイルに加えた変更
-        let edits: Vec<(usize, Vec<rich::FilePatch>)> = f
+        let edits: Vec<(usize, Vec<&rich::FilePatch>)> = f
             .events
             .iter()
             .filter_map(|&i| {
-                let ps: Vec<rich::FilePatch> =
-                    d.patches.get(&i)?.iter().filter(|p| p.path == f.path).cloned().collect();
+                let ps: Vec<&rich::FilePatch> =
+                    d.patches.get(&i)?.iter().filter(|p| p.path == f.path).collect();
                 (!ps.is_empty()).then_some((i, ps))
             })
             .collect();
@@ -1417,7 +1751,7 @@ impl Rireki {
             .border_1()
             .border_color(c(theme::BORDER))
             .child(div().absolute().left_0().right_0().bottom(px(6.0)).h(px(1.0)).bg(c(theme::GRID)));
-        for (n, (i, ps)) in edits.iter().enumerate() {
+        for (n, (i, ps)) in edits.iter().enumerate().filter(|_| matches!(row, FileRow::History(_))) {
             let e = &evs[*i];
             let (a, r) = ps.iter().fold((0, 0), |(a, r), p| (a + p.added, r + p.removed));
             let frac = (((e.start - start) / span) as f32).clamp(0.0, 1.0);
@@ -1456,11 +1790,14 @@ impl Rireki {
         // 編集ごとの差分
         let all = self.expanded.contains("file-diff");
         let mut diffs = div().flex().flex_col().gap_3();
-        let mut hidden_total = 0;
+        let mut hidden_total = if matches!(row, FileRow::Expand(_)) {
+            edits.iter().map(|(_, ps)| ps.iter().map(|p| p.rows.len()).sum::<usize>().saturating_sub(PER_EDIT)).sum()
+        } else { 0 };
         for (n, (i, ps)) in edits.iter().enumerate() {
+            if !matches!(row, FileRow::Edit { event, .. } if event == *i) { continue; }
             let e = &evs[*i];
             let (a, r) = ps.iter().fold((0, 0), |(a, r), p| (a + p.added, r + p.removed));
-            let (view, hidden) = rich::diff_view(ps, cwd, if all { usize::MAX } else { PER_EDIT });
+            let (view, hidden) = rich::diff_view(ps.iter().copied(), cwd, if all { usize::MAX } else { PER_EDIT });
             hidden_total += hidden;
             let color = theme::event_color(e);
             diffs = diffs.child(
@@ -1520,7 +1857,7 @@ impl Rireki {
                     }),
             );
         }
-        if hidden_total > 0 {
+        if matches!(row, FileRow::Expand(_)) && hidden_total > 0 {
             diffs = diffs.child(
                 div()
                     .id("file-diff-all")
@@ -1535,21 +1872,21 @@ impl Rireki {
                     })),
             );
         }
-        if edits.is_empty() {
+        if matches!(row, FileRow::Empty(_)) {
             diffs = diffs.child(div().text_xs().text_color(c(theme::SUBTLE)).child("差分は記録されていません"));
         }
         div()
             .ml(px(10.0))
-            .mb_2()
+            .pb_3()
             .pl_3()
-            .pt_1()
+            .when(matches!(row, FileRow::History(_)), |d| d.pt_1())
             .border_l_2()
             .border_color(c(theme::ACCENT).opacity(0.5))
             .flex()
             .flex_col()
             .gap_2()
             .min_w_0()
-            .child(
+            .when(matches!(row, FileRow::History(_)), |d| d.child(
                 div()
                     .flex()
                     .flex_col()
@@ -1557,51 +1894,56 @@ impl Rireki {
                     .child(label(format!("編集の時系列 · {} 回", edits.len())))
                     .child(strip)
                     .child(axis),
-            )
+            ))
             .child(diffs)
     }
 
     /// イベントの一覧。絞り込みがなければユーザーの指示ごとに区切って並べる
-    fn event_list(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
+    fn event_list(&self, sel: Selection, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let s = &self.store.sessions[sel.session];
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
+        self.detail_list.prepare(DetailListKey {
+            sel,
+            generation: self.detail_gen.load(super::Ordering::Relaxed),
+            filter: self.row_filter.clone(),
+            width: self.pane_widths(window).1.to_bits(),
+            live: is_live(s.end),
+        }, evs);
+        self.detail_list.rendered.set(0);
+        let app = cx.entity().downgrade();
+        let scrolling = app.clone();
+        self.detail_list.state.set_scroll_handler(move |_, _, cx| {
+            let _ = scrolling.update(cx, |app, _| app.cancel_detail_follow());
+        });
+        list(self.detail_list.state.clone(), move |row, _, cx| {
+            app.update(cx, |app, cx| app.detail_list_item(sel, row, cx)).unwrap_or_else(|_| div().into_any_element())
+        }).flex_1().min_h_0().into_any_element()
+    }
+
+    fn detail_list_item(&self, sel: Selection, row: usize, cx: &mut Context<Self>) -> AnyElement {
+        if !self.valid(sel) || self.cache(sel).is_none() { return div().into_any_element(); }
+        let item = self.detail_list.data.borrow().as_ref().and_then(|d| d.rows.get(row)).copied();
+        self.detail_list.rendered.set(self.detail_list.rendered.get() + 1);
+        let i = match item {
+            Some(DetailRow::Summary) => return div().pb_3().child(self.selection_summary(sel, cx)).into_any_element(),
+            Some(DetailRow::Empty) => return div().py_2().text_xs().text_color(c(theme::SUBTLE))
+                .child("該当するイベントはありません").into_any_element(),
+            Some(DetailRow::Limit) => return div().pt_1().text_xs().text_color(c(theme::MUTED)).child(format!(
+                "先頭 {} 件を表示しています（全 {} 件）", fmt_n(DETAIL_MAX), fmt_n(sel.last - sel.first + 1)
+            )).into_any_element(),
+            Some(DetailRow::Event(i)) => i,
+            None => return div().into_any_element(),
+        };
+        let s = &self.store.sessions[sel.session];
+        let e = &s.lanes[sel.lane].events[sel.first + i];
         let cache = self.cache(sel);
-        let filter = self.row_filter.as_ref();
-        let live = is_live(s.end);
-        let mut list = div().flex().flex_col().min_w_0();
-        let mut shown = 0;
-        for (i, e) in evs.iter().enumerate().take(DETAIL_MAX) {
-            let touched = cache.and_then(|d| d.touched.get(i)).map_or(&[][..], Vec::as_slice);
-            let keep = match filter {
-                None => true,
-                Some(RowFilter::Name(n)) => e.name == *n,
-                Some(RowFilter::Failed) => e.status.failed(),
-            };
-            if !keep {
-                continue;
-            }
-            shown += 1;
-            let (preview, output) =
-                cache.and_then(|d| d.texts.get(i)).map_or(("", ""), |t| (t.0.as_str(), t.1.as_str()));
-            let row = if e.kind == Kind::User && filter.is_none() {
-                self.turn_row(sel, i, preview, cx)
-            } else {
-                self.event_row(sel, i, (preview, output), touched, live, cx)
-            };
-            list = list.child(row);
+        let touched = cache.and_then(|d| d.touched.get(i)).map_or(&[][..], Vec::as_slice);
+        let (preview, output) = cache.and_then(|d| d.texts.get(i)).map_or(("", ""), |t| (t.0.as_str(), t.1.as_str()));
+        if e.kind == Kind::User && self.row_filter.is_none() {
+            self.turn_row(sel, i, preview, cx).into_any_element()
+        } else {
+            self.event_row(sel, i, (preview, output), touched, is_live(s.end), cx).into_any_element()
         }
-        if shown == 0 {
-            list =
-                list.child(div().py_2().text_xs().text_color(c(theme::SUBTLE)).child("該当するイベントはありません"));
-        }
-        if evs.len() > DETAIL_MAX {
-            list = list.child(div().pt_1().text_xs().text_color(c(theme::MUTED)).child(format!(
-                "先頭 {} 件を表示しています（全 {} 件）",
-                fmt_n(DETAIL_MAX),
-                fmt_n(evs.len())
-            )));
-        }
-        list
     }
 
     /// ユーザーの指示の行。次の指示までの件数・時間・失敗を添え、本文を大きめに出す（ターンの区切り）
@@ -2009,6 +2351,95 @@ pub(super) fn exec_detail_cached(cache: Option<&JsCache>, js: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn list_event(name: &str, status: Status) -> Event {
+        Event {
+            start: 1.0, end: 2.0, kind: Kind::Tool, name: name.into(), summary: String::new(),
+            input: String::new(), output: String::new(), call_id: None, row: None,
+            usage: Default::default(), model: None, status,
+        }
+    }
+
+    #[test]
+    fn detail_list_filters_within_original_display_limit() {
+        let mut events: Vec<_> = (0..DETAIL_MAX + 3).map(|i| {
+            list_event(if i % 2 == 0 { "Read" } else { "Edit" }, match i % 5 {
+                0 => Status::Error, 1 => Status::Rejected, 2 => Status::Interrupted,
+                3 => Status::Pending, _ => Status::Ok,
+            })
+        }).collect();
+        let all = detail_rows(&events, None);
+        assert_eq!(all.len(), DETAIL_MAX + 2);
+        assert_eq!(all[0], DetailRow::Summary);
+        assert_eq!(all[DETAIL_MAX], DetailRow::Event(DETAIL_MAX - 1));
+        assert_eq!(all[DETAIL_MAX + 1], DetailRow::Limit);
+        for filter in [RowFilter::Name("Edit".into()), RowFilter::Failed] {
+            let rows = detail_rows(&events, Some(&filter));
+            let expected: Vec<_> = events.iter().take(DETAIL_MAX).enumerate().filter(|(_, e)| match &filter {
+                RowFilter::Name(name) => e.name == *name,
+                RowFilter::Failed => matches!(e.status, Status::Error | Status::Rejected | Status::Interrupted),
+            }).map(|(i, _)| DetailRow::Event(i)).collect();
+            assert_eq!(&rows[1..rows.len() - 1], &expected);
+        }
+        events[DETAIL_MAX].name = "AfterLimit".into();
+        assert_eq!(detail_rows(&events, Some(&RowFilter::Name("AfterLimit".into()))),
+            [DetailRow::Summary, DetailRow::Empty, DetailRow::Limit]);
+        assert_eq!(detail_rows(&[], None), [DetailRow::Summary, DetailRow::Empty]);
+    }
+
+    #[test]
+    fn detail_list_keeps_event_anchor_on_filter_width_and_live_updates() {
+        let events = vec![list_event("Read", Status::Ok), list_event("Edit", Status::Error), list_event("Edit", Status::Ok)];
+        let state = DetailList::new();
+        let key = |generation, filter, width, last| DetailListKey {
+            sel: Selection { session: 1, lane: 2, first: 10, last }, generation, filter, width, live: false,
+        };
+        state.prepare(key(1, None, 400, 12), &events);
+        state.state.scroll_to(ListOffset { item_ix: 2, offset_in_item: px(17.0) });
+        state.prepare(key(1, Some(RowFilter::Name("Edit".into())), 400, 12), &events);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (1, px(17.0)));
+        state.prepare(key(2, Some(RowFilter::Name("Edit".into())), 320, 13), &events);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (1, px(17.0)));
+        state.prepare(key(2, Some(RowFilter::Name("Read".into())), 320, 13), &events);
+        assert_eq!(state.state.logical_scroll_top().item_ix, 0);
+        state.state.scroll_to(ListOffset { item_ix: 1, offset_in_item: px(20.0) });
+        state.reset();
+        state.prepare(key(3, None, 400, 12), &events);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (0, px(0.0)));
+    }
+
+    #[test]
+    fn detail_keeps_edits_after_display_limit_and_commands() {
+        let sel = Selection { session: 0, lane: 0, first: 10, last: DETAIL_MAX + 10 };
+        let events = vec![
+            DetailEvent { index: 0, row: None, input: "$ cargo test".into(), output: "one\ntwo".into(), edit: false },
+            DetailEvent { index: DETAIL_MAX, row: None, input: "*** Update File: src/a.rs\n@@\n-old\n+new".into(), output: String::new(), edit: true },
+        ];
+        let d = DetailLoader::default().load(sel, events, DETAIL_MAX + 1, || true).unwrap();
+        assert_eq!(d.commands, [vec!["cargo test".to_string()]]);
+        assert_eq!(d.out_lines, [2]);
+        assert_eq!(d.files.len(), 1);
+        assert_eq!((&*d.files[0].path, d.files[0].added, d.files[0].removed), ("src/a.rs", 1, 1));
+        assert_eq!(d.files[0].events, [DETAIL_MAX]);
+        assert!(d.patches.contains_key(&DETAIL_MAX));
+    }
+
+    #[test]
+    fn detail_cancels_before_work_and_between_events() {
+        let sel = Selection { session: 0, lane: 0, first: 0, last: 1 };
+        assert!(DetailLoader::default().load(sel, Vec::new(), 2, || false).is_none());
+        let checks = std::cell::Cell::new(0);
+        let events = (0..2).map(|index| DetailEvent { index, row: None, input: "test".into(), output: String::new(), edit: false }).collect();
+        let result = DetailLoader::default().load(sel, events, 2, || {
+            checks.set(checks.get() + 1);
+            checks.get() <= 2
+        });
+        assert!(result.is_none());
+        assert_eq!(checks.get(), 3);
+    }
 
     #[test]
     fn resume_quotes_cwd() {

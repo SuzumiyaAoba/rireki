@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::fmt::Write as _;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -53,17 +55,22 @@ impl Stamp {
         let t = m.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok());
         let t = t.map(|d| d.as_secs_f64()).unwrap_or(0.0);
         self.mtime = self.mtime.max(t);
-        self.fp.push_str(&format!("{t:.3}:{};", m.len()));
+        write!(&mut self.fp, "{t:.3}:{};", m.len()).unwrap();
     }
 }
 
 /// 読み込み対象のファイルを新しい順に列挙する
 pub fn discover() -> Vec<Job> {
-    let mut jobs: Vec<Job> = Vec::new();
     let home = dirs::home_dir().unwrap_or_default();
-
     let claude = home.join(".claude/projects");
-    for proj in read_dir(&claude) {
+    let codex = std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or(home.join(".codex")).join("sessions");
+    discover_in(&claude, &codex)
+}
+
+/// 計測とテストでは実際のホームを変更せず、同じ形式のルートを指定する
+pub(crate) fn discover_in(claude: &Path, codex: &Path) -> Vec<Job> {
+    let mut jobs: Vec<Job> = Vec::new();
+    for proj in read_dir(claude) {
         for f in read_dir(&proj) {
             if !f.extension().is_some_and(|e| e == "jsonl") {
                 continue;
@@ -85,11 +92,16 @@ pub fn discover() -> Vec<Job> {
         }
     }
 
-    let codex = std::env::var_os("CODEX_HOME").map(PathBuf::from).unwrap_or(home.join(".codex")).join("sessions");
-    let mut stack = vec![codex];
+    let mut stack = vec![codex.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        for p in read_dir(&dir) {
-            if p.is_dir() {
+        let Ok(entries) = fs::read_dir(&dir) else { continue; };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            // 列挙時の種類を使い、ログごとの is_dir の stat を省く。リンクは従来どおり辿る
+            let directory = entry.file_type().map(|kind| {
+                if kind.is_symlink() { p.is_dir() } else { kind.is_dir() }
+            }).unwrap_or_else(|_| p.is_dir());
+            if directory {
                 stack.push(p);
             } else if p.extension().is_some_and(|e| e == "jsonl") {
                 let mut st = Stamp::new();
@@ -126,6 +138,7 @@ fn read_all(p: &Path) -> Vec<u8> {
     fs::read(p).unwrap_or_default()
 }
 
+#[cfg(test)]
 fn lines(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
     memchr::memchr_iter(b'\n', buf)
         .chain(std::iter::once(buf.len()))
@@ -135,6 +148,96 @@ fn lines(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
             Some(line)
         })
         .filter(|l| !l.is_empty())
+}
+
+/// 大きなログは一定量ずつ読み、不要な巨大行は先頭だけ見て読み捨てる。
+/// 必要な行をまたぐ場合だけ、再利用するバッファに連結する
+struct BufferedLines<R> {
+    reader: R,
+    line: Vec<u8>,
+    skip: fn(&[u8]) -> bool,
+}
+
+impl<R: BufRead> BufferedLines<R> {
+    fn next_line(&mut self) -> Option<&[u8]> {
+        'line: loop {
+            self.line.clear();
+            let mut decided = false;
+            let mut skipping = false;
+            loop {
+                let buf = self.reader.fill_buf().ok()?;
+                if buf.is_empty() {
+                    return (!skipping && !self.line.is_empty() && !(self.skip)(&self.line))
+                        .then_some(self.line.as_slice());
+                }
+                let end = memchr::memchr(b'\n', buf).unwrap_or(buf.len());
+                let complete = end < buf.len();
+                if !skipping {
+                    let mut copied = 0;
+                    if !decided {
+                        copied = end.min(160 - self.line.len());
+                        self.line.extend_from_slice(&buf[..copied]);
+                        if self.line.len() == 160 || complete {
+                            skipping = (self.skip)(&self.line);
+                            decided = true;
+                        }
+                    }
+                    if !skipping {
+                        self.line.extend_from_slice(&buf[copied..end]);
+                    }
+                }
+                self.reader.consume(end + usize::from(complete));
+                if complete {
+                    if skipping || self.line.is_empty() {
+                        continue 'line;
+                    }
+                    return Some(&self.line);
+                }
+            }
+        }
+    }
+}
+
+enum LogLines {
+    Memory { bytes: Vec<u8>, offset: usize },
+    Buffered(BufferedLines<BufReader<fs::File>>),
+}
+
+impl LogLines {
+    fn open(p: &Path, skip: fn(&[u8]) -> bool) -> Self {
+        if fs::metadata(p).is_ok_and(|m| m.len() > 8 * 1024 * 1024)
+            && let Ok(file) = fs::File::open(p)
+        {
+            Self::Buffered(BufferedLines {
+                reader: BufReader::with_capacity(256 * 1024, file),
+                line: Vec::new(),
+                skip,
+            })
+        } else {
+            Self::Memory {
+                bytes: read_all(p),
+                offset: 0,
+            }
+        }
+    }
+
+    fn next_line(&mut self) -> Option<&[u8]> {
+        match self {
+            Self::Memory { bytes, offset } => loop {
+                if *offset >= bytes.len() {
+                    return None;
+                }
+                let end =
+                    memchr::memchr(b'\n', &bytes[*offset..]).map_or(bytes.len(), |i| i + *offset);
+                let start = *offset;
+                *offset = end + 1;
+                if start < end {
+                    return Some(&bytes[start..end]);
+                }
+            },
+            Self::Buffered(reader) => reader.next_line(),
+        }
+    }
 }
 
 fn ts(v: &Value) -> Option<f64> {
@@ -205,10 +308,10 @@ fn scalar(v: &Value) -> String {
 /// 結果が JSON なら整形する
 fn pretty_output(s: &str) -> String {
     let t = s.trim();
-    if t.starts_with('{') || t.starts_with('[') {
-        if let Ok(v) = serde_json::from_str::<Value>(t) {
-            return yaml(&v).join("\n");
-        }
+    if (t.starts_with('{') || t.starts_with('['))
+        && let Ok(v) = serde_json::from_str::<Value>(t)
+    {
+        return yaml(&v).join("\n");
     }
     // Codex の "[exit 0 · 0.1s]" 見出しの後ろが JSON の場合
     if let Some((head, body)) = s.split_once('\n').filter(|(h, _)| h.starts_with('[') && h.ends_with(']')) {
@@ -293,14 +396,20 @@ fn message_event(t: f64, kind: Kind, name: &str, text: &str) -> Event {
 }
 
 /// 結果を受け取るまでは Pending
-fn tool_event(t: f64, name: &str, input: &Value, call_id: Option<String>) -> Event {
+fn tool_event(
+    t: f64,
+    name: &str,
+    call_id: Option<String>,
+    summary: String,
+    input: String,
+) -> Event {
     Event {
         start: t,
         end: t,
         kind: if is_agent_tool(name) { Kind::Agent } else { Kind::Tool },
         name: name.into(),
-        summary: summarize_input(name, input),
-        input: pretty(input),
+        summary,
+        input,
         output: String::new(),
         call_id,
         row: None,
@@ -618,23 +727,23 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
     let mut models = Interner::default();
     let mut usage_ix: HashMap<String, usize> = HashMap::new();
 
-    let buf = read_all(p);
-    for line in lines(&buf) {
+    let mut lines = LogLines::open(p, |_| false);
+    while let Some(line) = lines.next_line() {
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        if cwd.is_empty() {
-            if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
-                cwd = c.into();
-            }
+        if cwd.is_empty()
+            && let Some(c) = v.get("cwd").and_then(|c| c.as_str())
+        {
+            cwd = c.into();
         }
         if let Some(e) = v.get("entrypoint").and_then(|e| e.as_str()) {
             headless |= e.starts_with("sdk");
         }
-        if session_id.is_empty() {
-            if let Some(c) = v.get("sessionId").and_then(|c| c.as_str()) {
-                session_id = c.into();
-            }
+        if session_id.is_empty()
+            && let Some(c) = v.get("sessionId").and_then(|c| c.as_str())
+        {
+            session_id = c.into();
         }
         if let Some(b) = v.get("gitBranch").and_then(|b| b.as_str()).filter(|b| !b.is_empty() && *b != "HEAD")
             && branch != b
@@ -647,10 +756,13 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
             version = x.into();
         }
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        if ty == "ai-title" || ty == "summary" {
-            if let Some(s) = v.get("aiTitle").or(v.get("summary")).and_then(|s| s.as_str()) {
-                title = s.into();
-            }
+        if (ty == "ai-title" || ty == "summary")
+            && let Some(s) = v
+                .get("aiTitle")
+                .or(v.get("summary"))
+                .and_then(|s| s.as_str())
+        {
+            title = s.into();
         }
         if ty == "assistant" {
             if lane.model.is_empty()
@@ -725,13 +837,17 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                         Some("tool_use") => {
                             let name = it.get("name").and_then(|x| x.as_str()).unwrap_or("?");
                             let id = it.get("id").and_then(|x| x.as_str()).map(String::from);
-                            let input = it.get("input").cloned().unwrap_or(Value::Null);
+                            let input = it.get("input").unwrap_or(&Value::Null);
                             if let Some(id) = &id {
                                 pending.0.insert(id.clone(), lane.events.len());
                             }
-                            let mut ev = tool_event(t, name, &input, id);
-                            ev.input = claude_input(name, &input);
-                            lane.events.push(ev);
+                            lane.events.push(tool_event(
+                                t,
+                                name,
+                                id,
+                                summarize_input(name, input),
+                                claude_input(name, input),
+                            ));
                         }
                         _ => {}
                     }
@@ -794,7 +910,11 @@ fn load_claude(p: &Path) -> Vec<Loaded> {
     }
 
     vec![Loaded::Session(Session {
-        id: parsed.session_id.is_empty().then(|| id.clone()).unwrap_or(parsed.session_id),
+        id: if parsed.session_id.is_empty() {
+            id.clone()
+        } else {
+            parsed.session_id
+        },
         source: Source::Claude,
         cwd: parsed.cwd,
         headless: parsed.headless,
@@ -831,6 +951,14 @@ static KEEP_EVENTS: std::sync::LazyLock<[memchr::memmem::Finder<'static>; 2]> = 
     ["\"type\":\"thread_goal_updated\"", "\"type\":\"turn_aborted\""].map(memchr::memmem::Finder::new)
 });
 
+fn skip_codex_line(line: &[u8]) -> bool {
+    let head = &line[..line.len().min(160)];
+    let ctx = SKIP[1].find(head).is_some();
+    let tc = memchr::memmem::find(head, b"\"type\":\"token_count\"").is_some();
+    let keep = SKIP[0].find(head).is_some() && KEEP_EVENTS.iter().any(|f| f.find(head).is_some());
+    !ctx && !tc && !keep && SKIP.iter().any(|f| f.find(head).is_some())
+}
+
 /// ツール出力の本文。新しい形式では `[{type: input_text, text}, ...]` に分かれている
 fn codex_output_text(o: Option<&Value>) -> String {
     match o {
@@ -859,15 +987,12 @@ fn load_codex(p: &Path) -> Option<Loaded> {
     let mut model: Option<Arc<str>> = None;
     let token_count = memchr::memmem::Finder::new("\"type\":\"token_count\"");
 
-    let buf = read_all(p);
-    for line in lines(&buf) {
+    let mut lines = LogLines::open(p, skip_codex_line);
+    while let Some(line) = lines.next_line() {
         // 巨大で不要な行は JSON パース前に捨てる
         let head = &line[..line.len().min(160)];
-        // turn_context はモデルとエフォートを拾うため最初の 1 行だけ読む
-        let ctx = SKIP[1].find(head).is_some();
         let tc = token_count.find(head).is_some();
-        let keep = SKIP[0].find(head).is_some() && KEEP_EVENTS.iter().any(|f| f.find(head).is_some());
-        if !ctx && !tc && !keep && SKIP.iter().any(|f| f.find(head).is_some()) {
+        if skip_codex_line(line) {
             continue;
         }
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
@@ -975,18 +1100,24 @@ fn load_codex(p: &Path) -> Option<Loaded> {
             }
             "function_call" | "custom_tool_call" | "local_shell_call" | "web_search_call" => {
                 let name = pl.get("name").and_then(|x| x.as_str()).unwrap_or(pty);
-                let raw = pl.get("arguments").or(pl.get("input")).or(pl.get("action")).cloned().unwrap_or(Value::Null);
+                let raw = pl
+                    .get("arguments")
+                    .or(pl.get("input"))
+                    .or(pl.get("action"))
+                    .unwrap_or(&Value::Null);
                 // arguments は JSON 文字列のことが多い
-                let input = match &raw {
-                    Value::String(s) => serde_json::from_str::<Value>(s).ok().filter(|v| v.is_object()).unwrap_or(raw),
-                    _ => raw,
-                };
+                let decoded = raw
+                    .as_str()
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .filter(Value::is_object);
+                let input = decoded.as_ref().unwrap_or(raw);
                 let call_id = pl.get("call_id").and_then(|x| x.as_str()).map(String::from);
                 if let Some(c) = &call_id {
                     pending.0.insert(c.clone(), lane.events.len());
                 }
-                let mut ev = tool_event(t, name, &input, call_id);
-                (ev.name, ev.summary, ev.input) = codex_tool(name, &input);
+                let (display_name, summary, formatted) = codex_tool(name, input);
+                let mut ev = tool_event(t, name, call_id, summary, formatted);
+                ev.name = display_name;
                 lane.events.push(ev);
             }
             "function_call_output" | "custom_tool_call_output" => {
@@ -1580,6 +1711,139 @@ fn codex_output(s: &str) -> (String, Status) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DiscoveryFixture(PathBuf);
+
+    impl DiscoveryFixture {
+        fn new() -> Self {
+            let nonce = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!("rireki-discovery-{}-{nonce}", std::process::id()));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn file(&self, path: &str, size: usize, seconds: u64) -> PathBuf {
+            let path = self.0.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, vec![b'x'; size]).unwrap();
+            fs::File::open(&path).unwrap().set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds)).unwrap();
+            path
+        }
+
+        fn scan(&self) -> Vec<Job> {
+            discover_in(&self.0.join("claude"), &self.0.join("codex"))
+        }
+    }
+
+    impl Drop for DiscoveryFixture {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn discovery_keeps_fingerprints_subagent_order_and_detects_changes() {
+        let fixture = DiscoveryFixture::new();
+        fixture.file("claude/project/one.jsonl", 1, 1000);
+        fixture.file("claude/project/one/subagents/z.jsonl", 3, 1020);
+        fixture.file("claude/project/one/subagents/a.jsonl", 2, 1010);
+        fixture.file("claude/project/one/subagents/note.txt", 4, 1030);
+        fixture.file("claude/project/agent-old.jsonl", 5, 1040);
+        fixture.file("claude/project/agent-old/subagents/ignored.jsonl", 6, 9999);
+        fixture.file("codex/2026/10/05/a.jsonl", 7, 1100);
+        fixture.file("codex/2026/10/05/b.jsonl", 8, 1200);
+        fixture.file("codex/ignored.txt", 9, 9999);
+        let jobs = fixture.scan();
+        let records: Vec<_> = jobs.iter().map(|j| (j.path.strip_prefix(&fixture.0).unwrap().to_string_lossy().into_owned(), j.kind, j.mtime, j.fingerprint.as_str())).collect();
+        assert_eq!(records, vec![
+            ("codex/2026/10/05/b.jsonl".into(), JobKind::Codex, 1200.0, "1200.000:8;"),
+            ("codex/2026/10/05/a.jsonl".into(), JobKind::Codex, 1100.0, "1100.000:7;"),
+            ("claude/project/agent-old.jsonl".into(), JobKind::ClaudeLegacyAgent, 1040.0, "1040.000:5;"),
+            ("claude/project/one.jsonl".into(), JobKind::Claude, 1030.0, "1000.000:1;1010.000:2;1030.000:4;1020.000:3;"),
+        ]);
+        fixture.file("claude/project/one/subagents/b.jsonl", 10, 1050);
+        fixture.file("codex/2026/10/05/a.jsonl", 11, 1150);
+        fs::rename(fixture.0.join("codex/2026/10/05/b.jsonl"), fixture.0.join("codex/2026/10/05/b.jsonl.bak")).unwrap();
+        let jobs = fixture.scan();
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[0].fingerprint, "1150.000:11;");
+        let parent = jobs.iter().find(|j| j.kind == JobKind::Claude).unwrap();
+        assert_eq!(parent.mtime, 1050.0);
+        assert_eq!(parent.fingerprint, "1000.000:1;1010.000:2;1050.000:10;1030.000:4;1020.000:3;");
+        fs::remove_file(fixture.0.join("claude/project/one/subagents/a.jsonl")).unwrap();
+        assert_eq!(fixture.scan().iter().find(|j| j.kind == JobKind::Claude).unwrap().fingerprint,
+            "1000.000:1;1050.000:10;1030.000:4;1020.000:3;");
+        assert!(discover_in(&fixture.0.join("missing-a"), &fixture.0.join("missing-b")).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_follows_file_and_directory_links_and_keeps_missing_log_behavior() {
+        use std::os::unix::fs::symlink;
+        let fixture = DiscoveryFixture::new();
+        let log = fixture.file("codex/year/day/log.jsonl", 5, 1000);
+        symlink(&log, fixture.0.join("codex/linked.jsonl")).unwrap();
+        symlink(fixture.0.join("codex/year"), fixture.0.join("codex/alias")).unwrap();
+        symlink(fixture.0.join("absent"), fixture.0.join("codex/missing.jsonl")).unwrap();
+        let mut jobs = fixture.scan();
+        jobs.sort_by(|a, b| a.path.cmp(&b.path));
+        let records: Vec<_> = jobs.iter().map(|j| (j.path.strip_prefix(fixture.0.join("codex")).unwrap().to_string_lossy().into_owned(), j.mtime, j.fingerprint.as_str())).collect();
+        assert_eq!(records, vec![
+            ("alias/day/log.jsonl".into(), 1000.0, "1000.000:5;"),
+            ("linked.jsonl".into(), 1000.0, "1000.000:5;"),
+            ("missing.jsonl".into(), 0.0, ""),
+            ("year/day/log.jsonl".into(), 1000.0, "1000.000:5;"),
+        ]);
+        assert!(jobs.iter().all(|j| j.kind == JobKind::Codex));
+    }
+
+    #[test]
+    fn buffered_lines_preserve_bytes_and_skip_across_boundaries() {
+        let mut input = b"\nabc\r\n".to_vec();
+        input.extend_from_slice(
+            b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"text\":\"",
+        );
+        input.extend(std::iter::repeat_n(b'x', 2_000_000));
+        input.extend_from_slice(
+            b"\"}}\n{\"type\":\"turn_context\",\"payload\":{\"model\":\"m\"}}\n",
+        );
+        input.extend_from_slice(b"\xff\n\n");
+        input.extend_from_slice("日本語の最後の行".as_bytes());
+        let expected: Vec<_> = lines(&input)
+            .filter(|l| !skip_codex_line(l))
+            .map(<[u8]>::to_vec)
+            .collect();
+        for cap in [1, 7, 159, 160, 161, 256 * 1024] {
+            let mut reader = BufferedLines {
+                reader: BufReader::with_capacity(cap, input.as_slice()),
+                line: Vec::new(),
+                skip: skip_codex_line,
+            };
+            let mut actual = Vec::new();
+            while let Some(line) = reader.next_line() {
+                actual.push(line.to_vec());
+            }
+            assert_eq!(actual, expected, "buffer capacity={cap}");
+            assert!(
+                reader.line.capacity() < 1024,
+                "不要な巨大行を保持していないこと"
+            );
+        }
+    }
+
+    #[test]
+    fn buffered_lines_keep_long_required_rows_and_final_skipped_row() {
+        let input = format!(
+            "{}\n\n{}",
+            "日本語".repeat(1000),
+            "{\"type\":\"world_state\",\"payload\":{}}"
+        );
+        let mut reader = BufferedLines {
+            reader: BufReader::with_capacity(17, input.as_bytes()),
+            line: Vec::new(),
+            skip: skip_codex_line,
+        };
+        assert_eq!(reader.next_line(), Some("日本語".repeat(1000).as_bytes()));
+        assert_eq!(reader.next_line(), None);
+    }
 
     /// 保存された JS を詳細表示用に整形し、モック実行の見出しを除く
     fn detail(d: &str) -> String {

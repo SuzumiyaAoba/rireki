@@ -5,8 +5,11 @@
 //! バイト長を変えないので、一致した位置をそのまま元の文字列の位置として使える。
 
 use memchr::memmem;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, VecDeque};
+use std::sync::{Arc, Weak};
 
-use crate::model::{Session, Store};
+use crate::model::Session;
 
 /// 1 セッション分の検索用テキスト
 struct Text {
@@ -23,7 +26,12 @@ fn build(s: &Session) -> Text {
         .lanes
         .iter()
         .map(|l| {
-            let mut buf = Vec::new();
+            let bytes = l
+                .events
+                .iter()
+                .map(|e| e.name.len() + e.summary.len() + 2)
+                .sum();
+            let mut buf = Vec::with_capacity(bytes);
             let mut starts = Vec::with_capacity(l.events.len());
             for e in &l.events {
                 starts.push(buf.len() as u32);
@@ -41,7 +49,7 @@ fn build(s: &Session) -> Text {
 
 #[derive(Default)]
 pub struct Index {
-    sessions: Vec<Option<Text>>,
+    sessions: Vec<Option<(Weak<Session>, Text)>>,
 }
 
 /// イベントの一致
@@ -54,6 +62,33 @@ pub struct Hit {
     pub at: (u32, u32),
     /// イベントの開始時刻（並べ替え用）
     start: f64,
+}
+
+fn newest(a: &Hit, b: &Hit) -> Ordering {
+    a.start
+        .total_cmp(&b.start)
+        .then((a.session, a.lane, a.event).cmp(&(b.session, b.lane, b.event)))
+}
+
+/// 上限を超えたら最も古い一致を取り除くため、古い順の最大ヒープにする
+#[derive(Clone, Copy)]
+struct Oldest(Hit);
+
+impl PartialEq for Oldest {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+impl Eq for Oldest {}
+impl PartialOrd for Oldest {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for Oldest {
+    fn cmp(&self, other: &Self) -> Ordering {
+        newest(&other.0, &self.0)
+    }
 }
 
 #[derive(Default)]
@@ -74,60 +109,93 @@ impl Results {
 }
 
 impl Index {
-    /// 更新されたセッションの検索用テキストを捨てる（次の検索で作り直す）
-    pub fn invalidate(&mut self, touched: &[usize]) {
-        for &i in touched {
-            if let Some(t) = self.sessions.get_mut(i) {
-                *t = None;
-            }
-        }
+    /// `scope` のセッションから探す。空白で区切った語はすべてを含むものだけを返す（大文字・小文字は区別しない）
+    pub fn search(&mut self, sessions: &[Arc<Session>], scope: &[usize], query: &str, limit: usize) -> Results {
+        self.search_while(sessions, scope, query, limit, || true).unwrap()
     }
 
-    /// `scope` のセッションから探す。空白で区切った語はすべてを含むものだけを返す（大文字・小文字は区別しない）
-    pub fn search(&mut self, store: &Store, scope: &[usize], query: &str, limit: usize) -> Results {
+    /// 別の検索・表示範囲・データ版になった仕事を途中で打ち切る
+    pub fn search_while(&mut self, sessions: &[Arc<Session>], scope: &[usize], query: &str, limit: usize, current: impl Fn() -> bool) -> Option<Results> {
+        if !current() { return None; }
         let terms: Vec<Vec<u8>> = query.split_whitespace().map(|t| t.to_ascii_lowercase().into_bytes()).collect();
         let Some((first, rest)) = terms.split_first() else {
-            return Results::default();
+            return Some(Results::default());
         };
-        if self.sessions.len() < store.sessions.len() {
-            self.sessions.resize_with(store.sessions.len(), || None);
+        if self.sessions.len() < sessions.len() {
+            self.sessions.resize_with(sessions.len(), || None);
         }
         let finder = memmem::Finder::new(first);
         let others: Vec<memmem::Finder> = rest.iter().map(memmem::Finder::new).collect();
         let mut out = Results::default();
-        let mut hits = Vec::new();
+        let mut hits: BinaryHeap<Oldest> = BinaryHeap::new();
+        let mut candidates = VecDeque::new();
         for &si in scope {
-            let text = self.sessions[si].get_or_insert_with(|| build(&store.sessions[si]));
-            if terms.iter().all(|t| memmem::find(&text.head, t).is_some()) {
+            if !current() { return None; }
+            // 弱参照は旧版の本文を保持しない。同じセッションの版が変われば自動で作り直す
+            let version = Arc::downgrade(&sessions[si]);
+            if self.sessions[si].as_ref().is_none_or(|(old, _)| !old.ptr_eq(&version)) {
+                self.sessions[si] = Some((version, build(&sessions[si])));
+            }
+            let text = &self.sessions[si].as_ref().unwrap().1;
+            if finder.find(&text.head).is_some()
+                && others.iter().all(|f| f.find(&text.head).is_some())
+            {
                 out.sessions.push(si);
             }
             for (li, (buf, starts)) in text.lanes.iter().enumerate() {
-                let events = &store.sessions[si].lanes[li].events;
+                if !current() { return None; }
+                let events = &sessions[si].lanes[li].events;
                 // 1 イベントにつき 1 件だけ拾い、見つかったら次のイベントの先頭から探し直す
                 let mut from = 0;
+                let mut k = 0;
+                let mut scanned = 0usize;
+                candidates.clear();
                 while let Some(p) = finder.find(&buf[from..]).map(|p| p + from) {
-                    let k = starts.partition_point(|&s| s as usize <= p) - 1;
+                    if scanned.is_multiple_of(1024) && !current() { return None; }
+                    scanned += 1;
+                    // 密な一致では次のイベントへ進むだけ。疎な一致では二分探索して飛ばす
+                    if starts.get(k + 1).is_some_and(|&s| s as usize <= p) {
+                        k += 1;
+                        if starts.get(k + 1).is_some_and(|&s| s as usize <= p) {
+                            k += starts[k..].partition_point(|&s| s as usize <= p) - 1;
+                        }
+                    }
                     let a = starts[k] as usize;
                     let b = starts.get(k + 1).map_or(buf.len(), |&e| e as usize);
                     if others.iter().all(|f| f.find(&buf[a..b]).is_some()) {
+                        out.total += 1;
                         let at = ((p - a) as u32, (p - a + first.len()) as u32);
-                        hits.push(Hit { session: si, lane: li, event: k, at, start: events[k].start });
+                        if limit > 0 {
+                            if candidates.len() == limit {
+                                candidates.pop_front();
+                            }
+                            candidates.push_back(Hit {
+                                session: si,
+                                lane: li,
+                                event: k,
+                                at,
+                                start: events[k].start,
+                            });
+                        }
                     }
                     from = b;
                 }
+                // 時刻順のレーンでは末尾の limit 件だけが、全体の上位に入りうる
+                for hit in candidates.drain(..) {
+                    if hits.len() < limit {
+                        hits.push(Oldest(hit));
+                    } else if let Some(mut oldest) = hits.peek_mut()
+                        && newest(&hit, &oldest.0).is_gt()
+                    {
+                        *oldest = Oldest(hit);
+                    }
+                }
             }
         }
-        out.total = hits.len();
-        // 新しい順に上限まで。全体を並べ替えず、上位だけを選んでから並べる
-        let newer = |a: &Hit, b: &Hit| b.start.total_cmp(&a.start);
-        if hits.len() > limit {
-            hits.select_nth_unstable_by(limit, newer);
-            hits.truncate(limit);
-        }
-        hits.sort_by(newer);
-        out.events = hits;
-        out.sessions.sort_by(|&a, &b| store.sessions[b].end.total_cmp(&store.sessions[a].end));
-        out
+        out.events = hits.into_iter().map(|h| h.0).collect();
+        out.events.sort_by(|a, b| newest(b, a));
+        out.sessions.sort_by(|&a, &b| sessions[b].end.total_cmp(&sessions[a].end));
+        current().then_some(out)
     }
 }
 
@@ -142,7 +210,7 @@ pub fn find(hay: &str, term: &str) -> Option<std::ops::Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Event, Kind, Lane, Loaded, Source};
+    use crate::model::{Event, Kind, Lane, Loaded, Source, Store};
 
     fn session(id: &str, title: &str, events: &[(&str, &str, f64)]) -> Loaded {
         let mut lane = Lane::new("main");
@@ -190,18 +258,17 @@ mod tests {
             ("b".to_string(), vec![session("s2", "日本語の作業", &[("Bash", "Cargo build --release", 3.0)])]),
         ]);
         let mut ix = Index::default();
-        let r = ix.search(&store, &[0, 1], "CARGO", 10);
+        let r = ix.search(&store.sessions, &[0, 1], "CARGO", 10);
         assert_eq!(r.events.iter().map(|h| h.session).collect::<Vec<_>>(), [1, 0]);
         // 「名前 要約」の中の位置
         assert_eq!(r.events[0].at, (5, 10));
-        assert_eq!(ix.search(&store, &[0, 1], "bash test", 10).events.len(), 1);
-        assert_eq!(ix.search(&store, &[0, 1], "parser", 10).sessions, [0]);
-        assert_eq!(ix.search(&store, &[0, 1], "作業", 10).sessions, [1]);
-        assert_eq!(ix.search(&store, &[1], "test", 10).total, 0);
+        assert_eq!(ix.search(&store.sessions, &[0, 1], "bash test", 10).events.len(), 1);
+        assert_eq!(ix.search(&store.sessions, &[0, 1], "parser", 10).sessions, [0]);
+        assert_eq!(ix.search(&store.sessions, &[0, 1], "作業", 10).sessions, [1]);
+        assert_eq!(ix.search(&store.sessions, &[1], "test", 10).total, 0);
         // 更新されたセッションは作り直す
         store.replace([("a".to_string(), vec![session("s1", "Fix Parser", &[("Bash", "make", 1.0)])])]);
-        ix.invalidate(&[0]);
-        assert_eq!(ix.search(&store, &[0, 1], "cargo", 10).total, 1);
+        assert_eq!(ix.search(&store.sessions, &[0, 1], "cargo", 10).total, 1);
     }
 
     #[test]
@@ -209,5 +276,77 @@ mod tests {
         assert_eq!(find("Run Cargo Test", "cargo"), Some(4..9));
         assert_eq!(find("日本語 abc", "abc"), Some(10..13));
         assert_eq!(find("abc", "x"), None);
+    }
+
+    #[test]
+    fn snapshots_and_cached_text_keep_their_own_data_version() {
+        let mut store = Store::default();
+        store.replace([("a".into(), vec![session("s", "old", &[("Bash", "cargo test", 1.0)])])]);
+        let old = store.snapshot();
+        let mut ix = Index::default();
+        let strong = Arc::strong_count(&old.sessions[0]);
+        assert_eq!(ix.search(&old.sessions, &[0], "cargo", 10).total, 1);
+        assert_eq!(Arc::strong_count(&old.sessions[0]), strong, "検索のキャッシュは本文を保持しない");
+        store.replace([("a".into(), vec![session("s", "new", &[("Bash", "make", 2.0)])])]);
+        assert!(!Arc::ptr_eq(&old.sessions[0], &store.sessions[0]));
+        assert_eq!(ix.search(&store.sessions, &[0], "cargo", 10).total, 0);
+        assert_eq!(ix.search(&store.sessions, &[0], "make", 10).total, 1);
+        assert_eq!(ix.search(&old.sessions, &[0], "cargo", 10).total, 1);
+        assert_eq!(old.sessions[0].title, "old");
+        assert_eq!(store.sessions[0].title, "new");
+    }
+
+    #[test]
+    fn canceled_search_stops_inside_a_dense_lane_and_can_be_reused() {
+        let mut store = Store::default();
+        let events: Vec<_> = (0..10_000).map(|i| ("Bash", "cargo test", i as f64)).collect();
+        store.replace([("a".into(), vec![session("s", "test", &events)])]);
+        let mut ix = Index::default();
+        assert!(ix.search_while(&store.sessions, &[0], "cargo", 10, || false).is_none());
+        assert!(ix.sessions.is_empty());
+        let checks = std::cell::Cell::new(0);
+        assert!(ix.search_while(&store.sessions, &[0], "cargo", 10, || {
+            checks.set(checks.get() + 1);
+            checks.get() < 6
+        }).is_none());
+        assert_eq!(checks.get(), 6);
+        let r = ix.search(&store.sessions, &[0], "cargo", 10);
+        assert_eq!(r.total, 10_000);
+        assert_eq!(r.events.iter().map(|h| h.event).collect::<Vec<_>>(), (9990..10000).rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn limited_results_match_full_search_across_lanes_and_ties() {
+        let mut store = Store::default();
+        for si in 0..7 {
+            let events: Vec<_> = (0..250)
+                .map(|i| {
+                    (
+                        "Bash",
+                        if i % 9 == 0 {
+                            "cargo test"
+                        } else {
+                            "cargo build"
+                        },
+                        (i / 3 + si * 5) as f64,
+                    )
+                })
+                .collect();
+            store.replace([(
+                format!("file-{si}"),
+                vec![session(&format!("s{si}"), "test", &events)],
+            )]);
+        }
+        let mut ix = Index::default();
+        let scope = [4, 1, 6, 0, 3, 5, 2];
+        for query in ["cargo", "cargo test", "build", "bash test", "missing"] {
+            let all = ix.search(&store.sessions, &scope, query, usize::MAX);
+            for limit in [0, 1, 3, 500, 2000] {
+                let limited = ix.search(&store.sessions, &scope, query, limit);
+                assert_eq!(limited.total, all.total);
+                assert_eq!(limited.events, all.events[..all.events.len().min(limit)]);
+                assert_eq!(limited.sessions, all.sessions);
+            }
+        }
     }
 }

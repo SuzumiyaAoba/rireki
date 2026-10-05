@@ -39,7 +39,7 @@ impl Rireki {
             (None, SourceFilter::Codex) => "Codex の履歴を検索".to_string(),
         };
         self.search_input.update(cx, |i, _| i.set_placeholder(placeholder));
-        let body = if self.results.is_some() { self.search_results(cx) } else { self.navigator(cx) };
+        let body = if self.results.is_some() { self.search_results(window, cx) } else { self.navigator(cx) };
         div()
             .size_full()
             .flex()
@@ -350,23 +350,39 @@ impl Rireki {
         row + (i - ns)
     }
 
-    fn search_results(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(r) = &self.results else {
-            return div().into_any_element();
-        };
+    fn search_results(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(r) = &self.results else { return div().into_any_element() };
+        let count = 1 + r.sessions.len() + r.events.len()
+            + usize::from(!r.sessions.is_empty()) + usize::from(!r.events.is_empty())
+            + usize::from(r.len() == 0);
+        let key = (self.search_gen.load(super::Ordering::Relaxed), count, self.pane_full_widths(window).0.to_bits());
+        let old = self.result_list_key.replace(key);
+        if (old.0, old.1) != (key.0, key.1) {
+            self.result_list.reset(count);
+        } else if old.2 != key.2 {
+            // 折り返しで高さが変わる。現在の項目を保ち、画面外の高さも測り直す
+            self.result_list.splice(0..count, count);
+        }
         let terms: Vec<String> = self.query.split_whitespace().map(|t| t.to_ascii_lowercase()).collect();
-        let filtered = self.focus.is_some() || self.source != SourceFilter::All;
-        let mut list =
-            div().id("sidebar-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.sidebar_scroll).pb_3();
-        let summary = if r.len() == 0 {
-            "一致する履歴はありません".to_string()
-        } else if r.total > r.events.len() {
-            format!("{} 件（新しい {} 件を表示）", r.sessions.len() + r.total, r.events.len())
-        } else {
-            format!("{} 件", r.len())
-        };
-        list = list.child(
-            div()
+        let weak = cx.weak_entity();
+        gpui::list(self.result_list.clone(), move |row, _, cx| {
+            weak.upgrade().map_or_else(|| div().into_any_element(), |app| {
+                app.update(cx, |app, cx| app.search_result_item(row, &terms, cx))
+            })
+        }).flex_1().min_h_0().pb_3().into_any_element()
+    }
+
+    fn search_result_item(&self, row: usize, terms: &[String], cx: &mut Context<Self>) -> AnyElement {
+        let Some(r) = &self.results else { return div().into_any_element() };
+        let ns = r.sessions.len();
+        if row == 0 {
+            let filtered = self.focus.is_some() || self.source != SourceFilter::All;
+            let summary = if self.searching { "検索中…".to_string() }
+                else if r.len() == 0 { "一致する履歴はありません".to_string() }
+                else if r.total > r.events.len() {
+                    format!("{} 件（新しい {} 件を表示）", r.sessions.len() + r.total, r.events.len())
+                } else { format!("{} 件", r.len()) };
+            return div()
                 .mx_3()
                 .mt_2()
                 .mb_1()
@@ -395,23 +411,23 @@ impl Rireki {
                                     .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
                                         t.source = SourceFilter::All;
                                         t.set_focus(None, cx);
-                                        t.refresh_results();
                                         t.sidebar_changed(cx);
                                         cx.notify();
                                     })),
                             ),
                     )
-                }),
-        );
-        let ns = r.sessions.len();
+                }).into_any_element();
+        }
+        let mut row = row - 1;
         if ns > 0 {
-            list = list.child(result_heading("セッション", ns));
-            for (i, &si) in r.sessions.iter().enumerate() {
-                let s = &self.store.sessions[si];
+            if row == 0 { return result_heading("セッション", ns).into_any_element(); }
+            row -= 1;
+            if row < ns {
+                let i = row;
+                let s = &self.store.sessions[r.sessions[i]];
                 let (logo, logo_color) = icons::source_icon(s.source);
                 let title = title_of(&s.title);
-                list = list.child(
-                    self.result_row_frame(i)
+                return self.result_row_frame(i)
                         .child(icons::icon(logo, logo_color))
                         .child(
                             div()
@@ -419,36 +435,33 @@ impl Rireki {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .child(div().truncate().child(highlight(&title, &terms)))
+                                .child(div().truncate().child(highlight(&title, terms)))
                                 .child(div().text_xs().text_color(c(theme::MUTED)).truncate().child(format!(
                                     "{} · {}",
                                     self.project_name(&s.cwd),
                                     rel_time(s.end)
                                 ))),
                         )
-                        .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.click_result(i, window, cx))),
-                );
+                        .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.click_result(i, window, cx))).into_any_element();
             }
+            row -= ns;
         }
         if !r.events.is_empty() {
-            list = list.child(result_heading("イベント", r.total));
-            for (k, h) in r.events.iter().enumerate() {
-                let i = ns + k;
-                let s = &self.store.sessions[h.session];
-                let e = &s.lanes[h.lane].events[h.event];
-                let (color, ic) = (theme::event_color(e), theme::event_icon(e));
-                // 一致した位置が要約の中なら、その周辺を切り出して強調する
-                let name_len = e.name.len() as u32;
-                let summary: SharedString = if h.at.0 > name_len {
-                    let a = (h.at.0 - name_len - 1) as usize;
-                    let b = (h.at.1 - name_len - 1) as usize;
-                    snippet(&e.summary, a..b).into()
-                } else {
-                    one_line(&e.summary, 120).into()
-                };
-                let lane_name = (h.lane != 0).then(|| s.lanes[h.lane].name.clone());
-                list = list.child(
-                    self.result_row_frame(i)
+            if row == 0 { return result_heading("イベント", r.total).into_any_element(); }
+            let k = row - 1;
+            let Some(h) = r.events.get(k) else { return div().into_any_element() };
+            let i = ns + k;
+            let s = &self.store.sessions[h.session];
+            let e = &s.lanes[h.lane].events[h.event];
+            let (color, ic) = (theme::event_color(e), theme::event_icon(e));
+            let name_len = e.name.len() as u32;
+            let summary: SharedString = if h.at.0 > name_len {
+                let a = (h.at.0 - name_len - 1) as usize;
+                let b = (h.at.1 - name_len - 1) as usize;
+                snippet(&e.summary, a..b).into()
+            } else { one_line(&e.summary, 120).into() };
+            let lane_name = (h.lane != 0).then(|| s.lanes[h.lane].name.clone());
+            return self.result_row_frame(i)
                         .items_start()
                         .child(div().pt(px(2.0)).child(event_icon(ic, color, 13.0)))
                         .child(
@@ -468,7 +481,7 @@ impl Rireki {
                                                 .flex_none()
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(c(color))
-                                                .child(highlight(&e.name, &terms)),
+                                                .child(highlight(&e.name, terms)),
                                         )
                                         .child(div().flex_1().min_w_0().truncate().text_color(c(theme::MUTED)).child(
                                             match &lane_name {
@@ -483,17 +496,13 @@ impl Rireki {
                                         div()
                                             .line_clamp(2)
                                             .text_color(c(theme::TEXT))
-                                            .child(highlight(&summary, &terms)),
+                                            .child(highlight(&summary, terms)),
                                     )
                                 }),
                         )
-                        .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.click_result(i, window, cx))),
-                );
-            }
+                        .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.click_result(i, window, cx))).into_any_element();
         }
-        if r.len() == 0 {
-            list = list.child(
-                div()
+        if r.len() == 0 { return div()
                     .mx_3()
                     .mt_4()
                     .flex()
@@ -502,10 +511,8 @@ impl Rireki {
                     .text_xs()
                     .text_color(c(theme::SUBTLE))
                     .child("セッションのタイトル・ディレクトリと、ツール呼び出しやメッセージの要約から探します。")
-                    .child("空白で区切ると、すべての語を含むものに絞り込みます。"),
-            );
-        }
-        list.into_any_element()
+                    .child("空白で区切ると、すべての語を含むものに絞り込みます。").into_any_element(); }
+        div().into_any_element()
     }
 
     /// 検索結果をクリックで開く。入力欄にフォーカスを戻し、続けて ↑↓ で選べるようにする

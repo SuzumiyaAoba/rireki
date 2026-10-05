@@ -234,6 +234,8 @@ pub struct Lane {
     pub origin: String,
     /// events[..=i] の end の最大値。表示範囲の先頭を二分探索するのに使う
     pub cum_end: Vec<f64>,
+    /// events[..=i] の Tool の end の最大値。Agent の長時間実行を起動候補に含めない
+    pub cum_tool_end: Vec<f64>,
     /// 起動元ツール呼び出しの時刻（Session::finalize で確定）
     pub spawn_t: Option<f64>,
 }
@@ -248,6 +250,7 @@ impl Lane {
             events: Vec::new(),
             origin: String::new(),
             cum_end: Vec::new(),
+            cum_tool_end: Vec::new(),
             spawn_t: None,
         }
     }
@@ -286,20 +289,32 @@ impl Session {
     /// レーン構成が変わった後に、描画で使う派生データを作り直す
     pub fn finalize(&mut self) {
         for l in &mut self.lanes {
-            let mut m = f64::NEG_INFINITY;
-            l.cum_end = l
-                .events
-                .iter()
-                .map(|e| {
-                    m = m.max(e.end);
-                    m
-                })
-                .collect();
+            let (mut m, mut tool) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+            l.cum_end.clear();
+            l.cum_tool_end.clear();
+            l.cum_end.reserve(l.events.len());
+            l.cum_tool_end.reserve(l.events.len());
+            for e in &l.events {
+                m = m.max(e.end);
+                if e.kind == Kind::Tool { tool = tool.max(e.end); }
+                l.cum_end.push(m);
+                l.cum_tool_end.push(tool);
+            }
         }
-        let ranges: Vec<_> = self.lanes.iter().filter_map(|l| l.range()).collect();
-        self.start = ranges.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
-        self.end = ranges.iter().map(|r| r.1).fold(f64::NEG_INFINITY, f64::max);
-        self.parents = self.lane_parents();
+        (self.start, self.end) = self.lanes.iter().filter_map(Lane::range).fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(a, b), (start, end)| (a.min(start), b.max(end)),
+        );
+        // 起動元のレーンと時刻を一度の走査で索引化する。子ごとに親の全イベントを探し直さない
+        let mut owner = HashMap::new();
+        for (li, lane) in self.lanes.iter().enumerate() {
+            for e in &lane.events {
+                if let Some(id) = e.call_id.as_deref() {
+                    owner.entry(id).or_insert((li, e.start));
+                }
+            }
+        }
+        self.parents = self.lane_parents(&owner);
         self.tree = self.lane_tree();
         let spawn: Vec<Option<f64>> = self
             .lanes
@@ -308,7 +323,7 @@ impl Session {
             .map(|(li, l)| {
                 let id = l.spawned_by.as_deref()?;
                 let p = self.parents.get(li).copied().flatten().unwrap_or(0);
-                self.lanes.get(p)?.events.iter().find(|e| e.call_id.as_deref() == Some(id)).map(|e| e.start)
+                owner.get(id).filter(|&&(li, _)| li == p).map(|&(_, t)| t)
             })
             .collect();
         for (l, t) in self.lanes.iter_mut().zip(spawn) {
@@ -342,21 +357,16 @@ impl Session {
     }
 
     /// 各レーンの親レーン。起動元のツール呼び出しを含むレーンを親とし、見つからなければ main
-    fn lane_parents(&self) -> Vec<Option<usize>> {
-        let mut owner: HashMap<&str, usize> = HashMap::new();
-        for (li, l) in self.lanes.iter().enumerate() {
-            for e in &l.events {
-                if let Some(id) = e.call_id.as_deref() {
-                    owner.entry(id).or_insert(li);
-                }
-            }
-        }
+    fn lane_parents(&self, owner: &HashMap<&str, (usize, f64)>) -> Vec<Option<usize>> {
         (0..self.lanes.len())
             .map(|li| {
                 if li == 0 {
                     return None;
                 }
-                let p = self.lanes[li].spawned_by.as_deref().and_then(|id| owner.get(id).copied());
+                let p = self.lanes[li]
+                    .spawned_by
+                    .as_deref()
+                    .and_then(|id| owner.get(id).map(|&(li, _)| li));
                 Some(p.filter(|&p| p != li).unwrap_or(0))
             })
             .collect()
@@ -372,11 +382,24 @@ impl Session {
 /// レーンは読み込み元ファイル (origin) 単位で差し替えられる
 #[derive(Default)]
 pub struct Store {
-    pub sessions: Vec<Session>,
+    pub sessions: Vec<Arc<Session>>,
     index: HashMap<String, usize>,
     orphans: HashMap<String, Vec<Lane>>,
     /// origin → そのファイル由来のレーンを持つセッション
     origins: HashMap<String, Vec<usize>>,
+}
+
+/// 描画と検索が共有する読み取り専用の版。イベント本文を複製せずに背景へ渡せる
+#[derive(Clone, Default)]
+pub struct Snapshot {
+    pub sessions: Vec<Arc<Session>>,
+}
+
+impl Snapshot {
+    pub fn visible(&self, i: usize) -> bool {
+        let s = &self.sessions[i];
+        !s.lanes.is_empty() && s.start.is_finite()
+    }
 }
 
 pub enum Loaded {
@@ -386,6 +409,10 @@ pub enum Loaded {
 }
 
 impl Store {
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot { sessions: self.sessions.clone() }
+    }
+
     /// ファイル (origin) ごとに、そのファイル由来のデータを items で置き換える。
     /// 派生データの再計算はセッションごとに最後に一度だけ行う。変更のあったセッションの index を返す
     pub fn replace(&mut self, updates: impl IntoIterator<Item = (String, Vec<Loaded>)>) -> Vec<usize> {
@@ -393,7 +420,18 @@ impl Store {
         for (origin, items) in updates {
             if let Some(old) = self.origins.remove(&origin) {
                 for &i in &old {
-                    self.sessions[i].lanes.retain(|l| l.origin != origin);
+                    if let Some(s) = Arc::get_mut(&mut self.sessions[i]) {
+                        s.lanes.retain(|l| l.origin != origin);
+                    } else {
+                        // 差し替える本文は複製しない。旧版は描画・検索が読み終わるまで残す
+                        let s = &self.sessions[i];
+                        self.sessions[i] = Arc::new(Session {
+                            id: s.id.clone(), source: s.source, cwd: s.cwd.clone(), headless: s.headless,
+                            title: s.title.clone(), branch: s.branch.clone(), version: s.version.clone(),
+                            lanes: s.lanes.iter().filter(|l| l.origin != origin).cloned().collect(),
+                            start: s.start, end: s.end, parents: Vec::new(), tree: Vec::new(),
+                        });
+                    }
                 }
                 touched.extend(old);
             }
@@ -413,7 +451,7 @@ impl Store {
         touched.sort_unstable();
         touched.dedup();
         for &i in &touched {
-            self.sessions[i].finalize();
+            Arc::make_mut(&mut self.sessions[i]).finalize();
         }
         touched
     }
@@ -426,12 +464,13 @@ impl Store {
                 }
                 if let Some(&i) = self.index.get(&s.id) {
                     // main とその配下を先頭に、他ファイル由来の子レーンを後ろに置く
-                    let ex = &mut self.sessions[i];
+                    let ex = Arc::make_mut(&mut self.sessions[i]);
                     s.lanes.append(&mut ex.lanes);
                     ex.lanes = s.lanes;
                     ex.title = s.title;
                     ex.cwd = s.cwd;
                     ex.source = s.source;
+                    ex.headless = s.headless;
                     ex.branch = s.branch;
                     ex.version = s.version;
                     return Some(i);
@@ -444,7 +483,7 @@ impl Store {
                 }
                 let i = self.sessions.len();
                 self.index.insert(s.id.clone(), i);
-                self.sessions.push(s);
+                self.sessions.push(Arc::new(s));
                 Some(i)
             }
             Loaded::Child(parent, mut lane) => {
@@ -453,7 +492,7 @@ impl Store {
                 }
                 lane.origin = origin.to_string();
                 if let Some(&i) = self.index.get(&parent) {
-                    self.sessions[i].lanes.push(lane);
+                    Arc::make_mut(&mut self.sessions[i]).lanes.push(lane);
                     Some(i)
                 } else {
                     self.orphans.entry(parent).or_default().push(lane);
@@ -471,15 +510,195 @@ impl Store {
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    let Some((end, _)) = s.char_indices().nth(max) else {
         return s.to_string();
-    }
-    let mut out: String = s.chars().take(max).collect();
+    };
+    let mut out = String::with_capacity(end + '…'.len_utf8());
+    out.push_str(&s[..end]);
     out.push('…');
     out
 }
 
 pub fn one_line(s: &str, max: usize) -> String {
-    let joined = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    truncate(&joined, max)
+    let mut out = String::with_capacity(s.len().min(max.saturating_mul(4).saturating_add(3)));
+    let mut count = 0;
+    let mut space = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            space |= !out.is_empty();
+            continue;
+        }
+        if space {
+            if count == max {
+                out.push('…');
+                return out;
+            }
+            out.push(' ');
+            count += 1;
+            space = false;
+        }
+        if count == max {
+            out.push('…');
+            return out;
+        }
+        out.push(c);
+        count += 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_end_prefix_ignores_other_kinds_and_rebuilds_after_changes() {
+        let mut session = test_session();
+        let template = session.lanes[0].events[0].clone();
+        session.lanes[0].events = vec![
+            Event { start: 0.0, end: 1000.0, kind: Kind::Agent, ..template.clone() },
+            Event { start: 1.0, end: 5.0, ..template.clone() },
+            Event { start: 2.0, end: 2000.0, kind: Kind::Assistant, ..template.clone() },
+            Event { start: 3.0, end: 4.0, ..template.clone() },
+        ];
+        session.finalize();
+        assert_eq!(session.lanes[0].cum_end, [1000.0, 1000.0, 2000.0, 2000.0]);
+        assert_eq!(session.lanes[0].cum_tool_end, [f64::NEG_INFINITY, 5.0, 5.0, 5.0]);
+        session.lanes[0].events[1].kind = Kind::Thinking;
+        session.finalize();
+        assert_eq!(session.lanes[0].cum_tool_end, [f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY, 4.0]);
+        session.lanes[0].events.clear();
+        session.finalize();
+        assert!(session.lanes[0].cum_end.is_empty() && session.lanes[0].cum_tool_end.is_empty());
+        session.lanes[0].events.push(template);
+        session.finalize();
+        assert_eq!(session.lanes[0].cum_tool_end, [2.0]);
+    }
+
+    fn test_lane(name: &str, start: f64) -> Lane {
+        let mut lane = Lane::new(name);
+        lane.events.push(Event {
+            start, end: start + 1.0, kind: Kind::Tool, name: name.into(), summary: name.into(),
+            input: format!("input-{name}"), output: format!("output-{name}"), call_id: None,
+            row: None, usage: Default::default(), model: None, status: Default::default(),
+        });
+        lane
+    }
+
+    fn test_session() -> Session {
+        Session {
+            id: "s".into(), source: Source::Claude, cwd: "project".into(), headless: false,
+            title: "initial".into(), branch: "main".into(), version: "1".into(),
+            lanes: vec![test_lane("main", 1.0)], start: 0.0, end: 0.0, parents: Vec::new(), tree: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn store_updates_leave_shared_snapshots_and_other_origins_intact() {
+        let mut store = Store::default();
+        assert_eq!(store.replace([("parent".into(), vec![Loaded::Session(test_session())])]), [0]);
+        let initial = store.snapshot();
+        assert_eq!(store.replace([("child".into(), vec![Loaded::Child("s".into(), test_lane("child", 3.0))])]), [0]);
+        let with_child = store.snapshot();
+        assert_eq!(initial.sessions[0].lanes.len(), 1);
+        assert_eq!(with_child.sessions[0].lanes.len(), 2);
+        let mut updated = test_session();
+        updated.headless = true;
+        updated.title = "updated".into();
+        updated.lanes = vec![test_lane("new-main", 5.0)];
+        store.replace([("parent".into(), vec![Loaded::Session(updated)])]);
+        assert_eq!(with_child.sessions[0].title, "initial");
+        assert!(!with_child.sessions[0].headless);
+        assert_eq!(with_child.sessions[0].lanes[0].events[0].input, "input-main");
+        let current = &store.sessions[0];
+        assert_eq!(current.title, "updated");
+        assert!(current.headless);
+        assert_eq!(current.lanes.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), ["new-main", "child"]);
+        assert_eq!((current.start, current.end), (3.0, 6.0));
+        store.replace([("child".into(), Vec::new())]);
+        assert_eq!(store.sessions[0].lanes.len(), 1);
+        assert_eq!(with_child.sessions[0].lanes.len(), 2);
+        assert_eq!((store.sessions[0].start, store.sessions[0].end), (5.0, 6.0));
+        store.replace([("parent".into(), Vec::new())]);
+        assert!(!store.visible(0));
+        assert!(initial.visible(0));
+    }
+
+    #[test]
+    fn orphan_replacement_is_attached_once_and_keeps_its_origin() {
+        let mut store = Store::default();
+        assert!(store.replace([("child".into(), vec![Loaded::Child("s".into(), test_lane("old", 0.0))])]).is_empty());
+        store.replace([("child".into(), vec![Loaded::Child("s".into(), test_lane("child", 3.0))])]);
+        store.replace([("parent".into(), vec![Loaded::Session(test_session())])]);
+        let snapshot = store.snapshot();
+        assert_eq!(store.sessions[0].lanes.len(), 2);
+        assert_eq!(store.sessions[0].lanes[1].origin, "child");
+        store.replace([("child".into(), Vec::new())]);
+        assert_eq!(store.sessions[0].lanes.len(), 1);
+        assert_eq!(snapshot.sessions[0].lanes[1].events[0].input, "input-child");
+    }
+
+    #[test]
+    fn finalize_preserves_nested_parents_spawn_times_and_duplicate_ids() {
+        let event = |start, id: &str| Event {
+            start, end: start + 1.0, kind: Kind::Agent, name: "Agent".into(), summary: String::new(),
+            input: String::new(), output: String::new(), call_id: Some(id.into()), row: None,
+            usage: Default::default(), model: None, status: Default::default(),
+        };
+        let mut main = Lane::new("main");
+        main.events = vec![event(1.0, "child"), event(2.0, "child")];
+        let mut child = Lane::new("child");
+        child.spawned_by = Some("child".into());
+        child.events = vec![event(3.0, "grandchild")];
+        let mut grandchild = Lane::new("grandchild");
+        grandchild.spawned_by = Some("grandchild".into());
+        grandchild.events = vec![event(4.0, "self")];
+        let mut detached = Lane::new("detached");
+        detached.spawned_by = Some("missing".into());
+        detached.events = vec![event(5.0, "detached")];
+        let mut session = Session {
+            id: "s".into(), source: Source::Claude, cwd: String::new(), headless: false,
+            title: String::new(), branch: String::new(), version: String::new(),
+            lanes: vec![main, child, grandchild, detached], start: 0.0, end: 0.0, parents: Vec::new(), tree: Vec::new(),
+        };
+        session.finalize();
+        assert_eq!(session.parents, [None, Some(0), Some(1), Some(0)]);
+        assert_eq!(session.lanes.iter().map(|l| l.spawn_t).collect::<Vec<_>>(), [None, Some(1.0), Some(3.0), None]);
+        assert_eq!(session.tree, [(0, 0), (1, 1), (2, 2), (3, 1)]);
+        assert_eq!((session.start, session.end), (1.0, 6.0));
+        session.lanes[0].events[0].start = 0.5;
+        session.finalize();
+        assert_eq!(session.lanes[1].spawn_t, Some(0.5));
+        assert_eq!(session.start, 0.5);
+    }
+
+    #[test]
+    fn bounded_text_matches_full_normalization() {
+        for text in [
+            "",
+            " \t\n",
+            "a",
+            " a  b \n",
+            "日本語\u{3000}abc\u{a0}終わり",
+            "🦀é e\u{301}\t\r\n次",
+            "abcd     ",
+        ] {
+            for max in 0..20 {
+                let reference = |s: &str| {
+                    let mut out: String = s.chars().take(max).collect();
+                    if s.chars().count() > max {
+                        out.push('…');
+                    }
+                    out
+                };
+                assert_eq!(truncate(text, max), reference(text));
+                let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert_eq!(
+                    one_line(text, max),
+                    reference(&joined),
+                    "text={text:?}, max={max}"
+                );
+            }
+        }
+    }
 }

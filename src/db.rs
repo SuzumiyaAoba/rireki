@@ -19,6 +19,7 @@ pub struct Db {
 }
 
 fn dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("RIREKI_CACHE_DIR") { return PathBuf::from(dir); }
     let base = dirs::cache_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".cache"));
     base.join("rireki")
 }
@@ -162,6 +163,11 @@ pub fn pack_files(files: &[(String, String, &[Loaded])]) -> Vec<Packed> {
 }
 
 impl Db {
+    /// 計測用の索引を読み取り専用で開く。スキーマや実データは変更しない
+    pub fn open_index_read(p: &std::path::Path) -> rusqlite::Result<Self> {
+        Ok(Self { conn: read_conn(p)? })
+    }
+
     /// 書き込み用に開く。必要ならスキーマを作り直す
     pub fn open() -> rusqlite::Result<Self> {
         let p = path();
@@ -243,7 +249,7 @@ impl Db {
         Ok(Self { conn })
     }
 
-    /// UI スレッドから詳細を引くための読み取り専用接続
+    /// 詳細本文を引くための読み取り専用接続
     pub fn open_read() -> rusqlite::Result<Self> {
         Ok(Self { conn: read_conn(&texts_path())? })
     }
@@ -505,7 +511,7 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
     let parts = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16) as i64;
     let step = (hi - lo) / parts + 1;
     let cap = (n / parts) as usize + 16;
-    let p = path();
+    let p = PathBuf::from(conn.path().ok_or(rusqlite::Error::InvalidPath(PathBuf::new()))?);
     std::thread::scope(|sc| {
         let handles: Vec<_> = (0..parts)
             .map(|k| {

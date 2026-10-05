@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 
 use crate::db::{self, Db};
 use crate::loader::{self, Job};
-use crate::model::Loaded;
+use crate::model::{Loaded, Snapshot, Store};
 
 /// これより新しく更新されたファイルはリアルタイム扱い
 pub const LIVE_SECS: f64 = 10.0 * 60.0;
@@ -22,7 +22,7 @@ pub const CHUNK: usize = 64;
 pub struct Indexer {
     db: Option<Db>,
     /// DB への書き込みは専用スレッドで行い、次のパースと重ねる
-    writer: Option<(mpsc::Sender<Vec<db::Packed>>, JoinHandle<()>)>,
+    writer: Option<(mpsc::SyncSender<Vec<db::Packed>>, JoinHandle<()>)>,
     /// DB に保存済みのファイルの指紋
     stable: HashMap<String, String>,
     /// メモリ上で読んだリアルタイムファイルの指紋
@@ -40,6 +40,46 @@ pub struct Update {
     pub items: Vec<Loaded>,
 }
 
+pub struct Delta {
+    pub snapshot: Snapshot,
+    pub touched: Vec<usize>,
+}
+
+/// データの結合・親子関係と時刻の索引化まで背景で済ませ、画面へ共有する
+pub struct ViewLoader {
+    indexer: Indexer,
+    store: Store,
+}
+
+impl ViewLoader {
+    pub fn open() -> Self {
+        Self { indexer: Indexer::open(), store: Store::default() }
+    }
+
+    fn apply(&mut self, updates: Vec<Update>) -> Delta {
+        let touched = self.store.replace(updates.into_iter().map(|u| (u.origin, u.items)));
+        Delta { snapshot: self.store.snapshot(), touched }
+    }
+
+    pub fn load_stable(&mut self) -> Delta {
+        let updates = self.indexer.load_stable();
+        self.apply(updates)
+    }
+
+    pub fn plan(&self) -> Vec<Task> {
+        self.indexer.plan()
+    }
+
+    pub fn plan_in(&self, claude: &std::path::Path, codex: &std::path::Path) -> Vec<Task> {
+        self.indexer.plan_in(claude, codex)
+    }
+
+    pub fn process(&mut self, tasks: &[Task]) -> Delta {
+        let updates = self.indexer.process(tasks);
+        self.apply(updates)
+    }
+}
+
 fn now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
@@ -49,7 +89,8 @@ impl Indexer {
         let db = Db::open().map_err(|e| eprintln!("rireki: 索引 DB を開けません: {e}")).ok();
         let stable = db.as_ref().and_then(|d| d.fingerprints().ok()).unwrap_or_default();
         let writer = db.is_some().then(|| Db::open().ok()).flatten().map(|mut w| {
-            let (tx, rx) = mpsc::channel::<Vec<db::Packed>>();
+            // 保存がパースに追いつかない場合も、待ち行列に大量の本文を溜めない
+            let (tx, rx) = mpsc::sync_channel::<Vec<db::Packed>>(1);
             let h = std::thread::spawn(move || {
                 for batch in rx {
                     if let Err(e) = w.put(&batch) {
@@ -60,10 +101,6 @@ impl Indexer {
             (tx, h)
         });
         Self { db, writer, stable, live: HashMap::new() }
-    }
-
-    pub fn has_db(&self) -> bool {
-        self.db.is_some()
     }
 
     /// DB に保存済みの履歴を読む
@@ -82,10 +119,19 @@ impl Indexer {
 
     /// 読み直しが必要なファイルを列挙する（リアルタイムを先に）
     pub fn plan(&self) -> Vec<Task> {
+        self.plan_jobs(loader::discover())
+    }
+
+    /// 計測用の固定した探索先でも、同じ更新判定を使う
+    pub fn plan_in(&self, claude: &std::path::Path, codex: &std::path::Path) -> Vec<Task> {
+        self.plan_jobs(loader::discover_in(claude, codex))
+    }
+
+    fn plan_jobs(&self, jobs: Vec<Job>) -> Vec<Task> {
         let t = now();
         let mut live = Vec::new();
         let mut stable = Vec::new();
-        for job in loader::discover() {
+        for job in jobs {
             let key = job.key();
             if t - job.mtime < LIVE_SECS {
                 if self.live.get(&key) != Some(&job.fingerprint) {
