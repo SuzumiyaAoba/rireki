@@ -27,19 +27,40 @@ pub struct Price {
 }
 
 /// 集計中の料金検索。同じモデルが続く間は文字列のハッシュを計算しない。
+/// モデル名の表は256件まで保持し、直前の1モデルは別に持つ。上限後も料金表で正しく照会する。
 #[derive(Default)]
 pub(crate) struct Cache<'a> {
-    prices: HashMap<Option<&'a str>, Option<Price>>,
-    last: Option<(Option<&'a str>, Option<Price>)>,
+    prices: HashMap<Option<&'a str>, Option<&'static Price>>,
+    // Vacant の分岐だけで上限を調べ、既存のモデルの照会には判定を足さない。
+    inserted: u16,
+    last: Option<(Option<&'a str>, Option<&'static Price>)>,
 }
 
 impl<'a> Cache<'a> {
     #[inline]
     pub(crate) fn get(&mut self, model: Option<&'a str>) -> Option<Price> {
+        self.get_ref(model).copied()
+    }
+
+    #[inline]
+    fn get_ref(&mut self, model: Option<&'a str>) -> Option<&'static Price> {
+        model?;
         if let Some((last, price)) = self.last && last == model {
             return price;
         }
-        let price = *self.prices.entry(model).or_insert_with(|| model.and_then(self::price));
+        self.get_changed(model)
+    }
+
+    #[inline(never)]
+    fn get_changed(&mut self, model: Option<&'a str>) -> Option<&'static Price> {
+        let price = match self.prices.entry(model) {
+            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let price = model.and_then(price_ref);
+                if self.inserted < 256 { entry.insert(price); self.inserted += 1; }
+                price
+            }
+        };
         self.last = Some((model, price));
         price
     }
@@ -153,7 +174,53 @@ static TABLE: LazyLock<Vec<(String, Price)>> = LazyLock::new(|| {
 /// モデル名の料金。完全一致か、日付などの数字の付いた名前（claude-haiku-4-5-20251001）に当てる。
 /// gpt-5.3-codex-spark のような別モデルを gpt-5.3-codex と取り違えないよう、続きが `-数字` のときだけ前方一致とする
 pub fn price(model: &str) -> Option<Price> {
-    TABLE.iter().find(|(k, _)| matches(model, k)).map(|(_, p)| *p)
+    TABLE.iter().find(|(key, _)| matches(model, key)).map(|(_, price)| *price)
+}
+
+#[inline]
+fn price_ref(model: &str) -> Option<&'static Price> {
+    let table = &*TABLE;
+    table.first().filter(|(key, _)| matches(model, key))
+        .or_else(|| price_tail(table, model)).map(|(_, price)| price)
+}
+
+// 先頭候補はそのまま試し、残りは同じ先頭バイトのキーだけを長い順に試す。
+struct Candidates {
+    indices: Vec<usize>,
+    offsets: [usize; 257],
+    empty: Option<usize>,
+}
+
+impl Candidates {
+    fn new(table: &[(String, Price)]) -> Self {
+        let mut indices: Vec<_> = (1..table.len()).filter(|&i| !table[i].0.is_empty()).collect();
+        // 安定ソートなので、各バイト内の長いキーからの照合順は変わらない。
+        indices.sort_by_key(|&i| table[i].0.as_bytes()[0]);
+        let mut offsets = [0; 257];
+        for &i in &indices {
+            offsets[table[i].0.as_bytes()[0] as usize + 1] += 1;
+        }
+        for i in 1..offsets.len() {
+            offsets[i] += offsets[i - 1];
+        }
+        Self { indices, offsets, empty: table.iter().position(|(key, _)| key.is_empty()) }
+    }
+
+    fn get<'a>(&self, table: &'a [(String, Price)], model: &str) -> Option<&'a (String, Price)> {
+        let price = model.as_bytes().first().and_then(|&first| {
+            let first = first as usize;
+            self.indices[self.offsets[first]..self.offsets[first + 1]].iter()
+                .find_map(|&i| matches(model, &table[i].0).then_some(&table[i]))
+        });
+        price.or_else(|| self.empty.and_then(|i| matches(model, &table[i].0).then_some(&table[i])))
+    }
+}
+
+static CANDIDATES: LazyLock<Candidates> = LazyLock::new(|| Candidates::new(&TABLE));
+
+#[inline(never)]
+fn price_tail<'a>(table: &'a [(String, Price)], model: &str) -> Option<&'a (String, Price)> {
+    CANDIDATES.get(table, model)
 }
 
 fn matches(model: &str, key: &str) -> bool {
@@ -167,6 +234,59 @@ fn matches(model: &str, key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn candidate_index_preserves_longest_prefix_unicode_and_empty_keys() {
+        let keys = ["", "x", "x-1", "x-1-2", "x-1-2-日本語", "x-1-２", "x-", "x--1",
+            "日本語", "日本語-1", "💡-10", "-", "-1", "a", "a-1", "\0", "\0-1"];
+        let mut table: Vec<_> = keys.iter().enumerate()
+            .map(|(i, key)| ((*key).to_owned(), Price::new(i as f64, 1.0, 0.1))).collect();
+        table.sort_by_key(|(key, _)| std::cmp::Reverse(key.len()));
+        let candidates = Candidates::new(&table);
+        let check = |model: &str| {
+            let expected = table.iter().find(|(key, _)| matches(model, key));
+            let actual = table.first().filter(|(key, _)| matches(model, key))
+                .or_else(|| candidates.get(&table, model));
+            assert_eq!(actual, expected, "{model:?}");
+        };
+        let alphabet = ["x", "-", "1", "a", "日", "１", "💡"];
+        for n in 0..=6 {
+            for mut code in 0..alphabet.len().pow(n) {
+                let mut model = String::new();
+                for _ in 0..n { model.push_str(alphabet[code % alphabet.len()]); code /= alphabet.len(); }
+                check(&model);
+            }
+        }
+        let suffixes = ["", "-1", "-12abc", "-0-xyz", "-01-3", "-name", "--1", "-１", "-😀", "\0-1"];
+        for key in keys { for suffix in suffixes { check(&format!("{key}{suffix}")); } }
+        // 公開関数も実際の組み込み・ユーザー料金表の全候補で前版の走査と比較する。
+        for (key, _) in &*TABLE {
+            for suffix in suffixes {
+                let model = format!("{key}{suffix}");
+                let expected = TABLE.iter().find(|(key, _)| matches(&model, key)).map(|(_, price)| *price);
+                assert_eq!(price_ref(&model).copied(), expected, "{model:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_cache_keeps_exact_prices_after_many_models_and_none() {
+        let models: Vec<_> = (0..600).map(|i| if i % 2 == 0 {
+            format!("claude-sonnet-4-5-{:08}", i + 1)
+        } else { format!("unpriced-{i}") }).collect();
+        let mut cache = Cache::default();
+        for model in models.iter().chain(models.iter().rev()).chain(models.iter().cycle().take(1200)) {
+            assert_eq!(cache.get(Some(model)), price(model));
+            assert_eq!(cache.get(None), None);
+            assert_eq!(cache.get(Some(model)), price(model));
+            assert!(cache.prices.len() <= 256);
+        }
+        assert_eq!(cache.prices.len(), 256);
+        assert!(!cache.prices.contains_key(&None));
+        assert_eq!(cache.get(Some("")), price(""));
+        assert_eq!(cache.get(Some("日本語-1")), price("日本語-1"));
+    }
 
     #[test]
     fn longest_prefix_and_cost() {

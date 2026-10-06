@@ -1,5 +1,8 @@
 //! 画面の部品（ボタン・切り替え・ツールチップ・コード表示など）
 
+mod marquee;
+pub(super) use marquee::Marquee;
+
 use gpui::{
     AnyView, App, ClickEvent, ClipboardItem, Context, Div, ElementId, FontWeight, SharedString, Stateful, Window, div,
     prelude::*, px,
@@ -42,6 +45,36 @@ pub(super) fn tip(
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text = text.into();
     move |_, cx| cx.new(|_| Tip { text: text.clone(), key }).into()
+}
+
+struct PromptTip {
+    prompt: SharedString,
+    metadata: SharedString,
+    hovered_since: std::time::Instant,
+}
+
+impl Render for PromptTip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().w(px(360.0)).flex().flex_col().gap_1().px_2().py_1().rounded_md()
+            .bg(c(theme::ELEVATED)).border_1().border_color(c(theme::BORDER)).shadow_md()
+            .text_xs().text_color(c(theme::TEXT))
+            .child(Marquee::new("prompt", self.prompt.clone()).on_show_since(self.hovered_since))
+            .child(div().text_color(c(theme::MUTED)).child(self.metadata.clone()))
+    }
+}
+
+/// プロンプトを切り詰めずに流し、日時などの補足は固定して表示する。
+pub(super) fn prompt_tip(
+    prompt: impl Into<SharedString>,
+    metadata: impl Into<SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let prompt = prompt.into();
+    let metadata = metadata.into();
+    move |_, cx| cx.new(|_| PromptTip {
+        prompt: prompt.clone(), metadata: metadata.clone(),
+        // GPUI 0.2 のツールチップ表示までの 500ms も、開始までの 1 秒に含める。
+        hovered_since: std::time::Instant::now() - std::time::Duration::from_millis(500),
+    }).into()
 }
 
 /// キーの表記（⌘K など）

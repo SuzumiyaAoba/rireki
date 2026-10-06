@@ -1,6 +1,7 @@
 //! セッション履歴の読み込み・保存・検索・集計。GUI フレームワークに依存しない。
 
 pub mod db;
+pub mod cost_timeline;
 pub mod detail;
 pub mod histogram;
 pub mod index;

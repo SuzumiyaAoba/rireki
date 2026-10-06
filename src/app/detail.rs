@@ -1,12 +1,9 @@
-//! 詳細パネル。タブ（1 / 2 / 3 / 4）で「イベント」「ファイル」「セッション」「分析」を切り替える
+//! 右サイドパネル。1 / 2 / 3 / 4 で「概要」「履歴」「変更」「分析」を切り替える。
 //!
-//! - 見出し: イベント名と結果の状態（失敗・拒否・中断など）、レーン内の位置と前後への移動、選択の履歴
-//! - 文脈の帯: 読み込み元 › プロジェクト › セッション（押すとセッションのタブへ）› サブエージェント（起動元へ）
-//! - ファイル: 選択の中で編集したファイルと追加・削除の割合。押すとその場で開き、編集の時系列の帯と編集ごとの差分を出す
-//! - セッション: 集計のタイル（失敗は押すと一覧へ）・操作・サブエージェントの一覧・トークン・属性
-//! - 1 イベント: 時刻・トークン数・きっかけになった指示と、入力・結果（差分・Markdown・ANSI の色・行番号）
-//! - 複数: 集計と、名前・失敗での絞り込み、ユーザーの指示で区切ったイベントの一覧
-//! - 分析: 選択全体の検索・絞り込み・実行時間とトークンでの比較。全画面表示でも同じ選択を保つ
+//! 概要はセッション全体の指示・応答・エージェント構成を示す。
+//! 履歴・変更・分析は選択範囲を対象にし、対象範囲を共通上部に明示する。
+//! 履歴では指示と応答を読み、ツール実行と思考を必要なときに展開する。
+//! 概要、履歴、変更、分析の一覧は可視行だけを描き、タブ切り替えで位置を保持する。
 
 use std::cell::{Cell, RefCell};
 
@@ -16,7 +13,7 @@ use gpui::{
 };
 
 use super::rich;
-use super::widgets::{dot, event_icon, project_tile, tip};
+use super::widgets::{Marquee, dot, event_icon, project_tile, tip};
 use super::{DETAIL_MAX, HEADER_H, INNER_RADIUS, Rireki, Selection, fmt_dur, fmt_n, is_live, local, tilde};
 use crate::icons::{self, Icon};
 use crate::model::{Event, Kind, Session, Source, Status, Usage, UsageSum, one_line};
@@ -24,6 +21,7 @@ use crate::model::{Event, Kind, Session, Source, Status, Usage, UsageSum, one_li
 mod files;
 pub(super) mod analysis;
 pub(super) mod replay;
+pub(super) mod overview;
 use crate::detail::{DetailCache, FileStat};
 pub(super) use files::FileList;
 use files::{FILE_MAX, FileListKey, FileRow, PER_EDIT};
@@ -75,6 +73,31 @@ struct DetailListKey {
 struct DetailListData {
     key: DetailListKey,
     rows: Vec<DetailRow>,
+    usage_scale: UsageScale,
+}
+
+/// 一覧内の入力・出力それぞれの最大値。可視行の描画では走査し直さない。
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct UsageScale {
+    input: u64,
+    output: u64,
+}
+
+impl UsageScale {
+    fn include(&mut self, usage: &Usage) {
+        self.input = self.input.max(usage_input(usage));
+        self.output = self.output.max(usage.output as u64);
+    }
+
+    fn from_rows(rows: &[DetailRow], events: &[Event]) -> Self {
+        let mut scale = Self::default();
+        for row in rows {
+            if let DetailRow::Event(i) = row {
+                scale.include(&events[*i].usage);
+            }
+        }
+        scale
+    }
 }
 
 /// 高さの違う行を可視範囲だけ描く。更新時は同じイベントを上端に保つ
@@ -94,10 +117,25 @@ fn detail_rows(events: &[Event], filter: Option<&RowFilter>, reversed: bool) -> 
         };
         if keep { rows.push(DetailRow::Event(i)); }
     }
-    if reversed { rows[1..].reverse(); }
+    if reversed { reverse_turn_rows(&mut rows[1..], events, filter.is_some()); }
     if rows.len() == 1 { rows.push(DetailRow::Empty); }
     if events.len() > DETAIL_MAX { rows.push(DetailRow::Limit); }
     rows
+}
+
+/// 新しい順でも一つの指示内では実行順を維持する。
+fn reverse_turn_rows(rows: &mut [DetailRow], events: &[Event], filtered: bool) {
+    if filtered { rows.reverse(); return; }
+    let boundaries: Vec<_> = rows.iter().enumerate().filter_map(|(row, item)| {
+        matches!(item, DetailRow::Event(i) if events[*i].kind == Kind::User).then_some(row)
+    }).chain(std::iter::once(rows.len())).collect();
+    if boundaries.len() == 1 { rows.reverse(); return; }
+    let mut first = 0;
+    for last in boundaries {
+        rows[first..last].reverse();
+        first = last;
+    }
+    rows.reverse();
 }
 
 fn detail_anchor(old: &[DetailRow], new: &[DetailRow], offset: ListOffset) -> ListOffset {
@@ -131,11 +169,17 @@ impl DetailList {
         if data.as_ref().is_some_and(|d| d.key == key) { return; }
         // 再生が進んだときは追加された行だけを挿入し、既存行の高さと位置を保つ。
         if let Some(d) = data.as_mut()
+            && !key.reversed
             && let (Some(before), Some(after)) = (d.key.replay_visible, key.replay_visible)
             && after >= before
             && key == (DetailListKey { replay_visible: Some(after), ..d.key.clone() })
         {
             let mut added = replay::matching_rows(events, before, after, key.filter.as_ref());
+            for row in &added {
+                if let DetailRow::Event(i) = row {
+                    d.usage_scale.include(&events[*i].usage);
+                }
+            }
             if key.reversed { added.reverse(); }
             if !added.is_empty() {
                 if d.rows == [DetailRow::Empty] {
@@ -164,7 +208,12 @@ impl DetailList {
         }).map(|d| detail_anchor(&d.rows, &rows, self.state.logical_scroll_top())).unwrap_or_default();
         self.state.splice(0..self.state.item_count(), rows.len());
         self.state.scroll_to(offset);
-        *data = Some(DetailListData { key, rows });
+        let usage_scale = UsageScale::from_rows(&rows, events);
+        *data = Some(DetailListData { key, rows, usage_scale });
+    }
+
+    fn usage_scale(&self) -> UsageScale {
+        self.data.borrow().as_ref().map_or(UsageScale::default(), |d| d.usage_scale)
     }
 
     fn at_bottom(&self) -> bool {
@@ -271,6 +320,20 @@ fn stat(name: &'static str, value: String, color: Option<u32>) -> Div {
         .child(div().truncate().text_xs().text_color(c(theme::SUBTLE)).child(name))
 }
 
+fn detail_tab_index(tab: DetailTab) -> usize {
+    match tab { DetailTab::Session => 0, DetailTab::Events => 1, DetailTab::Files => 2, DetailTab::Analysis => 3 }
+}
+
+fn usage_total_label(usage: &UsageSum) -> String {
+    if usage.calls == 0 { "不明".into() } else { fmt_tokens(usage.total()) }
+}
+
+fn usage_cost_label(usage: &UsageSum) -> String {
+    if usage.calls == 0 || usage.calls == usage.unpriced { "不明".into() }
+    else if usage.unpriced > 0 { format!("{}（一部）", fmt_usd(usage.cost)) }
+    else { fmt_usd(usage.cost) }
+}
+
 impl Rireki {
     pub(super) fn detail_profile_open_file(&mut self, cx: &mut Context<Self>) {
         self.file_open = self.detail_cache.as_ref().and_then(|d| d.files.first()).map(|f| f.path.clone());
@@ -358,7 +421,7 @@ impl Rireki {
 
     pub(super) fn detail_uses_list(&self) -> bool {
         self.shown_detail_selection().filter(|&sel| sel.first < sel.last)
-            .is_some_and(|sel| self.detail_tab == DetailTab::Events || (self.detail_tab == DetailTab::Files && self.cache(sel).is_none_or(|cache| cache.files.is_empty())))
+            .is_some_and(|_| self.detail_tab == DetailTab::Events)
     }
 
     pub(super) fn detail_at_bottom(&self) -> bool {
@@ -380,18 +443,30 @@ impl Rireki {
     }
 
     /// 未計測の行も少しずつ描きながら追う。ユーザー操作・絞り込み・選択変更で止める
-    pub(super) fn animate_list_to_bottom(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn animate_list_to_latest(&mut self, cx: &mut Context<Self>) {
         const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
         const MAX_FRAMES: usize = 40;
+        let reversed = self.detail_reversed;
         self.detail_following = true;
         self.follow_anim = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FRAME).await;
             for frame in 0..MAX_FRAMES {
                 let Ok(keep_going) = this.update(cx, |app, cx| {
-                    if !app.detail_uses_list() || app.detail_list.at_bottom() { return None; }
+                    if !app.detail_uses_list() || app.detail_reversed != reversed { return None; }
                     let list = &app.detail_list.state;
+                    let offset = list.logical_scroll_top();
+                    if reversed && offset.item_ix == 0 && offset.offset_in_item <= px(1.0) {
+                        app.detail_list.scroll_to_latest(true);
+                        app.detail_changed(cx);
+                        return None;
+                    }
+                    if !reversed && app.detail_list.at_bottom() { return None; }
                     if frame + 1 == MAX_FRAMES {
-                        list.scroll_to(ListOffset { item_ix: list.item_count(), offset_in_item: px(0.0) });
+                        app.detail_list.scroll_to_latest(reversed);
+                    } else if reversed {
+                        // 上端へ近づくほど減速する。移動量を先読み範囲内に抑え、未計測の行を飛ばさない。
+                        let distance = (-list.scroll_px_offset_for_scrollbar().y * 0.2).clamp(px(1.0), px(100.0));
+                        list.scroll_by(-distance);
                     } else {
                         let bounds = list.viewport_bounds();
                         let distance = list.item_count().checked_sub(1).and_then(|i| list.bounds_for_item(i))
@@ -514,97 +589,79 @@ impl Rireki {
             self.navigate(sel, window, cx);
         } else {
             self.select(sel, cx);
+            self.set_detail_tab(DetailTab::Events, cx);
             cx.notify();
         }
         self.reveal(sel, false, window);
     }
 
     pub(super) fn detail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let panel = div()
-            .id("detail-panel")
-            .size_full()
-            .flex()
-            .flex_col()
+        let panel = div().id("detail-panel").size_full().flex().flex_col()
             .when(self.detail_fullscreen, |d| d.rounded(px(INNER_RADIUS)))
             .when(!self.detail_fullscreen, |d| d.rounded_r(px(INNER_RADIUS)).border_l_1())
-            .bg(c(theme::PANEL))
-            .border_color(c(theme::BORDER))
-            .text_sm()
-            .text_color(c(theme::TEXT))
+            .bg(c(theme::PANEL)).border_color(c(theme::BORDER)).text_sm().text_color(c(theme::TEXT))
             .on_scroll_wheel(cx.listener(|app, _: &gpui::ScrollWheelEvent, _, _| app.cancel_detail_follow()));
-        let Some(sel) = self.shown_detail_selection() else {
-            return panel.into_any_element();
-        };
+        let Some(sel) = self.shown_detail_selection() else { return panel.into_any_element(); };
         let files = self.cache(sel).map_or(0, |d| d.files.len());
-        let tab = match self.detail_tab {
-            DetailTab::Files if files == 0 => DetailTab::Events,
-            t => t,
-        };
-        let mut body = div()
-            .id("detail-scroll")
-            .track_scroll(&self.detail_scroll)
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .p_3()
-            .flex()
-            .flex_col()
-            .gap_3();
-        body.style().restrict_scroll_to_axis = Some(true);
-        match tab {
-            DetailTab::Events => {
-                if self.cache(sel).is_none() {
-                    body = body.child(div().text_xs().text_color(c(theme::MUTED)).child("詳細を読み込み中…"));
-                } else if sel.first == sel.last {
-                    body = body.child(self.replay_controls(sel, cx)).child(self.event_view(sel, cx));
-                } else {
-                    return panel
-                        .child(self.detail_header(sel, cx))
-                        .child(self.context_bar(sel, cx))
-                        .child(self.detail_tabs(sel, tab, files, cx))
-                        .child(
-                            div().flex_1().min_h_0().p_3().flex().flex_col().gap_2()
-                                .when(self.replay.is_some(), |d| d.child(self.event_list_header(sel, cx)))
-                                .child(self.event_list(sel, window, cx)),
-                        )
-                        .into_any_element();
-                }
-            }
-            DetailTab::Files => {
-                if let Some(d) = self.cache(sel) {
-                    return panel
-                        .child(self.detail_header(sel, cx))
-                        .child(self.context_bar(sel, cx))
-                        .child(self.detail_tabs(sel, tab, files, cx))
-                        .child(div().flex_1().min_h_0().p_3().flex().flex_col().child(self.files_list(sel, d, window, cx)))
-                        .into_any_element();
-                }
-            }
-            DetailTab::Session => {
-                if self.cache(sel).is_some() {
-                    body = body.child(self.session_card(sel, cx));
-                    if self.detail_session(sel).lanes.len() > 1 {
-                        body = body.child(self.subagent_list(sel, cx));
-                    }
-                } else {
-                    body = body.child(div().text_xs().text_color(c(theme::MUTED)).child("詳細を読み込み中…"));
-                }
-            }
-            DetailTab::Analysis => {
-                return panel
-                    .child(self.detail_header(sel, cx))
-                    .child(self.context_bar(sel, cx))
-                    .child(self.detail_tabs(sel, tab, files, cx))
-                    .child(self.analysis_view(sel, cx))
-                    .into_any_element();
-            }
+        let tab = self.detail_tab;
+        let panel = panel.child(self.detail_header(sel, cx)).child(self.context_bar(sel, cx))
+            .child(self.detail_tabs(sel, tab, files, cx)).child(self.detail_scope(sel, cx));
+        if self.cache(sel).is_none() {
+            return panel.child(div().p_3().text_xs().text_color(c(theme::MUTED))
+                .child("詳細を読み込み中…")).into_any_element();
         }
-        panel
-            .child(self.detail_header(sel, cx))
-            .child(self.context_bar(sel, cx))
-            .child(self.detail_tabs(sel, tab, files, cx))
-            .child(body)
-            .into_any_element()
+        let content = match tab {
+            DetailTab::Session => self.overview_view(sel, window, cx),
+            DetailTab::Analysis => self.analysis_view(sel, cx),
+            DetailTab::Files if files == 0 => div().p_3().text_xs().text_color(c(theme::MUTED))
+                .child("選択範囲に記録されたファイル編集はありません").into_any_element(),
+            DetailTab::Files => div().flex_1().min_h_0().p_3().flex().flex_col()
+                .child(self.files_list(sel, self.cache(sel).unwrap(), window, cx)).into_any_element(),
+            DetailTab::Events if sel.first == sel.last => div().id("detail-scroll")
+                .track_scroll(&self.detail_scroll).flex_1().min_h_0().overflow_y_scroll()
+                .p_3().flex().flex_col().gap_3().child(self.history_heading(sel, cx))
+                .child(self.replay_controls(sel, cx)).child(self.event_view(sel, cx)).into_any_element(),
+            DetailTab::Events => {
+                let events = self.event_list(sel, window, cx);
+                div().flex_1().min_h_0().p_3().flex().flex_col().gap_2()
+                    .child(self.history_heading(sel, cx))
+                    .when(self.replay.is_some(), |d| d.child(self.event_list_header(sel, cx)))
+                    .child(events).into_any_element()
+            }
+        };
+        panel.child(content).into_any_element()
+    }
+
+    /// 対象はタブを切り替えても常に読める位置に示す。
+    fn detail_scope(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
+        let s = self.detail_session(sel);
+        let lane = &s.lanes[sel.lane];
+        let whole = sel.first == 0 && sel.last + 1 == lane.events.len();
+        let overview = self.detail_tab == DetailTab::Session;
+        let events = &lane.events[sel.first..=sel.last];
+        let (start, end) = if overview { (s.start, s.end) } else {
+            (events[0].start, self.cache(sel).map_or(events.last().unwrap().end, |d| d.end()))
+        };
+        let title = if overview { "セッション全体（全エージェント）".to_string() } else {
+            format!("{} · {} 件", if whole { "レーン全体" } else { "選択範囲" }, fmt_n(events.len()))
+        };
+        div().flex_none().px_3().py_1p5().flex().flex_col().gap_1().text_xs()
+            .border_b_1().border_color(c(theme::BORDER)).text_color(c(theme::MUTED))
+            .child(div().flex().items_center().gap_2().child(title).child(div().flex_1())
+                .when(!overview && !whole, |d| d.child(self.icon_button(
+                    "scope-lane", Some(Icon::Layers), "レーン全体を見る", false, cx,
+                    move |app, w, cx| {
+                        let tab = app.detail_tab;
+                        let n = app.store.sessions[sel.session].lanes[sel.lane].events.len();
+                        if n == 0 { return; }
+                        app.navigate(Selection { first: 0, last: n - 1, ..sel }, w, cx);
+                        app.set_detail_tab(tab, cx);
+                    },
+                ))))
+            .child(format!("{} – {}", local(start).format("%Y/%m/%d %H:%M:%S"),
+                local(end).format(if local(start).date_naive() == local(end).date_naive() {
+                    "%H:%M:%S"
+                } else { "%Y/%m/%d %H:%M:%S" })))
     }
 
     fn detail_tabs(&self, sel: Selection, tab: DetailTab, files: usize, cx: &mut Context<Self>) -> Div {
@@ -618,9 +675,9 @@ impl Rireki {
                 .bg(c(theme::BG))
                 .border_1()
                 .border_color(c(theme::BORDER))
-                .child(self.tab_button(DetailTab::Events, "イベント", n_events, "1", tab, true, cx))
-                .child(self.tab_button(DetailTab::Files, "ファイル", Some(files), "2", tab, files > 0, cx))
-                .child(self.tab_button(DetailTab::Session, "セッション", None, "3", tab, true, cx))
+                .child(self.tab_button(DetailTab::Session, "概要", None, "1", tab, true, cx))
+                .child(self.tab_button(DetailTab::Events, "履歴", n_events, "2", tab, true, cx))
+                .child(self.tab_button(DetailTab::Files, "変更", Some(files), "3", tab, true, cx))
                 .child(self.tab_button(DetailTab::Analysis, "分析", None, "4", tab, true, cx)),
         )
     }
@@ -686,10 +743,9 @@ impl Rireki {
         if self.detail_tab != tab {
             self.pause_replay(cx);
             self.replay_autostart = None;
+            self.detail_scroll_offsets[detail_tab_index(self.detail_tab)] = self.detail_scroll.offset();
             self.detail_tab = tab;
-            self.detail_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
-            self.detail_list.state.scroll_to(ListOffset::default());
-            self.file_list.state.scroll_to(ListOffset::default());
+            self.detail_scroll.set_offset(self.detail_scroll_offsets[detail_tab_index(tab)]);
             self.cancel_detail_follow();
             self.persist();
         }
@@ -742,157 +798,51 @@ impl Rireki {
         )
     }
 
-    /// 見出し。イベント名と状態、前後のイベント・選択の履歴の移動、閉じる
+    /// 共通見出しにはセッションと選択の履歴、表示操作を置く。
     fn detail_header(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         let s = self.detail_session(sel);
+        div().h(px(HEADER_H)).flex_none().flex().items_center().gap_1().px_2()
+            .border_b_1().border_color(c(theme::BORDER))
+            .child(self.ghost_button("d-back", Icon::ArrowLeft, "戻る", Some("⌘["),
+                !self.back.is_empty(), cx, |t, w, cx| t.go_back(w, cx)))
+            .child(self.ghost_button("d-forward", Icon::ArrowRight, "進む", Some("⌘]"),
+                !self.forward.is_empty(), cx, |t, w, cx| t.go_forward(w, cx)))
+            .child(div().flex_1().min_w_0().font_weight(FontWeight::SEMIBOLD)
+                .child(Marquee::new("session-title", if s.title.is_empty() { "(無題)".to_string() }
+                    else { one_line(&s.title, usize::MAX) })))
+            .child(self.ghost_button("d-locate", Icon::Locate, "選択位置を表示", None, true, cx,
+                |t, w, cx| { t.detail_fullscreen = false;
+                    if let Some(sel) = t.selected { t.reveal(sel, true, w); }
+                    t.detail_changed(cx); cx.notify(); }))
+            .child(self.ghost_button("d-fullscreen", if self.detail_fullscreen { Icon::Minimize } else { Icon::Maximize },
+                if self.detail_fullscreen { "通常のパネルに戻す" } else { "詳細を全画面表示" },
+                Some("⇧⌘↵"), true, cx, |t, w, cx| t.toggle_detail_fullscreen(w, cx)))
+            .child(self.ghost_button("d-close", Icon::X, "詳細を閉じる", Some("esc"), true, cx,
+                |t, w, cx| { t.close_detail(cx); w.focus(&t.focus_handle); }))
+    }
+
+    fn history_heading(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
+        let s = self.detail_session(sel);
         let lane = &s.lanes[sel.lane];
-        let evs = &lane.events[sel.first..=sel.last];
-        let single = evs.len() == 1;
-        let (title, color) = if single {
-            (evs[0].name.to_string(), Some((theme::event_color(&evs[0]), theme::event_icon(&evs[0]))))
-        } else {
-            (format!("{} 件", fmt_n(evs.len())), None)
+        let single = sel.first == sel.last;
+        let e = &lane.events[sel.first];
+        let title = if single { e.name.to_string() } else { "指示ごとの履歴".into() };
+        let pos = if single { fmt_n(sel.first + 1) } else {
+            format!("{}–{}", fmt_n(sel.first + 1), fmt_n(sel.last + 1))
         };
         let output = self.cache(sel).and_then(|d| d.texts.first()).map_or("", |t| t.1.as_str());
-        let status = if single { status_label(&evs[0], is_live(s.end), output) } else { None };
-        let n = lane.events.len();
-        let (prev, next) = if single { (sel.first > 0, sel.first + 1 < n) } else { (true, true) };
-        let (prev, next) = if self.detail_reversed { (next, prev) } else { (prev, next) };
-        let (tile_col, tile_icon) = color.unwrap_or((theme::MUTED, Icon::Layers));
-        let pos = if single {
-            format!("{} / {}", fmt_n(sel.first + 1), fmt_n(n))
-        } else {
-            format!("{}–{} / {}", fmt_n(sel.first + 1), fmt_n(sel.last + 1), fmt_n(n))
-        };
-        div()
-            .h(px(HEADER_H))
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap_2()
-            .pl_2()
-            .pr_2()
-            .border_b_1()
-            .border_color(c(theme::BORDER))
-            // 選択の履歴（ブラウザの戻る・進むと同じ位置）
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .child(self.ghost_button(
-                        "d-back",
-                        Icon::ArrowLeft,
-                        "戻る",
-                        Some("⌘["),
-                        !self.back.is_empty(),
-                        cx,
-                        |t, w, cx| t.go_back(w, cx),
-                    ))
-                    .child(self.ghost_button(
-                        "d-forward",
-                        Icon::ArrowRight,
-                        "進む",
-                        Some("⌘]"),
-                        !self.forward.is_empty(),
-                        cx,
-                        |t, w, cx| t.go_forward(w, cx),
-                    )),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(26.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_md()
-                            .bg(c(tile_col).opacity(0.16))
-                            .border_1()
-                            .border_color(c(tile_col).opacity(0.35))
-                            .child(event_icon(tile_icon, tile_col, 14.0)),
-                    )
-                    .child(div().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(title))
-                    .when_some(status, |d, (l, col)| d.child(badge(l, col))),
-            )
-            // レーン内の位置と前後の移動をひとまとまりにする
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(c(theme::BORDER))
-                    .bg(c(theme::BG))
-                    .child(
-                        self.ghost_button(
-                            "d-prev",
-                            Icon::ChevronUp,
-                            "前のイベント",
-                            Some("K"),
-                            prev,
-                            cx,
-                            |t, w, cx| t.step_event(-1, w, cx),
-                        )
-                        .size(px(22.0)),
-                    )
-                    .child(
-                        div()
-                            .id("d-pos")
-                            .px_1()
-                            .text_xs()
-                            .text_color(c(theme::MUTED))
-                            .child(pos)
-                            .tooltip(tip("レーン内の位置", None)),
-                    )
-                    .child(
-                        self.ghost_button(
-                            "d-next",
-                            Icon::ChevronDown,
-                            "次のイベント",
-                            Some("J"),
-                            next,
-                            cx,
-                            |t, w, cx| t.step_event(1, w, cx),
-                        )
-                        .size(px(22.0)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .child(self.ghost_button(
-                        "d-locate",
-                        Icon::Locate,
-                        "選択位置を表示",
-                        None,
-                        true,
-                        cx,
-                        |t, w, _| {
-                            t.detail_fullscreen = false;
-                            if let Some(sel) = t.selected {
-                                t.reveal(sel, true, w);
-                            }
-                        },
-                    ))
-                    .child(self.ghost_button(
-                        "d-fullscreen", if self.detail_fullscreen { Icon::Minimize } else { Icon::Maximize },
-                        if self.detail_fullscreen { "通常のパネルに戻す" } else { "詳細を全画面表示" },
-                        Some("⇧⌘↵"), true, cx, |t, window, cx| t.toggle_detail_fullscreen(window, cx),
-                    ))
-                    .child(self.ghost_button("d-close", Icon::X, "閉じる", None, true, cx, |t, window, cx| {
-                        t.close_detail(cx);
-                        window.focus(&t.focus_handle);
-                    })),
-            )
+        div().flex_none().flex().items_center().gap_1().text_xs()
+            .child(label(title))
+            .when(single, |d| d.when_some(status_label(e, is_live(s.end), output),
+                |d, (text, color)| d.child(badge(text, color))))
+            .child(div().flex_1())
+            .child(self.ghost_button("d-prev", Icon::ChevronUp, "前のイベント", Some("K"),
+                !single || if self.detail_reversed { sel.first + 1 < lane.events.len() } else { sel.first > 0 },
+                cx, |t, w, cx| t.step_event(-1, w, cx)).size(px(22.0)))
+            .child(div().text_color(c(theme::SUBTLE)).child(format!("{pos} / {}", fmt_n(lane.events.len()))))
+            .child(self.ghost_button("d-next", Icon::ChevronDown, "次のイベント", Some("J"),
+                !single || if self.detail_reversed { sel.first > 0 } else { sel.first + 1 < lane.events.len() },
+                cx, |t, w, cx| t.step_event(1, w, cx)).size(px(22.0)))
     }
 
     /// 見出しの下の文脈。読み込み元・プロジェクト・セッション・サブエージェントをパンくずで出す。
@@ -939,13 +889,12 @@ impl Rireki {
                     .id("ctx-session")
                     .flex_1()
                     .min_w_0()
-                    .truncate()
                     .text_color(c(theme::TEXT))
                     .font_weight(FontWeight::MEDIUM)
                     .cursor_pointer()
                     .hover(|d| d.underline())
-                    .child(title)
-                    .tooltip(tip("セッションの詳細", Some("3")))
+                    .child(Marquee::new("title", one_line(&title, usize::MAX)))
+                    .tooltip(tip("セッションの概要", Some("1")))
                     .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.set_detail_tab(DetailTab::Session, cx))),
             );
         if sel.lane != 0 {
@@ -973,10 +922,11 @@ impl Rireki {
                             cx,
                             move |t, w, cx| {
                                 let s = &t.store.sessions[session];
+                                let parent = s.parents.get(sel.lane).copied().flatten().unwrap_or(0);
                                 if let Some(i) =
-                                    s.lanes[0].events.iter().position(|e| e.call_id.as_deref() == Some(id.as_str()))
+                                    s.lanes[parent].events.iter().position(|e| e.call_id.as_deref() == Some(id.as_str()))
                                 {
-                                    let sel = Selection { session, lane: 0, first: i, last: i };
+                                    let sel = Selection { session, lane: parent, first: i, last: i };
                                     t.navigate(sel, w, cx);
                                     t.reveal(sel, false, w);
                                 }
@@ -992,7 +942,7 @@ impl Rireki {
     }
 
     /// レーン全体を選び、イベントのタブで `filter` を掛ける（集計から該当イベントへ移る）
-    fn open_lane_filtered(
+    pub(super) fn open_lane_filtered(
         &mut self,
         session: usize,
         lane: usize,
@@ -1013,13 +963,10 @@ impl Rireki {
         self.reveal(sel, true, w);
     }
 
-    /// セッションの詳細。概要の数字 → 操作 → トークン → 属性の順に、よく見るものを上に置く
-    fn session_card(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
+    /// 概要末尾の基本情報と再開・ログの操作。モデルはメインレーンの属性を表示する。
+    fn overview_information(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         let s = self.detail_session(sel);
-        let lane = &s.lanes[sel.lane];
-        let summary = &self.cache(sel).unwrap().session_summary;
-        let usage = summary.total.usage;
-        let title = if s.title.is_empty() { "(無題)".to_string() } else { s.title.clone() };
+        let lane = &s.lanes[0];
         let meta = |k: &'static str, v: AnyElement| {
             div()
                 .flex()
@@ -1031,45 +978,14 @@ impl Rireki {
         let model = match (lane.model.is_empty(), lane.effort.is_empty()) {
             (true, true) => None,
             (false, true) => Some(lane.model.clone()),
-            (true, false) => Some(format!("エフォート {}", lane.effort)),
-            (false, false) => Some(format!("{} · エフォート {}", lane.model, lane.effort)),
+            (true, false) => Some(lane.effort.clone()),
+            (false, false) => Some(format!("{} {}", lane.model, lane.effort)),
         };
         let version = (!s.version.is_empty()).then(|| match s.source {
             Source::Claude => format!("Claude Code {}", s.version),
             Source::Codex => format!("Codex CLI {}", s.version),
         });
-        let st = summary.total.stats;
         let session = sel.session;
-        let mut tiles = div()
-            .flex()
-            .flex_wrap()
-            .gap_2()
-            .child(stat("期間", fmt_dur(s.end - s.start), None))
-            .child(stat("ターン", fmt_n(st.turns), None))
-            .child(stat("ツール", fmt_n(st.tools), None));
-        if st.failures() > 0 {
-            tiles = tiles.child(
-                stat("失敗", fmt_n(st.failures()), Some(theme::ERR))
-                    .id("tile-failed")
-                    .cursor_pointer()
-                    .hover(|d| d.border_color(c(theme::ERR)))
-                    .tooltip(tip("メインの失敗したイベントを一覧", None))
-                    .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
-                        t.open_lane_filtered(session, 0, Some(RowFilter::Failed), w, cx)
-                    }))
-                    .into_any_element(),
-            );
-        } else {
-            tiles = tiles.child(stat("失敗", "0".into(), None));
-        }
-        if usage.calls > usage.unpriced {
-            tiles = tiles.child(stat("料金", fmt_usd(usage.cost), Some(theme::OK)));
-        }
-        if st.peak > 0 {
-            tiles = tiles.child(stat("最大コンテキスト", fmt_tokens(st.peak), None));
-        }
-        let models = &summary.models;
-        let lane_usage = (s.lanes.len() > 1).then(|| summary.lanes[sel.lane].usage).filter(|u| u.calls > 0);
         let resume = resume_command(s);
         let resumed = self.copied == Some("copy-resume");
         let origin = s.lanes.first().map(|l| l.origin.clone()).unwrap_or_default();
@@ -1116,38 +1032,7 @@ impl Rireki {
             .flex_col()
             .gap_3()
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child(title))
-                    .child(div().text_xs().text_color(c(theme::MUTED)).child(format!(
-                        "{} – {}",
-                        local(s.start).format("%Y/%m/%d %H:%M"),
-                        local(s.end).format(if local(s.start).date_naive() == local(s.end).date_naive() {
-                            "%H:%M"
-                        } else {
-                            "%m/%d %H:%M"
-                        }),
-                    ))),
-            )
-            .child(tiles)
-            .child(actions)
-            .when(usage.calls > 0, |d| {
-                d.child(
-                    section("トークン")
-                        .child(div().text_xs().child(usage_view(&usage)))
-                        .when_some(lane_usage, |d, u| {
-                            d.child(div().text_xs().text_color(c(theme::SUBTLE)).child("このレーン"))
-                                .child(usage_view(&u))
-                        })
-                        .when(models.len() > 1 || models.first().is_some_and(|m| m.1.unpriced > 0), |d| {
-                            d.child(div().text_xs().child(model_table(models)))
-                        }),
-                )
-            })
-            .child(
-                section("情報").child(
+                section("基本情報").child(
                     div()
                         .flex()
                         .flex_col()
@@ -1158,7 +1043,7 @@ impl Rireki {
                             d.child(meta("ブランチ", div().child(s.branch.clone()).into_any_element()))
                         })
                         .child(meta("ディレクトリ", div().child(tilde(&s.cwd)).into_any_element()))
-                        .child(meta(
+                        .when(self.expanded.contains("overview-meta"), |d| d.child(meta(
                             "セッション",
                             div()
                                 .flex()
@@ -1167,57 +1052,19 @@ impl Rireki {
                                 .child(div().min_w_0().truncate().font_family(rich::MONO).child(s.id.clone()))
                                 .child(self.copy_button("copy-id", s.id.clone(), cx).flex_none())
                                 .into_any_element(),
-                        ))
-                        .when_some(version, |d, v| d.child(meta("バージョン", div().child(v).into_any_element())))
+                        )))
+                        .when(self.expanded.contains("overview-meta"), |d| d.when_some(version, |d, v| d.child(meta("バージョン", div().child(v).into_any_element()))))
                         .when(s.headless, |d| d.child(meta("起動", div().child("非対話").into_any_element()))),
                 ),
             )
-    }
-
-    /// サブエージェントの一覧。押すとそのレーン全体を選ぶ
-    fn subagent_list(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
-        let s = self.detail_session(sel);
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .pt_2()
-            .border_t_1()
-            .border_color(c(theme::BORDER))
-            .child(div().pb_1().child(label(format!("サブエージェント {}", s.lanes.len() - 1))));
-        let summary = &self.cache(sel).unwrap().session_summary;
-        for (li, l) in s.lanes.iter().enumerate().skip(1) {
-            let st = summary.lanes[li].stats;
-            let (a, b) = l.range().unwrap_or((0.0, 0.0));
-            let session = sel.session;
-            let on = sel.lane == li;
-            list = list.child(
-                div()
-                    .id(ElementId::NamedInteger("sub".into(), li as u64))
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
-                    .px_1p5()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .cursor_pointer()
-                    .when(on, |d| d.bg(c(theme::ACCENT_BG)))
-                    .hover(|d| d.bg(c(theme::HOVER)))
-                    .child(icons::icon(Icon::Bot, theme::SUB).size_3().flex_none())
-                    .child(div().flex_1().min_w_0().truncate().child(l.name.clone()))
-                    .when(st.failures() > 0, |d| d.child(badge(format!("失敗 {}", st.failures()), theme::ERR)))
-                    .child(div().flex_none().text_color(c(theme::SUBTLE)).child(format!(
-                        "{} 件 · {}",
-                        fmt_n(l.events.len()),
-                        fmt_dur(b - a)
-                    )))
-                    .on_click(
-                        cx.listener(move |t, _: &ClickEvent, w, cx| t.open_lane_filtered(session, li, None, w, cx)),
-                    ),
-            );
-        }
-        list
+            .child(self.icon_button("overview-meta-toggle", Some(Icon::ChevronDown),
+                if self.expanded.contains("overview-meta") { "詳細情報を閉じる" } else { "ID・バージョンを表示" },
+                false, cx, |t, _, cx| {
+                    if !t.expanded.remove("overview-meta") { t.expanded.insert("overview-meta"); }
+                    t.overview_list.invalidate_information();
+                    t.detail_changed(cx);
+                }))
+            .child(actions)
     }
 
     fn action_button(&self, id: &'static str, icon: Icon, label: &'static str) -> Stateful<Div> {
@@ -1311,8 +1158,8 @@ impl Rireki {
                     .text_xs()
                     .cursor_pointer()
                     .hover(|d| d.bg(c(theme::event_color(u)).opacity(0.12)))
-                    .child(div().flex_none().text_color(c(theme::MUTED)).child("指示"))
-                    .child(div().flex_1().min_w_0().line_clamp(2).child(one_line(&u.summary, 200)))
+                    .child(div().flex_none().text_color(c(theme::MUTED)).child("選択範囲外の指示"))
+                    .child(div().flex_1().min_w_0().child(Marquee::new("prompt", SharedString::from(u.summary.clone()))))
                     .child(
                         div()
                             .flex_none()
@@ -1546,7 +1393,6 @@ impl Rireki {
     fn selection_summary(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         let s = self.detail_session(sel);
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
-        let (start, end) = (evs[0].start, self.cache(sel).unwrap().end());
         let summary = &self.cache(sel).unwrap().selection_summary;
         let st = summary.total.stats;
         let counts = &summary.names;
@@ -1591,49 +1437,11 @@ impl Rireki {
             ));
         }
 
-        let mut tiles = div().flex().flex_wrap().gap_2().child(stat("期間", fmt_dur(end - start), None)).child(stat(
-            "件数",
-            fmt_n(evs.len()),
-            None,
-        ));
-        if st.turns > 0 {
-            tiles = tiles.child(stat("指示", fmt_n(st.turns), None));
-        }
-        tiles = tiles.child(stat("ツール", fmt_n(st.tools), None));
         if st.failures() > 0 {
-            let on = filter == Some(RowFilter::Failed);
-            tiles = tiles.child(
-                stat("失敗", fmt_n(st.failures()), Some(theme::ERR))
-                    .id("tile-failed")
-                    .cursor_pointer()
-                    .when(on, |d| d.border_color(c(theme::ERR)).bg(c(theme::ERR).opacity(0.08)))
-                    .hover(|d| d.border_color(c(theme::ERR)))
-                    .tooltip(tip(if on { "絞り込みを外す" } else { "失敗したイベントだけを表示" }, None))
-                    .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
-                        t.set_row_filter(if on { None } else { Some(RowFilter::Failed) }, cx);
-                    }))
-                    .into_any_element(),
-            );
+            chips = chips.child(chip("chip-failed".into(), format!("失敗等 {}", st.failures()),
+                None, filter == Some(RowFilter::Failed), Some(RowFilter::Failed)));
         }
-        let usage = summary.total.usage;
-        let col = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .text_xs()
-            .child(div().text_color(c(theme::MUTED)).child(format!(
-                "{} – {}",
-                local(start).format("%m/%d %H:%M:%S"),
-                local(end).format(if local(start).date_naive() == local(end).date_naive() {
-                    "%H:%M:%S"
-                } else {
-                    "%m/%d %H:%M:%S"
-                }),
-            )))
-            .child(tiles)
-            .when(usage.calls > 0, |d| d.child(usage_view(&usage)))
-            .child(chips);
-        col.pb_2().border_b_1().border_color(c(theme::BORDER))
+        chips.pb_2().border_b_1().border_color(c(theme::BORDER))
     }
 
     /// 選択の中で編集したファイル。押すとその場で開き、編集の時系列と、編集ごとの差分を出す
@@ -1682,11 +1490,11 @@ impl Rireki {
                 .items_center()
                 .gap_1p5()
                 .pb_1()
-                .child(label(format!("編集したファイル {}", d.files.len())))
+                .child(label(format!("記録された編集 · {} ファイル", d.files.len())))
                 .child(div().text_xs().text_color(c(theme::OK)).child(format!("+{}", fmt_n(added))))
                 .child(div().text_xs().text_color(c(theme::ERR)).child(format!("−{}", fmt_n(removed))))
                 .child(div().flex_1())
-                .child(div().text_xs().text_color(c(theme::SUBTLE)).child("押すと差分を表示")),
+                .child(div().text_xs().text_color(c(theme::SUBTLE)).child("編集履歴の差分")),
         ));
         for (i, f) in d.files.iter().enumerate().take(if all { usize::MAX } else { FILE_MAX }) {
             if row != FileRow::File(i) { continue; }
@@ -1730,7 +1538,7 @@ impl Rireki {
                                 .child(base),
                         ),
                 )
-                .child(div().flex_none().text_color(c(theme::SUBTLE)).child(format!("×{}", f.edits)))
+                .child(div().flex_none().text_color(c(theme::SUBTLE)).child(format!("{}回", f.edits)))
                 .child(div().flex_none().text_color(c(theme::OK)).child(format!("+{}", f.added)))
                 .child(div().flex_none().text_color(c(theme::ERR)).child(format!("−{}", f.removed)))
                 .child(diff_bar(f.added, f.removed))
@@ -1960,11 +1768,22 @@ impl Rireki {
             live: is_live(s.end),
             replay_visible: self.replay.as_ref().map(|replay| replay.visible(evs)),
         }, evs);
+        let app = cx.entity().downgrade();
         if self.replay.as_ref().is_some_and(|replay| replay.scroll_pending.replace(false)) {
-            self.detail_list.scroll_to_latest(self.detail_reversed);
+            // 行の追加とレイアウトが済んでから追う。再生中の追加では進行中のアニメーションを保つ。
+            let following = app.clone();
+            cx.defer(move |cx| {
+                let _ = following.update(cx, |app, cx| {
+                    if app.selected == Some(sel)
+                        && app.replay.as_ref().is_some_and(|replay| replay.following && !replay.check_follow)
+                        && !app.detail_following
+                    {
+                        app.animate_to_latest(cx);
+                    }
+                });
+            });
         }
         self.detail_list.rendered.set(0);
-        let app = cx.entity().downgrade();
         let scrolling = app.clone();
         self.detail_list.state.set_scroll_handler(move |_, window, cx| {
             let _ = scrolling.update(cx, |app, cx| {
@@ -2001,7 +1820,7 @@ impl Rireki {
                     .flex_wrap()
                     .items_center()
                     .gap_2()
-                    .child(label("イベント一覧"))
+                    .child(label("履歴の表示"))
                     .child(
                         div()
                             .id("detail-order")
@@ -2033,6 +1852,7 @@ impl Rireki {
         let i = match item {
             Some(DetailRow::Summary) => return div().w_full().min_w_0().flex().flex_col().gap_2().pb_2()
                 .child(self.selection_summary(sel, cx))
+                .child(self.history_context(sel, cx))
                 .child(self.event_list_header(sel, cx)).into_any_element(),
             Some(DetailRow::Empty) => return div().py_2().text_xs().text_color(c(theme::SUBTLE))
                 .child(if self.replay.as_ref().is_some_and(|replay| !replay.is_finished()) {
@@ -2056,15 +1876,37 @@ impl Rireki {
         }
     }
 
+    fn history_context(&self, sel: Selection, cx: &mut Context<Self>) -> AnyElement {
+        let lane = &self.detail_session(sel).lanes[sel.lane];
+        if lane.events[sel.first].kind == Kind::User { return div().into_any_element(); }
+        let turns = &self.cache(sel).unwrap().session_summary.turns[sel.lane];
+        let previous = turns.partition_point(|turn| turn.index < sel.first).checked_sub(1);
+        let Some(index) = previous.map(|i| turns[i].index) else { return div().into_any_element(); };
+        div().id("history-context").p_2().rounded_md().bg(c(theme::BG)).flex().flex_col().gap_1()
+            .child(label("選択範囲外の指示 · 文脈として表示"))
+            .child(div().text_xs().text_color(c(theme::MUTED))
+                .child(Marquee::new("prompt", SharedString::from(lane.events[index].summary.clone()))))
+            .cursor_pointer().hover(|d| d.bg(c(theme::HOVER)))
+            .on_click(cx.listener(move |app, _: &ClickEvent, w, cx| {
+                app.navigate(Selection { first: index, last: index, ..sel }, w, cx);
+            })).into_any_element()
+    }
+
     /// ユーザーの指示の行。次の指示までの件数・時間・失敗を添え、本文を大きめに出す（ターンの区切り）
     fn turn_row(&self, sel: Selection, i: usize, text: &str, cx: &mut Context<Self>) -> Stateful<Div> {
         let lane = &self.detail_session(sel).lanes[sel.lane];
         let idx = sel.first + i;
         let e = &lane.events[idx];
         let turns = &self.cache(sel).unwrap().session_summary.turns[sel.lane];
-        let turn = &turns[turns.binary_search_by_key(&idx, |turn| turn.index).unwrap()];
-        let until = turn.end;
-        let mut facts = vec![format!("{} 件", fmt_n(turn.events))];
+        let visible = self.replay.as_ref().map_or(sel.last + 1, |replay| {
+            sel.first + replay.visible(&lane.events[sel.first..=sel.last])
+        });
+        let next = turns.iter().find(|t| t.index > idx).map_or(lane.events.len(), |t| t.index);
+        let end = next.min(sel.last + 1).min(visible);
+        let selected = &lane.events[idx + 1..end];
+        let until = selected.iter().map(|e| e.end).fold(e.start, f64::max);
+        let failures = selected.iter().filter(|e| e.status.failed()).count();
+        let mut facts = vec![format!("{} 件", fmt_n(selected.len()))];
         if until > e.start {
             facts.push(fmt_dur(until - e.start));
         }
@@ -2091,15 +1933,15 @@ impl Rireki {
                     .text_xs()
                     .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).text_color(c(color)).child("指示"))
                     .child(div().flex_1())
-                    .when(turn.failures > 0, |d| d.child(badge(format!("失敗 {}", turn.failures), theme::ERR)))
+                    .when(failures > 0, |d| d.child(badge(format!("失敗等 {}", failures), theme::ERR)))
                     .child(div().flex_none().text_color(c(theme::SUBTLE)).child(facts.join(" · "))),
             )
-            .child(div().text_sm().line_clamp(3).child(one_line(text, 400)));
-        self.rail_row(sel, idx, e, true, content, cx)
+            .child(rich::markdown(text, theme::TEXT).text_size(px(13.0)))
+            ;
+        self.rail_row(sel, idx, e, true, content.into_any_element(), cx)
     }
 
-    /// 一覧の 1 行。1 行目に名前と数値（失敗・差分・所要時間・トークン）を右に揃え、
-    /// 2 行目に要約（メッセージなら本文の先頭）を出す
+    /// 一覧の 1 行。名前・状態・要約の下に、共通の尺度で入力・出力の使用量を出す。
     fn event_row(
         &self,
         sel: Selection,
@@ -2112,84 +1954,54 @@ impl Rireki {
         let idx = sel.first + i;
         let s = self.detail_session(sel);
         let e = &s.lanes[sel.lane].events[idx];
-        let message = matches!(e.kind, Kind::User | Kind::Assistant | Kind::Thinking);
+        let foldable = matches!(e.kind, Kind::Tool | Kind::Agent | Kind::Thinking);
+        let expanded = !foldable || self.history_expanded.contains(&idx);
         let status = status_label(e, live, output);
-        let (added, removed) = touched.iter().fold((0, 0), |(a, r), t| (a + t.1, r + t.2));
-        // ファイルのパスは作業ディレクトリからの相対にして短くする
-        let commands = self.cache(sel).and_then(|d| d.commands.get(i)).map_or(&[][..], Vec::as_slice);
-        let body: SharedString = if message {
-            if text.is_empty() { e.summary.clone().into() } else { one_line(text, 400).into() }
-        } else {
-            rich::rel_path(&e.summary, &s.cwd).to_string().into()
-        };
-        let num = |t: String, col: u32| div().flex_none().text_color(c(col)).child(t);
-        let content = div()
-            .flex_1()
-            .min_w_0()
-            .py_1p5()
-            .pr_1()
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_xs()
-                    .child(
-                        div()
-                            .flex_shrink()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(c(if message { theme::MUTED } else { theme::TEXT }))
-                            .child(SharedString::from(e.name.clone())),
-                    )
-                    .when_some(status, |d, (l, col)| d.child(badge(l, col)))
-                    .child(div().flex_1())
-                    .when(added + removed > 0, |d| {
-                        d.child(num(format!("+{added}"), theme::OK)).child(num(format!("−{removed}"), theme::ERR))
-                    })
-                    .when(e.end > e.start, |d| d.child(num(fmt_dur(e.end - e.start), theme::SUBTLE)))
-                    .when(!e.usage.is_empty(), |d| {
-                        d.child(usage_chip(
-                            ElementId::NamedInteger("usage".into(), idx as u64),
-                            &e.usage,
-                            e.model.as_deref(),
-                        ))
-                    }),
-            )
-            // コマンドは元の行を保ち、横スクロールで全文を出す
-            .when(!commands.is_empty(), |d| {
-                d.child(rich::horizontal_scroll("commands").child(
-                    div().flex_none().min_w_full().flex().flex_col().gap_0p5()
-                        .children(commands.iter().map(|cmd| {
-                            div()
-                                .flex()
-                                .gap_1p5()
-                                .text_xs()
-                                .font_family(rich::MONO)
-                                .child(div().flex_none().text_color(c(theme::SUBTLE)).child("$"))
-                                .child(div().flex_none().text_color(c(theme::MUTED)).child(cmd.clone()))
-                        })),
-                ))
+        let caption = if text.is_empty() { e.summary.as_ref() } else { text };
+        let content = div().id(("history-content", idx)).flex_1().min_w_0().py_2().pr_1()
+            .flex().flex_col().gap_1p5()
+            .child(div().flex().items_center().gap_1().text_xs()
+                .when(foldable, |d| d.child(self.icon_button(
+                    SharedString::from(format!("history-toggle-{idx}")),
+                    Some(if expanded { Icon::ChevronDown } else { Icon::ChevronRight }),
+                    e.name.to_string(), expanded, cx, move |t, _, cx| {
+                        cx.stop_propagation();
+                        if !t.history_expanded.remove(&idx) { t.history_expanded.insert(idx); }
+                        let offset = t.detail_list.state.logical_scroll_top();
+                        let count = t.detail_list.state.item_count();
+                        t.detail_list.state.splice(0..count, count);
+                        t.detail_list.state.scroll_to(offset);
+                        t.detail_changed(cx);
+                    })))
+                .when(!foldable, |d| d.child(label(e.name.to_string())))
+                .when_some(status, |d, (l, color)| d.child(badge(l, color)))
+                .child(div().flex_1())
+                .when(e.end > e.start, |d| d.child(div().text_color(c(theme::SUBTLE)).child(fmt_dur(e.end - e.start))))
+                .child(self.ghost_button(SharedString::from(format!("history-open-{idx}")),
+                    Icon::ArrowRight, "このイベントの詳細を開く", None, true, cx,
+                    move |t, w, cx| { cx.stop_propagation();
+                        t.navigate(Selection { first: idx, last: idx, ..sel }, w, cx);
+                        t.reveal(Selection { first: idx, last: idx, ..sel }, false, w);
+                    }).size(px(20.0))))
+            .when(!expanded, |d| d.child(div().text_xs().text_color(c(theme::MUTED)).line_clamp(1)
+                .child(one_line(&e.summary, 160))))
+            .when(expanded && matches!(e.kind, Kind::User | Kind::Assistant | Kind::Thinking),
+                |d| d.child(rich::markdown(caption, if e.kind == Kind::Thinking { theme::MUTED } else { theme::TEXT })
+                    .text_size(px(13.0))))
+            .when(expanded && matches!(e.kind, Kind::Tool | Kind::Agent), |d| {
+                let raw = self.cache(sel).and_then(|c| c.raws.get(i)).and_then(|raw| raw.as_deref());
+                d.child(self.tool_input(e, text, raw, &s.cwd, cx))
+                    .child(self.tool_output(e, output, output.lines().count(), live, &s.cwd, cx))
+                    .when(e.kind == Kind::Agent, |d| d.when_some(
+                        e.call_id.as_deref().and_then(|id| s.lane_spawned_by(id)),
+                        |d, lane| d.child(self.subagent_button(sel, lane, cx))))
             })
-            .when(commands.is_empty() && !body.is_empty(), |d| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .whitespace_normal()
-                        .line_clamp(if e.kind == Kind::Thinking { 2 } else { 3 })
-                        .when(!message, |d| d.font_family(rich::MONO))
-                        .text_color(c(match e.kind {
-                            Kind::Assistant => theme::TEXT,
-                            _ => theme::MUTED,
-                        }))
-                        .child(body),
-                )
-            });
-        self.rail_row(sel, idx, e, false, content, cx)
+            .when(expanded && !e.usage.is_empty(), |d| d.child(usage_meter(
+                ElementId::NamedInteger("usage".into(), idx as u64), &e.usage,
+                e.model.as_deref(), self.detail_list.usage_scale(),
+            )));
+        let _ = touched;
+        self.rail_row(sel, idx, e, false, content.into_any_element(), cx)
     }
 
     /// 一覧の行の外枠。左に時刻、縦の線の上にイベントの種類のアイコン、右に内容を並べる。
@@ -2200,7 +2012,7 @@ impl Rireki {
         idx: usize,
         e: &Event,
         turn: bool,
-        content: Div,
+        content: AnyElement,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let (session, lane) = (sel.session, sel.lane);
@@ -2259,10 +2071,10 @@ impl Rireki {
                             ),
                     ),
             )
-            .child(div().flex_1().min_w_0().flex().child(content.flex_1().min_w_0()))
-            .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
+            .child(div().flex_1().min_w_0().flex().flex_col().child(content))
+            .when(turn, |d| d.on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
                 t.navigate(Selection { session, lane, first: idx, last: idx }, w, cx);
-            }))
+            })))
     }
 }
 
@@ -2420,17 +2232,20 @@ fn model_table(models: &[(String, UsageSum)]) -> Div {
                 m.clone()
             }))
             .child(div().flex_none().text_color(c(theme::MUTED)).child(fmt_tokens(u.total())))
-            .child(div().flex_none().w(px(64.0)).flex().justify_end().child(if u.unpriced > 0 && u.cost == 0.0 {
-                div().text_color(c(theme::SUBTLE)).child("—")
+            .child(div().flex_none().w(px(96.0)).flex().justify_end().child(if u.unpriced > 0 && u.cost == 0.0 {
+                div().text_color(c(theme::SUBTLE)).child("不明")
             } else {
-                div().text_color(c(theme::OK)).child(fmt_usd(u.cost))
+                div().text_color(c(theme::OK)).child(usage_cost_label(u))
             }))
     }))
 }
 
-/// イベントに添える使用量（入力はキャッシュ込み）。内訳・モデル・料金はツールチップに出す
-fn usage_chip(id: impl Into<ElementId>, u: &Usage, model: Option<&str>) -> Stateful<Div> {
-    let input = u.input as u64 + u.cache_read as u64 + u.cache_write as u64;
+fn usage_input(u: &Usage) -> u64 {
+    u.input as u64 + u.cache_read as u64 + u.cache_write as u64
+}
+
+/// 使用量の内訳・モデル・料金。数値表示と比較バーで同じツールチップを使う。
+fn usage_tooltip(u: &Usage, model: Option<&str>) -> String {
     let mut detail = format!(
         "入力 {} / キャッシュ読込 {} / キャッシュ書込 {} / 出力 {}",
         fmt_n(u.input as usize),
@@ -2447,13 +2262,68 @@ fn usage_chip(id: impl Into<ElementId>, u: &Usage, model: Option<&str>) -> State
             detail.push_str(&format!(" · {}", fmt_usd(p.cost(u))));
         }
     }
+    detail
+}
+
+/// イベントに添える使用量（入力はキャッシュ込み）。内訳・モデル・料金はツールチップに出す
+fn usage_chip(id: impl Into<ElementId>, u: &Usage, model: Option<&str>) -> Stateful<Div> {
     div()
         .id(id)
         .flex_none()
         .text_xs()
         .text_color(c(theme::SUBTLE))
-        .child(format!("↑{} ↓{}", fmt_tokens(input), fmt_tokens(u.output as u64)))
-        .tooltip(tip(detail, None))
+        .child(format!("↑{} ↓{}", fmt_tokens(usage_input(u)), fmt_tokens(u.output as u64)))
+        .tooltip(tip(usage_tooltip(u, model), None))
+}
+
+/// 入力と出力を別々の列で比較する。出力が入力より少なくてもイベント間の差を読める。
+fn usage_meter(id: impl Into<ElementId>, u: &Usage, model: Option<&str>, scale: UsageScale) -> Stateful<Div> {
+    let parts = [
+        ("入力", usage_input(u), scale.input, USAGE_COLORS[0]),
+        ("出力", u.output as u64, scale.output, USAGE_COLORS[3]),
+    ];
+    div()
+        .id(id)
+        .w_full()
+        .min_w_0()
+        .mt_1()
+        .flex()
+        .gap_3()
+        .text_xs()
+        .children(parts.into_iter().map(|(label, value, max, color)| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_1()
+                        .text_color(c(color))
+                        .child(label)
+                        .child(fmt_tokens(value)),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(4.0))
+                        .rounded_full()
+                        .bg(c(theme::GRID))
+                        .when(value > 0, |d| d.child(
+                            div()
+                                .h_full()
+                                .w(gpui::relative((value as f64 / max.max(1) as f64).min(1.0) as f32))
+                                .min_w(px(1.0))
+                                .rounded_full()
+                                .bg(c(color)),
+                        )),
+                )
+        }))
+        .tooltip(tip(usage_tooltip(u, model), None))
 }
 
 #[cfg(test)]
@@ -2465,6 +2335,64 @@ mod tests {
             start: 1.0, end: 2.0, kind: Kind::Tool, name: name.into(), summary: Default::default(),
             input: String::new(), output: String::new(), call_id: None, text_ref: Default::default(),
             usage: Default::default(), model: None, status,
+        }
+    }
+
+    #[test]
+    fn detail_usage_scale_tracks_filters_display_limit_and_updates() {
+        let mut events: Vec<_> = (0..=DETAIL_MAX).map(|_| list_event("Read", Status::Ok)).collect();
+        events[0].usage = Usage { input: 100, cache_read: 50, cache_write: 25, output: 2, ..Default::default() };
+        events[1] = list_event("Edit", Status::Error);
+        events[1].usage = Usage { input: 10, output: 80, ..Default::default() };
+        events[DETAIL_MAX].usage = Usage { input: 10_000, output: 10_000, ..Default::default() };
+        let state = DetailList::new();
+        let key = |generation, filter, reversed| DetailListKey {
+            sel: Selection { session: 1, lane: 0, first: 0, last: DETAIL_MAX },
+            generation, filter, reversed, width: 400, live: true, replay_visible: None,
+        };
+        state.prepare(key(1, None, false), &events);
+        assert_eq!(state.usage_scale(), UsageScale { input: 175, output: 80 });
+        state.prepare(key(1, None, true), &events);
+        assert_eq!(state.usage_scale(), UsageScale { input: 175, output: 80 });
+        state.prepare(key(1, Some(RowFilter::Name("Read".into())), false), &events);
+        assert_eq!(state.usage_scale(), UsageScale { input: 175, output: 2 });
+        state.prepare(key(1, Some(RowFilter::Failed), false), &events);
+        assert_eq!(state.usage_scale(), UsageScale { input: 10, output: 80 });
+        state.prepare(key(1, Some(RowFilter::Name("Missing".into())), false), &events);
+        assert_eq!(state.usage_scale(), UsageScale::default());
+        events[0].usage = Usage {
+            input: u32::MAX, cache_read: u32::MAX, cache_write: u32::MAX, output: 1, ..Default::default()
+        };
+        state.prepare(key(2, None, false), &events);
+        assert_eq!(state.usage_scale(), UsageScale { input: u32::MAX as u64 * 3, output: 80 });
+    }
+
+    #[test]
+    fn replay_usage_scale_includes_new_rows_and_resets_on_rewind() {
+        let mut events = vec![list_event("Read", Status::Ok), list_event("Edit", Status::Ok), list_event("Read", Status::Ok)];
+        events[0].usage = Usage { input: 100, output: 2, ..Default::default() };
+        events[1].usage = Usage { input: 50, cache_read: 100, ..Default::default() };
+        events[2].usage = Usage { output: 40, ..Default::default() };
+        for reversed in [false, true] {
+            let state = DetailList::new();
+            let key = |visible, filter| DetailListKey {
+                sel: Selection { session: 1, lane: 0, first: 0, last: 2 },
+                generation: 1, filter, reversed, width: 400, live: false, replay_visible: Some(visible),
+            };
+            state.prepare(key(0, None), &events);
+            assert_eq!(state.usage_scale(), UsageScale::default());
+            state.prepare(key(1, None), &events);
+            assert_eq!(state.usage_scale(), UsageScale { input: 100, output: 2 });
+            state.prepare(key(2, None), &events);
+            assert_eq!(state.usage_scale(), UsageScale { input: 150, output: 2 });
+            state.prepare(key(3, None), &events);
+            assert_eq!(state.usage_scale(), UsageScale { input: 150, output: 40 });
+            state.prepare(key(1, None), &events);
+            assert_eq!(state.usage_scale(), UsageScale { input: 100, output: 2 });
+            let filter = Some(RowFilter::Name("Read".into()));
+            state.prepare(key(1, filter.clone()), &events);
+            state.prepare(key(3, filter), &events);
+            assert_eq!(state.usage_scale(), UsageScale { input: 100, output: 40 });
         }
     }
 
@@ -2493,6 +2421,19 @@ mod tests {
         assert_eq!(detail_rows(&events, Some(&RowFilter::Name("AfterLimit".into())), false),
             [DetailRow::Summary, DetailRow::Empty, DetailRow::Limit]);
         assert_eq!(detail_rows(&[], None, false), [DetailRow::Summary, DetailRow::Empty]);
+    }
+
+    #[test]
+    fn newest_history_keeps_each_prompt_before_its_executions_and_response() {
+        let events: Vec<_> = [Kind::Tool, Kind::User, Kind::Tool, Kind::Assistant,
+            Kind::User, Kind::Thinking, Kind::Assistant].into_iter().map(|kind| {
+                Event { kind, ..list_event("event", Status::Ok) }
+            }).collect();
+        assert_eq!(detail_rows(&events, None, true), [DetailRow::Summary,
+            DetailRow::Event(4), DetailRow::Event(5), DetailRow::Event(6),
+            DetailRow::Event(1), DetailRow::Event(2), DetailRow::Event(3), DetailRow::Event(0)]);
+        assert_eq!(replay::rows(&events, 6, None, true), [DetailRow::Event(4), DetailRow::Event(5),
+            DetailRow::Event(1), DetailRow::Event(2), DetailRow::Event(3), DetailRow::Event(0)]);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use gpui::{
     div, point, prelude::*, px,
 };
 
-use super::widgets::event_icon;
+use super::widgets::{Marquee, event_icon};
 use super::{Popover, Rireki, fmt_dur, local};
 use crate::icons::{self, Icon};
 use crate::layout::{self, Block, Granularity};
@@ -71,9 +71,10 @@ impl Rireki {
             }
             counts.sort_by_key(|a| std::cmp::Reverse(a.1));
         }
-        let session = if s.title.is_empty() { "(無題)".to_string() } else { one_line(&s.title, 60) };
-        let session = if sel.lane == 0 { session } else { format!("{session} › {}", one_line(&lane.name, 40)) };
+        let session = if s.title.is_empty() { "(無題)".to_string() } else { one_line(&s.title, usize::MAX) };
+        let session = if sel.lane == 0 { session } else { format!("{session} › {}", one_line(&lane.name, usize::MAX)) };
         let card = div()
+            .id(SharedString::from(format!("hover-card-{}-{}-{}-{}", sel.session, sel.lane, sel.first, sel.last)))
             .w(px(320.0))
             .flex()
             .flex_col()
@@ -97,7 +98,7 @@ impl Rireki {
                     .child(div().flex_1())
                     .when(end > start, |d| d.child(div().text_color(c(theme::MUTED)).child(fmt_dur(end - start)))),
             )
-            .when(!body.is_empty(), |d| d.child(div().line_clamp(3).child(one_line(&body, 240))))
+            .when(!body.is_empty(), |d| d.child(Marquee::new("hover-body", one_line(&body, usize::MAX)).on_show()))
             .when(!counts.is_empty(), |d| {
                 d.child(div().flex().flex_wrap().gap_x_2().gap_y_0p5().children(counts.iter().take(6).map(
                     |&(name, n, col, ic)| {
@@ -123,7 +124,7 @@ impl Rireki {
                     .gap_1()
                     .text_color(c(theme::SUBTLE))
                     .child(icons::icon(icons::source_icon(s.source).0, theme::SUBTLE).size_3())
-                    .child(div().truncate().child(session)),
+                    .child(div().flex_1().min_w_0().child(Marquee::new("hover-session", session).on_show())),
             );
         Some(
             deferred(anchored().position(self.hover_at + point(px(14.0), px(18.0))).child(card))
@@ -228,7 +229,7 @@ impl Rireki {
                 &[
                     ("クリック", "詳細を開く"),
                     ("J · K", "次 / 前のイベント"),
-                    ("1 · 2 · 3 · 4", "詳細のタブ（イベント / ファイル / セッション / 分析）"),
+                    ("1 · 2 · 3 · 4", "詳細のタブ（概要 / 履歴 / 変更 / 分析）"),
                     ("⇧⌘↵", "詳細の全画面表示 / 通常表示"),
                     ("⌘F（分析タブ）", "選択範囲のイベントを検索"),
                     ("⌘[ ⌘]", "選択の履歴を戻る / 進む"),

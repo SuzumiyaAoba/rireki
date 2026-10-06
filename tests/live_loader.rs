@@ -90,6 +90,41 @@ fn check(cache: &mut LiveLog, job: &Job) -> Vec<Loaded> {
 }
 
 #[test]
+fn long_prompts_remain_complete_in_titles_and_hover_summaries() {
+    let prompt = format!("  {}\n\t最後の指示も表示してください 🦀  ", "日本語の長いプロンプトと英文を保持する。 ".repeat(30));
+    let expected = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cases = [
+        (JobKind::Claude, vec![claude("user", 1, json!({"role":"user","content":prompt}))]),
+        (JobKind::Codex, vec![
+            codex("session_meta", 0, json!({"id":"long-prompt","cwd":"/project","source":"cli"})),
+            codex("response_item", 1, json!({"type":"message","role":"user","content":[{"type":"input_text","text":prompt}]})),
+        ]),
+        (JobKind::Codex, vec![
+            codex("session_meta", 0, json!({"id":"long-goal","cwd":"/project","source":"cli"})),
+            codex("event_msg", 1, json!({"type":"thread_goal_updated","goal":{"objective":prompt}})),
+        ]),
+    ];
+    for (kind, rows) in cases {
+        let fixture = Fixture::new();
+        let job = fixture.job(kind);
+        for row in rows { append(&job.path, &line(row)); }
+        let mut live = LiveLog::default();
+        let items = check(&mut live, &job);
+        let Loaded::Session(session) = &items[0] else { panic!("session expected") };
+        assert_eq!(session.title, expected);
+        assert_eq!(session.lanes[0].events[0].summary.as_ref(), expected);
+        assert!(session.title.ends_with("🦀"));
+        if kind == JobKind::Claude {
+            append(&job.path, &line(json!({"type":"ai-title","aiTitle":"明示されたタイトル"})));
+            let updated = check(&mut live, &job);
+            let Loaded::Session(session) = &updated[0] else { panic!("session expected") };
+            assert_eq!(session.title, "明示されたタイトル");
+            assert_eq!(session.lanes[0].events[0].summary.as_ref(), expected);
+        }
+    }
+}
+
+#[test]
 fn codex_appends_update_old_calls_usage_models_and_preserve_previous_versions() {
     let fixture = Fixture::new();
     let job = fixture.job(JobKind::Codex);

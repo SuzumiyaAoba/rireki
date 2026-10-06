@@ -4,7 +4,7 @@ use chrono::{Datelike, Duration, Local, NaiveDate};
 use gpui::{AnyElement, ClickEvent, Context, ElementId, FontWeight, Window, div, prelude::*, px};
 
 use super::header::weekday_ja;
-use super::widgets::tip;
+use super::widgets::{Marquee, tip};
 use super::{AXIS_H, BlockPaint, HOUR_LABEL_W, MIN_BLOCK, Rireki, Selection, Track, midnight, now};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -312,7 +312,9 @@ impl Rireki {
                         .text_xs()
                         .text_color(c(theme::TEXT))
                         .child(crate::icons::icon(logo, color))
-                        .child(div().flex_1().min_w_0().truncate().child(crate::model::one_line(title, 80)))
+                        .child(div().flex_1().min_w_0().child(Marquee::new(
+                            gpui::SharedString::from(format!("calendar-title-{d}-{k}")),
+                            crate::model::one_line(title, usize::MAX))))
                         .when(subs > 0 && fw > 90.0, |d| {
                             d.child(div().flex_none().text_color(c(theme::SUB)).child(format!("+{subs} サブ")))
                         }),

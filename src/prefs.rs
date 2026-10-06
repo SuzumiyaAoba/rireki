@@ -28,11 +28,11 @@ pub enum SourceFilter {
 #[serde(rename_all = "snake_case")]
 pub enum DetailTab {
     /// 選んだイベントの入力・結果、または一覧
-    #[default]
     Events,
     /// 編集したファイル
     Files,
     /// セッションの情報と集計
+    #[default]
     Session,
     /// 選択範囲全体のイベント分析
     Analysis,
@@ -55,6 +55,8 @@ pub struct Prefs {
     pub in_view_only: bool,
     /// タイムラインでディレクトリごとにメインイベントを詰めて表示するか
     pub directory_timeline: bool,
+    /// タイムラインで API 換算料金を表示するか
+    pub cost_timeline: bool,
     pub source: SourceFilter,
     /// 絞り込み中のプロジェクト（作業ディレクトリ）
     pub focus: Option<String>,
@@ -81,11 +83,12 @@ impl Default for Prefs {
             gran: Granularity::Auto,
             in_view_only: false,
             directory_timeline: false,
+            cost_timeline: false,
             source: SourceFilter::All,
             focus: None,
             collapsed: Vec::new(),
             folded: Vec::new(),
-            detail_tab: DetailTab::Events,
+            detail_tab: DetailTab::Session,
             detail_reversed: false,
         }
     }
@@ -124,7 +127,7 @@ mod tests {
     fn roundtrip_and_partial() {
         let p = Prefs {
             focus: Some("/w".into()), gran: Granularity::Turn, statistics: true,
-            detail_reversed: true, directory_timeline: true, ..Prefs::default()
+            detail_reversed: true, directory_timeline: true, cost_timeline: true, ..Prefs::default()
         };
         let s = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&s).unwrap(), p);
@@ -134,7 +137,20 @@ mod tests {
         assert!(!q.statistics);
         assert!(!q.detail_reversed);
         assert!(!q.directory_timeline);
+        assert!(!q.cost_timeline);
         let analysis = Prefs { detail_tab:DetailTab::Analysis, ..Prefs::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&analysis).unwrap()).unwrap(), analysis);
+    }
+
+    #[test]
+    fn overview_default_keeps_existing_tab_values_compatible() {
+        assert_eq!(Prefs::default().detail_tab, DetailTab::Session);
+        assert_eq!(serde_json::from_str::<Prefs>("{}").unwrap().detail_tab, DetailTab::Session);
+        for (value, tab) in [("session", DetailTab::Session), ("events", DetailTab::Events),
+            ("files", DetailTab::Files), ("analysis", DetailTab::Analysis)] {
+            let prefs: Prefs = serde_json::from_str(&format!(r#"{{"detail_tab":"{value}"}}"#)).unwrap();
+            assert_eq!(prefs.detail_tab, tab);
+            assert_eq!(serde_json::to_value(tab).unwrap(), value);
+        }
     }
 }

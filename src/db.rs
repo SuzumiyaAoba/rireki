@@ -13,7 +13,7 @@ use rusqlite::{Connection, OpenFlags, params};
 use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Status, Usage};
 
 /// スキーマやパース結果の形式を変えたら上げる（古い DB は作り直す）
-const VERSION: i64 = 15;
+const VERSION: i64 = 16;
 
 pub struct Db {
     conn: Connection,

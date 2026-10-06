@@ -147,8 +147,8 @@ impl Rireki {
             .flex_none()
             .flex()
             .items_center()
-            .gap_2()
-            .px_3()
+            .gap(px(if w < 650.0 { 4.0 } else { 8.0 }))
+            .px(px(if w < 650.0 { 8.0 } else { 12.0 }))
             .border_b_1()
             .border_color(c(theme::BORDER))
             .text_sm();
@@ -260,6 +260,13 @@ impl Rireki {
             }));
         let on = self.in_view_only;
         let directory = self.directory_timeline;
+        let cost = self.cost_timeline;
+        let cost_view = self.icon_button("cost-timeline", Some(Icon::Chart),
+            if w >= 900.0 || cost { "API コスト" } else { "" }, cost, cx,
+            |t, _, cx| t.toggle_cost_timeline(cx))
+            .tooltip(tip(if cost { "イベントのタイムラインに戻す" } else {
+                "API 換算料金をセッション・ディレクトリ別に時系列で表示（USD）"
+            }, None));
         let directory_view = div()
             .id("directory-timeline")
             .flex()
@@ -280,6 +287,8 @@ impl Rireki {
             .tooltip(tip(
                 if directory {
                     "セッションごとの表示に戻す"
+                } else if cost {
+                    "ディレクトリ単位で全セッション・全レーンの API 換算料金を合計して表示"
                 } else {
                     "ディレクトリ単位でメインイベントを詰めて表示（サブエージェントは省略、重なる枠だけ別の行に配置）"
                 },
@@ -314,12 +323,15 @@ impl Rireki {
             .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.toggle_in_view_only(cx)));
         row.child(self.range_button(cx))
             .when(w >= 700.0, |d| d.child(zoom))
-            .when(timeline, |d| d.child(directory_view).child(in_view))
-            .child(gran)
+            .when(timeline, |d| d.child(cost_view).child(directory_view).child(in_view))
+            .when(!timeline || !cost, |d| d.child(gran))
     }
 
     /// 下端の帯。表示中の件数と目盛りの間隔、ブロックの色の凡例
     pub(super) fn footer(&self, window: &Window) -> Div {
+        if self.mode == Mode::Timeline && self.cost_timeline {
+            return self.cost_footer(window);
+        }
         let w = self.main_width(window);
         let left = if self.mode == Mode::Timeline {
             format!("{}  ·  目盛り {} / 100px", self.counts, fmt_dur(self.spp * 100.0))

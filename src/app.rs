@@ -8,6 +8,7 @@
 //! - 重ねて出すもの (`overlay.rs`): ホバーカード、まとめ方のメニュー、ショートカット一覧
 
 mod calendar;
+mod cost;
 mod detail;
 mod header;
 mod keymap;
@@ -230,6 +231,8 @@ pub struct Rireki {
     row_filter: Option<RowFilter>,
     /// 詳細パネルで、長い本文を全部表示している箇所
     expanded: HashSet<&'static str>,
+    /// 履歴内で入力・結果や思考を展開しているイベント位置
+    history_expanded: HashSet<usize>,
     /// 詳細パネルのファイルのタブで開いているファイル
     file_open: Option<String>,
     /// 詳細パネルで開いているタブ
@@ -240,6 +243,8 @@ pub struct Rireki {
     detail_fullscreen: bool,
     analysis_state: detail::analysis::State,
     detail_scroll: ScrollHandle,
+    detail_scroll_offsets: [gpui::Point<gpui::Pixels>; 4],
+    overview_list: detail::overview::OverviewList,
     detail_list: DetailList,
     replay: Option<detail::replay::State>,
     replay_speed: f64,
@@ -275,13 +280,16 @@ pub struct Rireki {
     in_view_only: bool,
     /// ディレクトリごとにメインイベントを最小限の行に詰める
     directory_timeline: bool,
+    /// API 換算料金を時間ごとに表示する
+    cost_timeline: bool,
+    cost_state: cost::State,
     source: SourceFilter,
     /// 読み込み元ごとに、進行中のセッションがあるか (Claude, Codex)
     live_sources: (bool, bool),
     selected: Option<Selection>,
     /// 選択の履歴（戻る / 進む）
-    back: Vec<Selection>,
-    forward: Vec<Selection>,
+    back: Vec<(Selection, DetailTab)>,
+    forward: Vec<(Selection, DetailTab)>,
     drag: Option<Drag>,
     sidebar_open: bool,
     sidebar_w: f32,
@@ -606,6 +614,9 @@ impl Rireki {
             detail_fullscreen: false,
             analysis_state,
             detail_scroll: ScrollHandle::new(),
+            detail_scroll_offsets: [point(px(0.0), px(0.0)); 4],
+            overview_list: detail::overview::OverviewList::new(),
+            history_expanded: HashSet::new(),
             detail_list: DetailList::new(),
             replay: None,
             replay_speed: 1.0,
@@ -631,6 +642,8 @@ impl Rireki {
             gran: p.gran,
             in_view_only: p.in_view_only,
             directory_timeline: p.directory_timeline,
+            cost_timeline: p.cost_timeline,
+            cost_state: cost::State::new(),
             source: p.source,
             live_sources: (false, false),
             selected: None,
@@ -690,6 +703,7 @@ impl Rireki {
             gran: self.gran,
             in_view_only: self.in_view_only,
             directory_timeline: self.directory_timeline,
+            cost_timeline: self.cost_timeline,
             source: self.source,
             focus: self.focus.clone(),
             collapsed,
@@ -763,12 +777,7 @@ impl Rireki {
     /// 表示順に応じて最新のイベント側へ移る。途中でユーザーがスクロールしたら止める
     fn animate_to_latest(&mut self, cx: &mut Context<Self>) {
         if self.detail_uses_list() {
-            if self.detail_reversed {
-                self.detail_list.state.scroll_to(gpui::ListOffset::default());
-                self.detail_changed(cx);
-            } else {
-                self.animate_list_to_bottom(cx);
-            }
+            self.animate_list_to_latest(cx);
             return;
         }
         const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
@@ -1141,8 +1150,11 @@ impl Rireki {
             self.reset_analysis();
             self.row_filter = None;
             self.expanded.clear();
+            self.history_expanded.clear();
             self.file_open = None;
             self.detail_scroll.set_offset(point(px(0.0), px(0.0)));
+            self.detail_scroll_offsets = [point(px(0.0), px(0.0)); 4];
+            self.overview_list.reset();
             self.detail_list.reset();
             self.file_list.reset();
         }
@@ -1153,11 +1165,12 @@ impl Rireki {
     /// 現在の選択を履歴に積んでから選択する。詳細パネルが開いて表示幅が縮むときは、選択が隠れないようにする
     fn navigate(&mut self, sel: Selection, window: &Window, cx: &mut Context<Self>) {
         let opening = self.selected.is_none();
-        if let Some(cur) = self.selected.filter(|c| *c != sel) {
+        if let Some(cur) = self.selected.filter(|c| *c != sel || self.detail_tab != DetailTab::Events) {
             self.push_back(cur);
             self.forward.clear();
         }
         self.select(sel, cx);
+        self.set_detail_tab(DetailTab::Events, cx);
         if opening {
             self.reveal(sel, false, window);
         }
@@ -1165,7 +1178,7 @@ impl Rireki {
     }
 
     fn push_back(&mut self, sel: Selection) {
-        self.back.push(sel);
+        self.back.push((sel, self.detail_tab));
         if self.back.len() > 100 {
             self.back.remove(0);
         }
@@ -1173,12 +1186,13 @@ impl Rireki {
 
     /// 履歴を遡って直前の選択に戻る（更新で無効になった項目は飛ばす）
     fn go_back(&mut self, window: &Window, cx: &mut Context<Self>) {
-        while let Some(sel) = self.back.pop() {
+        while let Some((sel, tab)) = self.back.pop() {
             if self.valid(sel) {
                 if let Some(cur) = self.selected {
-                    self.forward.push(cur);
+                    self.forward.push((cur, self.detail_tab));
                 }
                 self.select(sel, cx);
+                self.set_detail_tab(tab, cx);
                 self.reveal(sel, false, window);
                 break;
             }
@@ -1187,12 +1201,13 @@ impl Rireki {
     }
 
     fn go_forward(&mut self, window: &Window, cx: &mut Context<Self>) {
-        while let Some(sel) = self.forward.pop() {
+        while let Some((sel, tab)) = self.forward.pop() {
             if self.valid(sel) {
                 if let Some(cur) = self.selected {
                     self.push_back(cur);
                 }
                 self.select(sel, cx);
+                self.set_detail_tab(tab, cx);
                 self.reveal(sel, false, window);
                 break;
             }
@@ -1267,6 +1282,10 @@ impl Rireki {
 
     /// タイムラインで選択した枠の行へスクロールする。セッション表示では折りたたみも開く。
     fn scroll_to_selection(&mut self, sel: Selection, window: &Window) {
+        if self.cost_timeline {
+            self.scroll_to_cost_selection(sel, window);
+            return;
+        }
         let v0 = self.t0;
         let v1 = self.t0 + self.spp * self.plot_width(window) as f64;
         let cwd = self.store.sessions[sel.session].cwd.clone();
@@ -1330,6 +1349,7 @@ impl Rireki {
         self.unhide(si);
         let sel = Selection { session: si, lane: 0, first: 0, last: n - 1 };
         self.navigate(sel, window, cx);
+        self.set_detail_tab(DetailTab::Session, cx);
         self.reveal(sel, true, window);
         self.sidebar_changed(cx);
     }
@@ -1846,6 +1866,7 @@ impl Render for Rireki {
             self.statistics(window, cx).into_any_element()
         } else {
             let main = match self.mode {
+                Mode::Timeline if self.cost_timeline => self.cost_timeline_view(window, cx),
                 Mode::Timeline => self.timeline(window, cx),
                 _ => self.calendar(window, cx),
             };

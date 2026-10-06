@@ -75,6 +75,8 @@ pub struct SessionSummary {
 
 pub struct TurnSummary {
     pub index: usize,
+    /// 次の指示までに記録された最後の応答。概要から本文へ移動するための位置。
+    pub response: Option<usize>,
     pub events: usize,
     pub end: f64,
     pub failures: usize,
@@ -98,11 +100,13 @@ impl SessionSummary {
                     if event.kind == Kind::User {
                         turns.push(TurnSummary {
                             index,
+                            response: None,
                             events: 0,
                             end: event.start,
                             failures: 0,
                         });
                     } else if let Some(turn) = turns.last_mut() {
+                        if event.kind == Kind::Assistant { turn.response = Some(index); }
                         turn.events += 1;
                         turn.end = turn.end.max(event.end);
                         turn.failures += usize::from(event.status.failed());
@@ -257,6 +261,8 @@ mod tests {
                     .position(|e| e.kind == Kind::User)
                     .map_or(lane.events.len(), |i| turn.index + 1 + i);
                 let events = &lane.events[turn.index + 1..end];
+                assert_eq!(turn.response, (turn.index + 1..end).rev()
+                    .find(|&i| lane.events[i].kind == Kind::Assistant));
                 assert_eq!(turn.events, events.len());
                 assert_eq!(turn.failures, Stats::of(events).failures());
                 assert_eq!(

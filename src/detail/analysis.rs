@@ -94,6 +94,9 @@ pub struct Analysis {
     pub indices: Vec<usize>,
     pub tools: Vec<Tool>,
     pub usage: UsageSum,
+    /// 絞り込んだ範囲のモデル別の使用量。本文の読み込みは不要。
+    pub models: Vec<(String, UsageSum)>,
+    pub peak_context: u64,
     pub failures: usize,
     pub pending: usize,
     pub completed_tools: usize,
@@ -129,6 +132,7 @@ impl Analysis {
         let query = filter.query.to_lowercase();
         let words: Vec<_> = query.split_whitespace().collect();
         let mut names = HashMap::<&str, usize>::new();
+        let mut models = HashMap::<&str, usize>::new();
         let mut last_price = None;
         let mut durations = Vec::new();
         let mut start = f64::INFINITY;
@@ -180,6 +184,14 @@ impl Analysis {
                     }
                 };
                 out.usage.add_priced(&e.usage, price);
+                out.peak_context = out.peak_context.max(e.usage.input as u64
+                    + e.usage.cache_read as u64 + e.usage.cache_write as u64);
+                let name = model.unwrap_or("");
+                let index = *models.entry(name).or_insert_with(|| {
+                    out.models.push((name.to_owned(), UsageSum::default()));
+                    out.models.len() - 1
+                });
+                out.models[index].1.add_priced(&e.usage, price);
             }
             out.failures += usize::from(e.status.failed());
             out.pending += usize::from(e.status == Status::Pending);
@@ -219,6 +231,7 @@ impl Analysis {
         if !is_current() {
             return None;
         }
+        out.models.sort_by_key(|(_, usage)| std::cmp::Reverse(usage.total()));
         if start.is_finite() && end.is_finite() {
             out.span = (end - start).max(0.0);
         }
@@ -465,6 +478,9 @@ mod tests {
                 let actual = Analysis::build(&events, &Filter { status, ..Filter::default() }, order, || true).unwrap();
                 assert_eq!(actual.usage, expected);
                 assert_eq!(actual.usage.cost.to_bits(), expected.cost.to_bits());
+                assert_eq!(actual.models, UsageSum::by_model(events.iter().filter(|e| {
+                    status == StatusFilter::All || e.status.failed()
+                })));
             }
         }
     }

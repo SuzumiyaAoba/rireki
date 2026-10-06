@@ -496,7 +496,7 @@ fn message_event(t: f64, kind: Kind, name: Arc<str>, text: &str) -> Event {
         end: t,
         kind,
         name,
-        summary: one_line(text, 160).into(),
+        summary: one_line(text, if kind == Kind::User { usize::MAX } else { 160 }).into(),
         input: truncate(text, MAX_TEXT),
         output: String::new(),
         call_id: None,
@@ -947,7 +947,7 @@ impl ClaudeParser {
                 let text = text.trim();
                 if !text.is_empty() && !text.starts_with('<') {
                     if self.title.is_empty() {
-                        self.title = one_line(text, 80);
+                        self.title = one_line(text, usize::MAX);
                     }
                     self.lane.events.push(message_event(t, Kind::User, self.names.get("User"), text));
                 }
@@ -1211,7 +1211,7 @@ impl CodexParser {
                     if let Some(t) = ts(&v).filter(|_| !obj.is_empty() && obj != self.goal) {
                         self.goal = obj.to_string();
                         if self.title.is_empty() {
-                            self.title = one_line(obj, 80);
+                            self.title = one_line(obj, usize::MAX);
                         }
                         self.lane.events.push(message_event(t, Kind::User, self.names.get("User"), obj));
                     }
@@ -1258,7 +1258,7 @@ impl CodexParser {
                 match role {
                     "user" => {
                         if self.title.is_empty() {
-                            self.title = one_line(text, 80);
+                            self.title = one_line(text, usize::MAX);
                         }
                         self.lane.events.push(message_event(t, Kind::User, self.names.get("User"), text));
                     }

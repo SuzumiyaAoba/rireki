@@ -7,7 +7,7 @@ mod prefs;
 mod theme;
 
 use rireki::{
-    db, detail, histogram, index, jsmock, layout, loader, model, patch, pricing, search, statistics, time,
+    cost_timeline, db, detail, histogram, index, jsmock, layout, loader, model, patch, pricing, search, statistics, time,
     view_index,
 };
 

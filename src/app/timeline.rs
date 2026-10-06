@@ -8,7 +8,7 @@ use gpui::{
     MouseMoveEvent, Pixels, SharedString, TextRun, Window, canvas, div, fill, point, prelude::*, px, size,
 };
 
-use super::widgets::{project_tile, tip};
+use super::widgets::{Marquee, project_tile, prompt_tip, tip};
 use super::{AXIS_H, BlockPaint, MIN_BLOCK, ROW_H, Rireki, Row, Selection, fmt_dur, local, now};
 use crate::icons::{self, Icon};
 use crate::layout::{Block, Granularity};
@@ -518,9 +518,9 @@ impl Rireki {
 
             let (title, sub) = if tr.lane == 0 {
                 let t = if s.title.is_empty() { "(無題)" } else { s.title.as_str() };
-                (one_line(t, 80), false)
+                (one_line(t, usize::MAX), false)
             } else {
-                (format!("↳ {}", one_line(&lane.name, 80)), true)
+                (format!("↳ {}", one_line(&lane.name, usize::MAX)), true)
             };
             let (badge, badge_color) = icons::source_icon(s.source);
             let (session, lane_i) = (tr.session, tr.lane);
@@ -529,7 +529,7 @@ impl Rireki {
             let detail = {
                 let (a, b) = lane.range().unwrap_or((s.start, s.end));
                 let mut d = format!(
-                    "{title}\n{} · {} – {}（{}）· {n} 件",
+                    "{} · {} – {}（{}）· {n} 件",
                     self.project_name(&s.cwd),
                     local(a).format("%m/%d %H:%M"),
                     local(b).format("%H:%M"),
@@ -564,12 +564,12 @@ impl Rireki {
                     .when(!sub, |d| d.child(icons::icon(badge, badge_color)))
                     .child(
                         div()
+                            .flex_1()
                             .min_w_0()
-                            .truncate()
                             .text_color(c(if sub { theme::SUB } else { theme::TEXT }))
-                            .child(title),
+                            .child(Marquee::new("title", title.clone())),
                     )
-                    .tooltip(tip(detail, None))
+                    .tooltip(prompt_tip(title, detail))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.navigate(Selection { session, lane: lane_i, first: 0, last: n - 1 }, window, cx);
                     })),
@@ -910,7 +910,7 @@ impl Rireki {
 }
 
 /// 目盛り (時刻, ラベル, 主目盛りか)
-fn ticks(v0: f64, v1: f64, spp: f64) -> Vec<(f64, String, bool)> {
+pub(super) fn ticks(v0: f64, v1: f64, spp: f64) -> Vec<(f64, String, bool)> {
     const STEPS: &[f64] = &[
         1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0, 10800.0, 21600.0, 43200.0, 86400.0, 172800.0,
         604800.0, 2592000.0,

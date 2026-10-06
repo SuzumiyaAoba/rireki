@@ -172,7 +172,8 @@ const DENSE_TIMELINE_STAGES: [(&str, usize); 8] = [
     ("timeline_dense_directory_zoom", 80), ("timeline_dense_update", 80),
 ];
 const FILE_STAGES: [(&str, usize); 1] = [("detail_files_checks", 240)];
-const ANALYSIS_STAGES: [(&str, usize); 2] = [
+const ANALYSIS_STAGES: [(&str, usize); 3] = [
+    ("detail_panel", 280),
     ("detail_fullscreen", 240),
     ("detail_analysis", 280),
 ];
@@ -538,7 +539,7 @@ impl Rireki {
                     session.finalize();
                     self.rebuild_order();
                     si
-                } else if matches!(stage, "detail_follow" | "detail_follow_cancel" | "detail_live_scrolled" | "detail_refresh") {
+                } else if matches!(stage, "detail_panel" | "detail_follow" | "detail_follow_cancel" | "detail_live_scrolled" | "detail_refresh") {
                     self.profile_session(anchor)
                 } else {
                     anchor
@@ -563,6 +564,49 @@ impl Rireki {
             }
         }
         match stage {
+            "detail_panel" => match step {
+                0 => self.set_detail_tab(DetailTab::Session, cx),
+                20 => {
+                    self.overview_list.profile_scroll_to(ListOffset { item_ix: 2, offset_in_item: px(7.0) });
+                    self.set_detail_tab(DetailTab::Events, cx);
+                }
+                40 => {
+                    self.detail_list.state.scroll_to(ListOffset { item_ix: 3, offset_in_item: px(7.0) });
+                    self.history_expanded.extend([2, 4]);
+                    self.set_detail_tab(DetailTab::Files, cx);
+                }
+                60 => {
+                    self.set_detail_tab(DetailTab::Events, cx);
+                    assert_eq!(self.detail_list.state.logical_scroll_top().item_ix, 3);
+                    assert!(self.history_expanded.contains(&2));
+                }
+                80 => {
+                    self.set_detail_tab(DetailTab::Session, cx);
+                    assert_eq!(self.overview_list.profile_offset().item_ix, 2);
+                }
+                100 => {
+                    let sel = self.selected.unwrap();
+                    self.open_event(sel.session, sel.lane, 2, window, cx);
+                    assert_eq!(self.detail_tab, DetailTab::Events);
+                    assert!(self.history_expanded.is_empty());
+                }
+                120 => self.set_detail_tab(DetailTab::Files, cx),
+                140 => {
+                    assert_eq!(self.detail_tab, DetailTab::Files);
+                    assert!(self.detail_cache.as_ref().unwrap().files.is_empty());
+                    self.go_back(window, cx);
+                    assert_eq!(self.detail_tab, DetailTab::Session);
+                }
+                160 | 180 => self.toggle_detail_fullscreen(window, cx),
+                200 => {
+                    assert!(!self.detail_fullscreen);
+                    let sel = self.selected.unwrap();
+                    self.open_lane_filtered(sel.session, sel.lane, Some(super::detail::RowFilter::Failed), window, cx);
+                    assert_eq!(self.detail_tab, DetailTab::Events);
+                }
+                220 => self.set_detail_tab(DetailTab::Analysis, cx),
+                _ => {},
+            },
             "detail_analysis" => self.analysis_profile_step(step, window, cx),
             "detail_fullscreen" => match step {
                 20 => {

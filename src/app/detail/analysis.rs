@@ -287,6 +287,7 @@ impl Rireki {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.analysis_state.list.scroll_to(gpui::ListOffset::default());
         window.focus(&self.analysis_state.input.focus_handle(cx));
         self.analysis_state
             .input
@@ -321,59 +322,35 @@ impl Rireki {
             .flex_col()
             .gap_2()
             .p_3();
-        let lane = &self.detail_session(sel).lanes[sel.lane];
-        let whole_lane = sel.first == 0 && sel.last + 1 == lane.events.len();
-        body = body.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(label(format!(
-                    "選択範囲 {} 件",
-                    fmt_n(sel.last - sel.first + 1)
-                )))
-                .child(
-                    self.icon_button(
-                        "analysis-lane",
-                        Some(Icon::Layers),
-                        "レーン全体",
-                        whole_lane,
-                        cx,
-                        |app, window, cx| {
-                            let Some(sel) = app.selected.filter(|&s| app.valid(s)) else {
-                                return;
-                            };
-                            let n = app.store.sessions[sel.session].lanes[sel.lane].events.len();
-                            app.navigate(
-                                Selection {
-                                    first: 0,
-                                    last: n - 1,
-                                    ..sel
-                                },
-                                window,
-                                cx,
-                            );
-                            window.focus(&app.focus_handle);
-                        },
-                    )
-                    .tooltip(tip("このレーンの全イベントを分析", None)),
-                )
-                .child(div().flex_1())
-                .child(self.ghost_button(
-                    "analysis-export",
-                    if self.copied == Some("analysis-export") {
-                        Icon::Check
-                    } else {
-                        Icon::Copy
-                    },
-                    "絞り込んだ全イベントのメタデータを JSON でコピー",
-                    None,
-                    state.result.is_some() && !state.busy && !state.exporting,
-                    cx,
-                    |app, _, cx| app.copy_analysis(cx),
-                )),
-        );
+        if state.result.is_some() {
+            let app = cx.entity().downgrade();
+            body = body.child(
+                list(state.list.clone(), move |row, _, cx| {
+                    app.update(cx, |app, cx| app.analysis_item(sel, row, cx))
+                        .unwrap_or_else(|_| div().into_any_element())
+                })
+                .w_full()
+                .min_w_0()
+                .flex_1()
+                .min_h_0()
+                .when(state.busy, |d| d.opacity(0.5)),
+            );
+        } else {
+            body = body.child(div().text_xs().text_color(c(theme::MUTED)).child("集計中…"));
+        }
+        body.into_any_element()
+    }
+
+    /// 検索と並べ替えは指標・内訳の後、比較一覧の直前に置く。
+    fn analysis_controls(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
+        let state = &self.analysis_state;
+        let mut body = div().flex().flex_col().gap_2()
+            .child(div().flex().items_center().gap_2().child(label("イベントの比較"))
+                .child(div().flex_1()).child(self.ghost_button("analysis-export",
+                    if self.copied == Some("analysis-export") { Icon::Check } else { Icon::Copy },
+                    "絞り込んだ全イベントのメタデータを JSON でコピー", None,
+                    state.result.is_some() && !state.busy && !state.exporting, cx,
+                    |app, _, cx| app.copy_analysis(cx))));
         body = body.child(
             div()
                 .flex()
@@ -504,21 +481,7 @@ impl Rireki {
                     "詳細を読み込み中…".into()
                 }),
         );
-        if state.result.is_some() {
-            let app = cx.entity().downgrade();
-            body = body.child(
-                list(state.list.clone(), move |row, _, cx| {
-                    app.update(cx, |app, cx| app.analysis_item(sel, row, cx))
-                        .unwrap_or_else(|_| div().into_any_element())
-                })
-                .w_full()
-                .min_w_0()
-                .flex_1()
-                .min_h_0()
-                .when(state.busy, |d| d.opacity(0.5)),
-            );
-        }
-        body.into_any_element()
+        body
     }
 
     fn copy_analysis(&mut self, cx: &mut Context<Self>) {
@@ -571,7 +534,8 @@ impl Rireki {
             return div().into_any_element();
         }
         if row == 0 {
-            return self.analysis_summary(analysis, cx).into_any_element();
+            return div().w_full().min_w_0().flex().flex_col().gap_2().pb_2()
+                .child(self.analysis_summary(analysis, cx)).child(self.analysis_controls(sel, cx)).into_any_element();
         }
         let Some(&index) = analysis.indices.get(row - 1) else {
             return div().into_any_element();
@@ -695,12 +659,19 @@ impl Rireki {
                 .flex_col()
                 .gap_3()
                 .pb_3()
+                .child(label(if self.analysis_state.filter == Filter::default() {
+                    "選択範囲の集計"
+                } else { "絞り込んだイベントの集計" }))
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap_2()
+                        .child(stat("選択期間", fmt_dur(analysis.span), None))
                         .child(stat("イベント", fmt_n(analysis.indices.len()), None))
+                        .child(stat("失敗・拒否・中断", fmt_n(analysis.failures),
+                            (analysis.failures > 0).then_some(theme::ERR)))
+                        .child(stat("API換算料金", super::usage_cost_label(&analysis.usage), None))
                         .child(
                             stat(
                                 "ツール失敗率",
@@ -713,7 +684,7 @@ impl Rireki {
                                 None,
                             )),
                         )
-                        .child(stat("トークン", fmt_tokens(analysis.usage.total()), None)),
+                        .child(stat("トークン", super::usage_total_label(&analysis.usage), None)),
                 )
                 .child(
                     div()
@@ -826,7 +797,22 @@ impl Rireki {
             out = out.child(tools);
         }
         if analysis.usage.calls > 0 {
-            out = out.child(usage_view(&analysis.usage));
+            out = out.child(div().flex().flex_col().gap_1().text_xs()
+                .child(label("モデル別のトークン・API換算料金"))
+                .child(super::model_table(&analysis.models)))
+                .child(self.icon_button("analysis-usage-toggle", Some(Icon::ChevronDown),
+                    if self.expanded.contains("analysis-usage") { "キャッシュ内訳を閉じる" } else { "キャッシュ内訳を表示" },
+                    false, cx, |app, _, cx| {
+                        if !app.expanded.remove("analysis-usage") { app.expanded.insert("analysis-usage"); }
+                        let offset = app.analysis_state.list.logical_scroll_top();
+                        let count = app.analysis_state.list.item_count();
+                        app.analysis_state.list.splice(0..count, count);
+                        app.analysis_state.list.scroll_to(offset);
+                        app.detail_changed(cx);
+                    }))
+                .when(self.expanded.contains("analysis-usage"), |d| d.child(usage_view(&analysis.usage))
+                    .child(stat("最大コンテキスト", fmt_tokens(analysis.peak_context), None)))
+                .child(div().text_xs().text_color(c(theme::SUBTLE)).child("トークン・料金は記録された使用量を集計しています。"));
         }
         if analysis.indices.is_empty() {
             out = out.child(
@@ -835,8 +821,6 @@ impl Rireki {
                     .text_color(c(theme::MUTED))
                     .child("条件に一致するイベントはありません"),
             );
-        } else {
-            out = out.child(label("イベント一覧 · クリックで入力・結果を表示"));
         }
         out
     }

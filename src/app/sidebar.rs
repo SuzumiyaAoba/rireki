@@ -8,7 +8,7 @@ use gpui::{
     StyledText, WeakEntity, Window, div, prelude::*, px,
 };
 
-use super::widgets::{dot, event_icon, kbd, project_tile, tip};
+use super::widgets::{Marquee, dot, event_icon, kbd, project_tile, prompt_tip, tip};
 use super::{HEADER_H, INNER_RADIUS, Rireki, is_live, rel_time, when};
 use crate::icons::{self, Icon};
 use crate::model::one_line;
@@ -291,7 +291,7 @@ impl Rireki {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .child(div().truncate().child(title_of(&s.title)))
+                            .child(Marquee::new("title", title_of(&s.title)))
                             .child(
                                 div()
                                     .flex()
@@ -309,6 +309,7 @@ impl Rireki {
                                     .child(div().flex_none().child(rel_time(s.end))),
                             ),
                     )
+                    .tooltip(prompt_tip(title_of(&s.title), format!("{} · {}", self.project_name(&s.cwd), rel_time(s.end))))
                     .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))).into_any_element()
             }
             NavRow::AllProjects => {
@@ -366,7 +367,7 @@ impl Rireki {
                 } else { super::local(s.start).format("%m/%d %H:%M").to_string() };
                 self.row(ElementId::NamedInteger("ses".into(), si as u64), selected)
                     .child(icons::icon(logo, if selected { theme::TEXT } else { logo_color }))
-                    .child(div().flex_1().truncate().child(title_of(&s.title)))
+                    .child(div().flex_1().min_w_0().child(Marquee::new("title", title_of(&s.title))))
                     .when(live, |d| d.child(dot(theme::LIVE, 7.0)))
                     .child(
                         div()
@@ -375,7 +376,7 @@ impl Rireki {
                             .text_color(if selected { gpui::white().opacity(0.8) } else { c(theme::SUBTLE) })
                             .child(rel_time(s.end)),
                     )
-                    .tooltip(tip(format!("{}\n{sub_label}", title_of(&s.title)), None))
+                    .tooltip(prompt_tip(title_of(&s.title), sub_label))
                     .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))).into_any_element()
             }
             NavRow::More(rest) => {
@@ -500,13 +501,14 @@ impl Rireki {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .child(div().truncate().child(highlight(&title, terms)))
+                                .child(Marquee::new("title", title.clone()).with_highlights(highlights(&title, terms)))
                                 .child(div().text_xs().text_color(c(theme::MUTED)).truncate().child(format!(
                                     "{} · {}",
                                     self.project_name(&s.cwd),
                                     rel_time(s.end)
                                 ))),
                         )
+                        .tooltip(prompt_tip(title, format!("{} · {}", self.project_name(&s.cwd), rel_time(s.end))))
                         .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.click_result(i, window, cx))).into_any_element();
             }
             row -= ns;
@@ -548,11 +550,11 @@ impl Rireki {
                                                 .text_color(c(color))
                                                 .child(highlight(&e.name, terms)),
                                         )
-                                        .child(div().flex_1().min_w_0().truncate().text_color(c(theme::MUTED)).child(
-                                            match &lane_name {
-                                                Some(l) => format!("{} › {}", title_of(&s.title), one_line(l, 40)),
+                                        .child(div().flex_1().min_w_0().text_color(c(theme::MUTED)).child(
+                                            Marquee::new("session-title", match &lane_name {
+                                                Some(l) => format!("{} › {}", title_of(&s.title), one_line(l, usize::MAX)),
                                                 None => title_of(&s.title),
-                                            },
+                                            }),
                                         ))
                                         .child(div().flex_none().text_color(c(theme::SUBTLE)).child(when(e.start))),
                                 )
@@ -619,7 +621,7 @@ impl Rireki {
 }
 
 fn title_of(t: &str) -> String {
-    if t.is_empty() { "(無題)".to_string() } else { one_line(t, 120) }
+    if t.is_empty() { "(無題)".to_string() } else { one_line(t, usize::MAX) }
 }
 
 fn count_badge(n: usize, selected: bool) -> Div {
@@ -647,6 +649,10 @@ fn result_heading(title: &'static str, n: usize) -> Div {
 
 /// 検索語に一致する部分を強調した文字列
 fn highlight(text: &str, terms: &[String]) -> StyledText {
+    StyledText::new(SharedString::from(text.to_string())).with_highlights(highlights(text, terms))
+}
+
+fn highlights(text: &str, terms: &[String]) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
     for t in terms {
         let mut from = 0;
@@ -673,7 +679,7 @@ fn highlight(text: &str, terms: &[String]) -> StyledText {
         font_weight: Some(FontWeight::BOLD),
         ..Default::default()
     };
-    StyledText::new(SharedString::from(text.to_string())).with_highlights(merged.into_iter().map(|r| (r, style)))
+    merged.into_iter().map(|r| (r, style)).collect()
 }
 
 /// 一致した位置（`range`）が見えるよう、長い文字列の前後を省いた 1 行

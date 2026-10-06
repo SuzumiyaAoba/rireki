@@ -95,7 +95,7 @@ cargo test --lib --no-default-features  # GUI の依存を外してコアだけ�
   - Git のブランチと CLI のバージョン、Codex のゴール（`/goal`。ユーザーの発話として扱い、タイトルがなければタイトルにする）も拾う。
 - **jsmock.rs** — Codex のコードモード (`exec`) の JS を QuickJS (rquickjs) で実行し、`tools` を Proxy にしたモックで呼び出しを記録する。読み込み時は静的解析 (`js_tool_calls`) で名前と要約だけを決め、input には JS を `JS_MARK` 付きで保存する。詳細表示時に `loader::exec_detail` で整形し、結果を `jscache.db`（キーは JS 本文のハッシュ）にキャッシュする。モックの挙動を変えたら `ENGINE_VERSION` を上げる。
 - **model.rs** — `Session` は複数の `Lane`（main + サブエージェント）を持ち、`Lane` は時刻順の `Event` 列。`Event` は結果の状態 (`status`) と API 呼び出しのトークン使用量 (`usage` / `model`) を持ち、`Stats`（ターン・ツール・失敗の数）と `UsageSum`（トークン・料金）で集計する。`Store` はレーンを読み込み元ファイル (`Lane::origin`) 単位で差し替え、親より先に届いた子レーンを `orphans` に保持して親セッション追加時に合流させる。描画用の派生データ（`cum_end`, `parents`, `spawn_t`）は `Session::finalize` で事前計算し、描画中に全イベントを走査しない。時刻はすべて Unix 秒の `f64`。
-- **pricing.rs** — モデルごとの料金表（100 万トークンあたりの USD）とトークン使用量の料金換算。`~/Library/Application Support/rireki/prices.json` で追加・上書きできる。
+- **pricing.rs** — モデルごとの料金表（100 万トークンあたりの USD）とトークン使用量の料金換算。`~/Library/Application Support/rireki/prices.json` で追加・上書きできる。 最長のキーから照合する。集計中の料金検索は先頭候補以外をモデル名の先頭バイトで絞り、料金表への参照を共有する。モデル名の表は256件まで保持し、直前の1モデルは別に持つ。モデルなしは照会しない。
 - **layout.rs** — 表示スケール（`spp` = 1px あたり秒数）と `Granularity`（自動／同一ツール／ターン／コール）に応じて、レーンのイベントを `Block`（events の index 範囲）に集約する。表示範囲外のブロックは捨てる。`Cache` は自動／同一ツールの集約を表示範囲の近傍に保持し、同一ツールでは結合条件が変わらない縮尺でも再利用する。名前ごとのイベント位置でブロックの色とラベルを決める。セッション更新時にキャッシュを破棄する。
 - **app.rs** — GPUI の `Rireki` ビュー。状態、データの反映、選択と履歴（戻る / 進む）、表示位置の移動（`reveal`）、ホイール・ドラッグ・ピンチ・境界ドラッグの入力処理、画面全体の組み立てを担う。画面は Slack 風に、上端の帯・左端のアイコンレール・サイドバー・メイン列・詳細パネルを並べる。描画は `app/` 以下に分ける:
   - `rail.rs` — 上端の帯と、読み込み元（すべて / Claude / Codex）・表示（タイムライン / カレンダー）を切り替えるレール

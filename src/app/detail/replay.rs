@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use gpui::{Context, Div, ElementId, Window, div, prelude::*, px, relative};
+use gpui::{Context, Div, Window, div, prelude::*, px, relative};
 
 use super::{DetailRow, Rireki, RowFilter, Selection, fmt_dur, fmt_n};
 use crate::detail::replay::{Playback, SPEEDS};
@@ -33,7 +33,7 @@ impl State {
 pub(super) fn rows(events: &[Event], visible: usize, filter: Option<&RowFilter>, reversed: bool) -> Vec<DetailRow> {
     let mut rows = matching_rows(events, 0, visible, filter);
     if reversed {
-        rows.reverse();
+        super::reverse_turn_rows(&mut rows, events, filter.is_some());
     }
     if rows.is_empty() {
         rows.push(DetailRow::Empty);
@@ -60,6 +60,7 @@ pub(super) fn matching_rows(events: &[Event], first: usize, last: usize, filter:
 
 impl Rireki {
     pub(super) fn reset_replay(&mut self) {
+        self.cancel_detail_follow();
         self.replay_task = None;
         self.replay = None;
         self.replay_autostart = None;
@@ -220,7 +221,11 @@ impl Rireki {
             playing,
             cx,
             move |app, window, cx| app.toggle_replay(sel, window, cx),
-        ));
+        )).child(self.icon_button("replay-speed", None, format!("{}×", self.replay_speed), false, cx,
+            |app, _, cx| {
+                let index = SPEEDS.iter().position(|speed| *speed == app.replay_speed).unwrap_or(0);
+                app.set_replay_speed(SPEEDS[(index + 1) % SPEEDS.len()], cx);
+            }).tooltip(super::tip("クリックで再生速度を切り替える", None)));
         if let Some(replay) = &self.replay {
             actions = actions
                 .child(self.ghost_button(
@@ -231,6 +236,7 @@ impl Rireki {
                     true,
                     cx,
                     |app, _, cx| {
+                        app.cancel_detail_follow();
                         if let Some(replay) = &mut app.replay {
                             replay.clock.rewind(Instant::now());
                             replay.following = true;
@@ -247,6 +253,7 @@ impl Rireki {
                     replay.following,
                     cx,
                     |app, _, cx| {
+                        app.cancel_detail_follow();
                         if let Some(replay) = &mut app.replay {
                             replay.following = !replay.following;
                             replay.check_follow = false;
@@ -308,24 +315,7 @@ impl Rireki {
             controls = controls.child(actions);
         }
         controls
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_1()
-                    .child(div().text_color(c(theme::MUTED)).child("速度"))
-                    .children(SPEEDS.iter().enumerate().map(|(index, &speed)| {
-                        self.icon_button(
-                            ElementId::NamedInteger("replay-speed".into(), index as u64),
-                            None,
-                            if speed == 1.0 { "1×（実時間）".to_string() } else { format!("{speed}×") },
-                            self.replay_speed == speed,
-                            cx,
-                            move |app, _, cx| app.set_replay_speed(speed, cx),
-                        )
-                    })),
-            )
+
     }
 }
 

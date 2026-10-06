@@ -140,7 +140,7 @@ impl Rireki {
             }))
     }
 
-    /// アイコンの下に名前を添えたナビゲーション項目
+    /// アイコンのみのナビゲーション項目。名前とショートカットはツールチップに表示する
     #[allow(clippy::too_many_arguments)]
     fn nav_item(
         &self,
@@ -157,9 +157,8 @@ impl Rireki {
             .group(id)
             .w(px(RAIL_W))
             .flex()
-            .flex_col()
             .items_center()
-            .gap(px(3.0))
+            .justify_center()
             .py_1()
             .cursor_pointer()
             .child(
@@ -172,13 +171,6 @@ impl Rireki {
                     .when(active, |d| d.bg(gpui::white().opacity(0.14)))
                     .when(!active, |d| d.group_hover(id, |s| s.bg(gpui::white().opacity(0.07))))
                     .child(icons::icon(icon, if active { theme::TEXT } else { theme::MUTED }).size(px(18.0))),
-            )
-            .child(
-                div()
-                    .text_size(px(10.0))
-                    .text_color(c(if active { theme::TEXT } else { theme::MUTED }))
-                    .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
-                    .child(label),
             )
             .tooltip(tip(label, Some(key)))
             .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
