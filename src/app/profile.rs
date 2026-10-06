@@ -172,6 +172,10 @@ const DENSE_TIMELINE_STAGES: [(&str, usize); 8] = [
     ("timeline_dense_directory_zoom", 80), ("timeline_dense_update", 80),
 ];
 const FILE_STAGES: [(&str, usize); 1] = [("detail_files_checks", 240)];
+const ANALYSIS_STAGES: [(&str, usize); 2] = [
+    ("detail_fullscreen", 240),
+    ("detail_analysis", 280),
+];
 const SUMMARY_STAGES: [(&str, usize); 2] = [
     ("detail_summary_selection", 120),
     ("detail_summary_session", 120),
@@ -355,6 +359,8 @@ impl Rireki {
                 &LANE_MAP_STAGES
             } else if args.iter().any(|arg| arg == "--profile-dense-timeline") {
                 &DENSE_TIMELINE_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-analysis") {
+                &ANALYSIS_STAGES
             } else if args.iter().any(|arg| arg == "--profile-statistics") {
                 &STATISTICS_STAGES
             } else if args.iter().any(|arg| arg == "--profile-sidebar") {
@@ -443,6 +449,17 @@ impl Rireki {
                             }
                         }
                     }
+                    if stage == "detail_analysis" && step.is_multiple_of(40) {
+                        let wait = Instant::now();
+                        loop {
+                            bg.timer(TICK).await;
+                            if manual && !render_only(cx, stage, measurements.as_ref()) { return; }
+                            let Ok(ready) = this.update_in(cx, |app, _, _| app.analysis_profile_ready()) else { return; };
+                            if ready { break; }
+                            assert!(wait.elapsed() < Duration::from_secs(10), "イベント分析が完了しません");
+                        }
+                        let _ = this.update_in(cx, |app, _, _| app.analysis_profile_check());
+                    }
                 }
                 summary(stage, "dispatch", &mut dispatch);
                 summary(stage, "foreground_interval", &mut gaps);
@@ -505,6 +522,22 @@ impl Rireki {
             if stage.starts_with("detail_") {
                 let session = if stage == "detail_long_single" {
                     self.profile_rich_session(anchor)
+                } else if matches!(stage, "detail_fullscreen" | "detail_analysis") {
+                    let si = self.profile_session(anchor);
+                    let start = self.store.sessions[si].start;
+                    let session = std::sync::Arc::make_mut(&mut self.store.sessions[si]);
+                    session.lanes[0].events = (0..420).map(|i| {
+                        let mut event = profile_event(i, start);
+                        event.end = event.start + (i % 30 + 1) as f64;
+                        if event.kind == Kind::Assistant {
+                            event.usage.output = (i * 10) as u32;
+                            event.model = Some("analysis-model".into());
+                        }
+                        event
+                    }).collect();
+                    session.finalize();
+                    self.rebuild_order();
+                    si
                 } else if matches!(stage, "detail_follow" | "detail_follow_cancel" | "detail_live_scrolled" | "detail_refresh") {
                     self.profile_session(anchor)
                 } else {
@@ -530,6 +563,29 @@ impl Rireki {
             }
         }
         match stage {
+            "detail_analysis" => self.analysis_profile_step(step, window, cx),
+            "detail_fullscreen" => match step {
+                20 => {
+                    self.detail_list.state.scroll_to(ListOffset { item_ix:80, offset_in_item:px(17.0) });
+                    self.detail_changed(cx);
+                }
+                40 => self.toggle_detail_fullscreen(window, cx),
+                60 => {
+                    assert!(self.detail_fullscreen);
+                    assert_eq!(self.detail_list.state.logical_scroll_top().item_ix, 80);
+                    assert!(self.detail_content_width(window) > self.detail_w);
+                }
+                80 => self.set_detail_tab(DetailTab::Files, cx),
+                120 => self.set_detail_tab(DetailTab::Session, cx),
+                160 => self.set_detail_tab(DetailTab::Events, cx),
+                200 => {
+                    let old = (self.detail_w, self.sidebar_w, self.label_w, self.selected);
+                    self.dismiss(window, cx);
+                    assert!(!self.detail_fullscreen);
+                    assert_eq!((self.detail_w, self.sidebar_w, self.label_w, self.selected), old);
+                }
+                _ => {},
+            },
             "detail_summary_selection" | "detail_summary_session" => {
                 if stage == "detail_summary_session" {
                     self.set_detail_tab(DetailTab::Session, cx);

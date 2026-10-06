@@ -448,11 +448,16 @@ impl Db {
                 items[ii].lanes.push(lane);
             }
         }
+        drop(item_ix);
         // events は行 ID の範囲で分割し、別々の接続から並列に読む（ID 順に連結すれば元の順序になる）
         let parts = read_events(&self.conn)?;
         // 既に読み取った行からレーンごとの必要数を数える。配列の倍増による空き容量と
         // 再確保時の大きなイベント配列のコピーを避け、追加のSQL走査は行わない。
-        let mut counts = HashMap::<i64, usize>::with_capacity(lane_ix.len());
+        let group_bound = parts.iter().map(|part| match part {
+            EventRows::Grouped(groups) => groups.len(),
+            EventRows::Flat(rows) => rows.len(),
+        }).sum::<usize>();
+        let mut counts = HashMap::<i64, usize>::with_capacity(lane_ix.len().min(group_bound));
         for part in &parts {
             match part {
                 EventRows::Grouped(groups) => for group in groups {
@@ -496,6 +501,8 @@ impl Db {
             },
             }
         }
+        drop(counts);
+        drop(lane_ix);
 
         let mut by_path: Vec<(String, Vec<Loaded>)> = Vec::new();
         let mut path_ix: HashMap<String, usize> = HashMap::new();
@@ -666,7 +673,7 @@ impl EventGroup {
 
 enum EventRows { Grouped(Vec<EventGroup>), Flat(Vec<(i64, Event)>) }
 
-fn begin_group(groups: &mut Vec<EventGroup>, lane_id: i64, seen: usize, cap: usize) -> Option<Vec<(i64, Event)>> {
+fn begin_group(groups: &mut Vec<EventGroup>, lane_id: i64, seen: usize, cap: usize, max_initial: usize) -> Option<Vec<(i64, Event)>> {
     if groups.last().is_some_and(|g| g.lane_id == lane_id) { return None; }
     if let Some(previous) = groups.last_mut() { previous.finish(); }
     if groups.len() >= 64 && seen < groups.len() * 4 {
@@ -677,7 +684,10 @@ fn begin_group(groups: &mut Vec<EventGroup>, lane_id: i64, seen: usize, cap: usi
         }
         return Some(flat);
     }
-    groups.push(EventGroup { lane_id, events: Vec::with_capacity(1) });
+    // 既読の群の平均から初期容量を選ぶ。小さい群には小さいまま、大きくても64件まで。
+    let average = if groups.is_empty() { 16 } else { seen / groups.len() };
+    let initial = average.clamp(1, 64).next_power_of_two().min(max_initial);
+    groups.push(EventGroup { lane_id, events: Vec::with_capacity(initial) });
     None
 }
 
@@ -707,6 +717,7 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<EventRows>> {
     }
     let parts = (std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16) as i64).min(n);
     let step = (hi - lo) / parts + 1;
+    let max_initial = step.min(64) as usize;
     let cap = (n / parts) as usize + 16;
     let p = PathBuf::from(conn.path().ok_or(rusqlite::Error::InvalidPath(PathBuf::new()))?);
     std::thread::scope(|sc| {
@@ -728,7 +739,7 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<EventRows>> {
                     let mut summaries = SummaryCache::new();
                     while let Some(r) = rows.next()? {
                         let lane_id = r.get(1)?;
-                        if let Some(mut flat) = begin_group(&mut out, lane_id, seen, cap) {
+                        if let Some(mut flat) = begin_group(&mut out, lane_id, seen, cap, max_initial) {
                             summaries = SummaryCache::new();
                             let event = read_event(r, &mut names, &mut models, |s|
                                 summaries.get(s, (0, flat.len()), |_, i| flat.get(i).map(|(_, e)| e)))?;

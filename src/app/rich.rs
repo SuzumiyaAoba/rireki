@@ -551,6 +551,14 @@ pub fn inline(s: &str) -> (String, Spans) {
     };
     while i < s.len() {
         let rest = &s[i..];
+        // 装飾記号までの通常文はまとめてコピーする。ASCII記号の位置はUTF-8境界になる。
+        if !matches!(rest.as_bytes()[0], b'\\' | b'`' | b'*' | b'~' | b'[') {
+            let end = rest.bytes().position(|b| matches!(b, b'\\' | b'`' | b'*' | b'~' | b'['))
+                .unwrap_or(rest.len());
+            out.push_str(&rest[..end]);
+            i += end;
+            continue;
+        }
         let prev = s[..i].chars().next_back();
         if let Some(ch) = rest.strip_prefix('\\').and_then(|r| r.chars().next()).filter(char::is_ascii_punctuation) {
             out.push(ch);
@@ -673,8 +681,14 @@ fn list_item(t: &str) -> Option<(Marker, &str)> {
 }
 
 fn is_rule(t: &str) -> bool {
-    let t: Vec<char> = t.chars().filter(|c| !c.is_whitespace()).collect();
-    t.len() >= 3 && matches!(t[0], '-' | '*' | '_') && t.iter().all(|&c| c == t[0])
+    let mut chars = t.chars().filter(|c| !c.is_whitespace());
+    let Some(first @ ('-' | '*' | '_')) = chars.next() else { return false };
+    let mut count = 1;
+    for ch in chars {
+        if ch != first { return false; }
+        count += 1;
+    }
+    count >= 3
 }
 
 /// 行頭の ASCII の空白を除く（全角の空白は本文として残す）
@@ -908,6 +922,32 @@ mod tests {
         assert_eq!(inline("\\*lit\\*").0, "*lit*");
         assert_eq!(inline("``a ` b``").0, "a ` b");
         assert_eq!(inline("日本**語**").1.len(), 1);
+    }
+
+    #[test]
+    fn markdown_plain_runs_preserve_utf8_escapes_and_style_boundaries() {
+        let (text, spans) = inline("日本🙂**太字**の文\\*と`code`後 [リンク](url)!");
+        assert_eq!(text, "日本🙂太字の文*とcode後 リンク!");
+        assert_eq!(ranges(&spans), [10..16, 26..30, 34..43]);
+        assert_eq!(spans[0].1.font_weight, Some(FontWeight::BOLD));
+        assert_eq!(spans[1].1.color, Some(c(INLINE_CODE)));
+        assert!(spans[2].1.underline.is_some());
+        let plain = "日本🙂 ] ~ \\日本 `閉じない";
+        assert_eq!(inline(plain), (plain.to_string(), Vec::new()));
+        assert_eq!(inline("*日本🙂 文*後").0, "日本🙂 文後");
+    }
+
+    #[test]
+    fn markdown_rules_keep_unicode_whitespace_and_reject_mixed_marks() {
+        for line in ["- \t-　-", "*\u{2003}* *", "___", "　- - -　"] {
+            assert!(is_rule(line), "{line:?}");
+        }
+        for line in ["", "  ", "--", "- * -", "日本語 ---", "--- x", "----\u{200b}"] {
+            assert!(!is_rule(line), "{line:?}");
+        }
+        assert_eq!(blocks("本文\n- \t-　-\n続き"), [
+            Block::Para("本文".into()), Block::Rule, Block::Para("続き".into()),
+        ]);
     }
 
     #[test]

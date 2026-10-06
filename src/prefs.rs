@@ -34,6 +34,8 @@ pub enum DetailTab {
     Files,
     /// セッションの情報と集計
     Session,
+    /// 選択範囲全体のイベント分析
+    Analysis,
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -132,5 +134,7 @@ mod tests {
         assert!(!q.statistics);
         assert!(!q.detail_reversed);
         assert!(!q.directory_timeline);
+        let analysis = Prefs { detail_tab:DetailTab::Analysis, ..Prefs::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&analysis).unwrap()).unwrap(), analysis);
     }
 }

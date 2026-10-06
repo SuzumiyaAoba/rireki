@@ -67,7 +67,7 @@ fn main() {
         return print_stats();
     }
     let profile_ui = args.iter().any(|a| a == "--profile-ui");
-    if args.iter().any(|a| matches!(a.as_str(), "--profile-startup" | "--profile-ingest" | "--profile-idle" | "--profile-render" | "--profile-eager-files" | "--profile-detail" | "--profile-rich" | "--profile-files" | "--profile-statistics" | "--profile-summary" | "--profile-calendar" | "--profile-timeline" | "--profile-dense-timeline" | "--profile-components" | "--profile-exact-group-scale" | "--profile-unbatched-minimap" | "--profile-paired-minimap" | "--profile-full-grouping" | "--profile-uncached-rows" | "--profile-sidebar" | "--profile-eager-sidebar")) && !profile_ui {
+    if args.iter().any(|a| matches!(a.as_str(), "--profile-startup" | "--profile-ingest" | "--profile-idle" | "--profile-render" | "--profile-eager-files" | "--profile-detail" | "--profile-analysis" | "--profile-rich" | "--profile-files" | "--profile-statistics" | "--profile-summary" | "--profile-calendar" | "--profile-timeline" | "--profile-dense-timeline" | "--profile-components" | "--profile-exact-group-scale" | "--profile-unbatched-minimap" | "--profile-paired-minimap" | "--profile-full-grouping" | "--profile-uncached-rows" | "--profile-sidebar" | "--profile-eager-sidebar")) && !profile_ui {
         eprintln!("画面計測には --profile-ui も指定してください");
         std::process::exit(1);
     }

@@ -33,6 +33,9 @@ actions!(
         DetailEvents,
         DetailFiles,
         DetailSession,
+        DetailAnalysis,
+        ToggleDetailFullscreen,
+        CancelAnalysisSearch,
         Dismiss,
         ShowHelp,
         SearchUp,
@@ -48,7 +51,7 @@ pub fn init(cx: &mut App) {
     const APP: Option<&str> = Some("Rireki");
     // 1 文字のショートカットは文字入力中には効かせない
     const VIEW: Option<&str> = Some("Rireki && !TextInput");
-    const SEARCH: Option<&str> = Some("TextInput");
+    const SEARCH: Option<&str> = Some("TextInput && !EventAnalysis");
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-h", Hide, None),
@@ -85,6 +88,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("1", DetailEvents, VIEW),
         KeyBinding::new("2", DetailFiles, VIEW),
         KeyBinding::new("3", DetailSession, VIEW),
+        KeyBinding::new("4", DetailAnalysis, VIEW),
+        KeyBinding::new("shift-cmd-enter", ToggleDetailFullscreen, APP),
+        KeyBinding::new("escape", CancelAnalysisSearch, Some("TextInput && EventAnalysis")),
         KeyBinding::new("escape", Dismiss, APP),
         KeyBinding::new("cmd-/", ShowHelp, APP),
         KeyBinding::new("?", ShowHelp, VIEW),
@@ -139,6 +145,8 @@ pub fn init(cx: &mut App) {
                 MenuItem::action("縮小", ZoomOut),
                 MenuItem::separator(),
                 MenuItem::action("サイドバーの表示を切り替え", ToggleSidebar),
+                MenuItem::action("詳細パネルの全画面表示を切り替え", ToggleDetailFullscreen),
+                MenuItem::action("イベント分析", DetailAnalysis),
                 MenuItem::action("表示範囲内のセッションだけを表示", ToggleInViewOnly),
             ],
         },

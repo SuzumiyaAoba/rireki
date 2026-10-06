@@ -204,6 +204,7 @@ impl Drop for State {
 
 impl Rireki {
     pub(super) fn show_statistics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.detail_fullscreen = false;
         self.statistics_open = true;
         self.statistics_state.hover = None;
         self.popover = None;

@@ -1,4 +1,4 @@
-//! 詳細パネル。見出し・文脈の帯の下のタブ（1 / 2 / 3）で「イベント」「ファイル」「セッション」を切り替える
+//! 詳細パネル。タブ（1 / 2 / 3 / 4）で「イベント」「ファイル」「セッション」「分析」を切り替える
 //!
 //! - 見出し: イベント名と結果の状態（失敗・拒否・中断など）、レーン内の位置と前後への移動、選択の履歴
 //! - 文脈の帯: 読み込み元 › プロジェクト › セッション（押すとセッションのタブへ）› サブエージェント（起動元へ）
@@ -6,6 +6,7 @@
 //! - セッション: 集計のタイル（失敗は押すと一覧へ）・操作・サブエージェントの一覧・トークン・属性
 //! - 1 イベント: 時刻・トークン数・きっかけになった指示と、入力・結果（差分・Markdown・ANSI の色・行番号）
 //! - 複数: 集計と、名前・失敗での絞り込み、ユーザーの指示で区切ったイベントの一覧
+//! - 分析: 選択全体の検索・絞り込み・実行時間とトークンでの比較。全画面表示でも同じ選択を保つ
 
 use std::cell::{Cell, RefCell};
 
@@ -21,6 +22,8 @@ use crate::icons::{self, Icon};
 use crate::model::{Event, Kind, Session, Source, Status, Usage, UsageSum, one_line};
 
 mod files;
+pub(super) mod analysis;
+pub(super) mod replay;
 use crate::detail::{DetailCache, FileStat};
 pub(super) use files::FileList;
 use files::{FILE_MAX, FileListKey, FileRow, PER_EDIT};
@@ -58,7 +61,7 @@ enum DetailRow {
     Limit,
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct DetailListKey {
     sel: Selection,
     generation: u64,
@@ -66,6 +69,7 @@ struct DetailListKey {
     reversed: bool,
     width: u32,
     live: bool,
+    replay_visible: Option<usize>,
 }
 
 struct DetailListData {
@@ -103,6 +107,10 @@ fn detail_anchor(old: &[DetailRow], new: &[DetailRow], offset: ListOffset) -> Li
         .unwrap_or_default()
 }
 
+fn replay_at_top(offset: ListOffset) -> bool {
+    offset.item_ix == 0 && offset.offset_in_item <= px(4.0)
+}
+
 impl DetailList {
     pub(super) fn new() -> Self {
         Self {
@@ -121,7 +129,36 @@ impl DetailList {
     fn prepare(&self, key: DetailListKey, events: &[Event]) {
         let mut data = self.data.borrow_mut();
         if data.as_ref().is_some_and(|d| d.key == key) { return; }
-        let rows = detail_rows(events, key.filter.as_ref(), key.reversed);
+        // 再生が進んだときは追加された行だけを挿入し、既存行の高さと位置を保つ。
+        if let Some(d) = data.as_mut()
+            && let (Some(before), Some(after)) = (d.key.replay_visible, key.replay_visible)
+            && after >= before
+            && key == (DetailListKey { replay_visible: Some(after), ..d.key.clone() })
+        {
+            let mut added = replay::matching_rows(events, before, after, key.filter.as_ref());
+            if key.reversed { added.reverse(); }
+            if !added.is_empty() {
+                if d.rows == [DetailRow::Empty] {
+                    self.state.splice(0..1, added.len());
+                    d.rows = added;
+                } else if key.reversed {
+                    let offset = self.state.logical_scroll_top();
+                    let count = added.len();
+                    self.state.splice(0..0, count);
+                    d.rows.splice(0..0, added);
+                    self.state.scroll_to(ListOffset { item_ix: offset.item_ix + count, ..offset });
+                } else {
+                    self.state.splice(d.rows.len()..d.rows.len(), added.len());
+                    d.rows.extend(added);
+                }
+            }
+            d.key = key;
+            return;
+        }
+        let rows = match key.replay_visible {
+            Some(visible) => replay::rows(events, visible, key.filter.as_ref(), key.reversed),
+            None => detail_rows(events, key.filter.as_ref(), key.reversed),
+        };
         let offset = data.as_ref().filter(|d| {
             d.key.sel.session == key.sel.session && d.key.sel.lane == key.sel.lane && d.key.sel.first == key.sel.first
         }).map(|d| detail_anchor(&d.rows, &rows, self.state.logical_scroll_top())).unwrap_or_default();
@@ -140,8 +177,19 @@ impl DetailList {
     fn at_latest(&self, reversed: bool) -> bool {
         if !reversed { return self.at_bottom(); }
         let offset = self.state.logical_scroll_top();
+        if self.data.borrow().as_ref().is_some_and(|d| d.key.replay_visible.is_some()) {
+            return self.state.viewport_bounds().size.height > px(0.0) && replay_at_top(offset);
+        }
         self.state.viewport_bounds().size.height > px(0.0)
             && (offset.item_ix == 0 || (offset.item_ix == 1 && offset.offset_in_item <= px(4.0)))
+    }
+
+    fn scroll_to_latest(&self, reversed: bool) {
+        self.state.scroll_to(if reversed {
+            ListOffset::default()
+        } else {
+            ListOffset { item_ix: self.state.item_count(), offset_in_item: px(0.0) }
+        });
     }
 }
 
@@ -375,13 +423,21 @@ impl Rireki {
 
     fn set_detail_order(&mut self, reversed: bool, cx: &mut Context<Self>) {
         if self.detail_reversed == reversed { return; }
+        let following = self.replay.as_ref().is_some_and(|replay| replay.following)
+            || self.detail_list.at_latest(self.detail_reversed);
         self.detail_reversed = reversed;
+        if let Some(replay) = &mut self.replay {
+            replay.following = following;
+            replay.check_follow = false;
+            replay.scroll_pending.set(following);
+        }
         self.cancel_detail_follow();
         self.persist();
         self.detail_changed(cx);
     }
 
     pub(super) fn cancel_detail_load(&mut self) {
+        self.reset_replay();
         self.detail_gen.fetch_add(1, super::Ordering::Relaxed);
         self.detail_task = None;
         self.cancel_detail_follow();
@@ -424,6 +480,10 @@ impl Rireki {
                     let old_cache = app.detail_cache.replace(cache);
                     let old_snapshot = app.detail_snapshot.replace((session, generation));
                     cx.background_executor().spawn(async move { drop((old_cache, old_snapshot)); }).detach();
+                    app.request_analysis(cx);
+                    if app.replay_autostart.take() == Some(sel) && app.detail_tab == DetailTab::Events && !app.statistics_open {
+                        app.begin_replay(sel, cx);
+                    }
                     app.detail_changed(cx);
                     if std::mem::take(&mut app.detail_follow) && app.detail_tab == DetailTab::Events {
                         app.animate_to_latest(cx);
@@ -465,9 +525,9 @@ impl Rireki {
             .size_full()
             .flex()
             .flex_col()
-            .rounded_r(px(INNER_RADIUS))
+            .when(self.detail_fullscreen, |d| d.rounded(px(INNER_RADIUS)))
+            .when(!self.detail_fullscreen, |d| d.rounded_r(px(INNER_RADIUS)).border_l_1())
             .bg(c(theme::PANEL))
-            .border_l_1()
             .border_color(c(theme::BORDER))
             .text_sm()
             .text_color(c(theme::TEXT))
@@ -502,6 +562,7 @@ impl Rireki {
                         .child(self.detail_header(sel, cx))
                         .child(self.context_bar(sel, cx))
                         .child(self.detail_tabs(sel, tab, files, cx))
+                        .child(self.replay_controls(sel, cx))
                         .child(div().flex_1().min_h_0().p_3().flex().flex_col().child(self.event_list(sel, window, cx)))
                         .into_any_element();
                 }
@@ -526,11 +587,20 @@ impl Rireki {
                     body = body.child(div().text_xs().text_color(c(theme::MUTED)).child("詳細を読み込み中…"));
                 }
             }
+            DetailTab::Analysis => {
+                return panel
+                    .child(self.detail_header(sel, cx))
+                    .child(self.context_bar(sel, cx))
+                    .child(self.detail_tabs(sel, tab, files, cx))
+                    .child(self.analysis_view(sel, cx))
+                    .into_any_element();
+            }
         }
         panel
             .child(self.detail_header(sel, cx))
             .child(self.context_bar(sel, cx))
             .child(self.detail_tabs(sel, tab, files, cx))
+            .when(tab == DetailTab::Events, |d| d.child(self.replay_controls(sel, cx)))
             .child(body)
             .into_any_element()
     }
@@ -548,7 +618,8 @@ impl Rireki {
                 .border_color(c(theme::BORDER))
                 .child(self.tab_button(DetailTab::Events, "イベント", n_events, "1", tab, true, cx))
                 .child(self.tab_button(DetailTab::Files, "ファイル", Some(files), "2", tab, files > 0, cx))
-                .child(self.tab_button(DetailTab::Session, "セッション", None, "3", tab, true, cx)),
+                .child(self.tab_button(DetailTab::Session, "セッション", None, "3", tab, true, cx))
+                .child(self.tab_button(DetailTab::Analysis, "分析", None, "4", tab, true, cx)),
         )
     }
 
@@ -602,12 +673,17 @@ impl Rireki {
             .when(enabled && !on, |d| {
                 d.cursor_pointer()
                     .hover(|s| s.text_color(c(theme::TEXT)).bg(c(theme::HOVER)))
-                    .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| t.set_detail_tab(tab, cx)))
+                    .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| {
+                        t.set_detail_tab(tab, cx);
+                        window.focus(&t.focus_handle);
+                    }))
             })
     }
 
     pub(super) fn set_detail_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
         if self.detail_tab != tab {
+            self.pause_replay(cx);
+            self.replay_autostart = None;
             self.detail_tab = tab;
             self.detail_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
             self.detail_list.state.scroll_to(ListOffset::default());
@@ -615,7 +691,30 @@ impl Rireki {
             self.cancel_detail_follow();
             self.persist();
         }
+        self.request_analysis(cx);
         self.detail_changed(cx);
+    }
+
+    /// 通常のパネルと全画面で実際に本文を描く幅。可変高リストの計測を幅に合わせる。
+    pub(super) fn detail_content_width(&self, window: &Window) -> f32 {
+        if self.detail_fullscreen {
+            (f32::from(window.viewport_size().width) - super::GAP * 2.0 - 2.0).max(0.0)
+        } else {
+            self.pane_full_widths(window).1
+        }
+    }
+
+    pub(super) fn toggle_detail_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.statistics_open || self.selected.is_none_or(|s| !self.valid(s)) { return; }
+        self.detail_fullscreen = !self.detail_fullscreen;
+        self.popover = None;
+        self.hovered = None;
+        self.drag = None;
+        self.resize = None;
+        self.cancel_detail_follow();
+        window.focus(&self.focus_handle);
+        self.detail_changed(cx);
+        cx.notify();
     }
 
     fn cache(&self, sel: Selection) -> Option<&DetailCache> {
@@ -776,13 +875,20 @@ impl Rireki {
                         true,
                         cx,
                         |t, w, _| {
+                            t.detail_fullscreen = false;
                             if let Some(sel) = t.selected {
                                 t.reveal(sel, true, w);
                             }
                         },
                     ))
-                    .child(self.ghost_button("d-close", Icon::X, "閉じる", Some("esc"), true, cx, |t, _, cx| {
-                        t.close_detail(cx)
+                    .child(self.ghost_button(
+                        "d-fullscreen", if self.detail_fullscreen { Icon::Minimize } else { Icon::Maximize },
+                        if self.detail_fullscreen { "通常のパネルに戻す" } else { "詳細を全画面表示" },
+                        Some("⇧⌘↵"), true, cx, |t, window, cx| t.toggle_detail_fullscreen(window, cx),
+                    ))
+                    .child(self.ghost_button("d-close", Icon::X, "閉じる", None, true, cx, |t, window, cx| {
+                        t.close_detail(cx);
+                        window.focus(&t.focus_handle);
                     })),
             )
     }
@@ -1533,7 +1639,7 @@ impl Rireki {
         self.file_list.prepare(FileListKey {
             sel,
             generation: self.shown_detail_generation(),
-            width: self.pane_widths(window).1.to_bits(),
+            width: self.detail_content_width(window).to_bits(),
             open: self.file_open.clone(),
             all_files: self.expanded.contains("files"),
             all_diffs: self.expanded.contains("file-diff"),
@@ -1848,14 +1954,32 @@ impl Rireki {
             generation: self.shown_detail_generation(),
             filter: self.row_filter.clone(),
             reversed: self.detail_reversed,
-            width: self.pane_widths(window).1.to_bits(),
+            width: self.detail_content_width(window).to_bits(),
             live: is_live(s.end),
+            replay_visible: self.replay.as_ref().map(|replay| replay.visible(evs)),
         }, evs);
+        if self.replay.as_ref().is_some_and(|replay| replay.scroll_pending.replace(false)) {
+            self.detail_list.scroll_to_latest(self.detail_reversed);
+        }
         self.detail_list.rendered.set(0);
         let app = cx.entity().downgrade();
         let scrolling = app.clone();
-        self.detail_list.state.set_scroll_handler(move |_, _, cx| {
-            let _ = scrolling.update(cx, |app, _| app.cancel_detail_follow());
+        self.detail_list.state.set_scroll_handler(move |_, window, cx| {
+            let _ = scrolling.update(cx, |app, cx| {
+                app.cancel_detail_follow();
+                if let Some(replay) = &mut app.replay {
+                    replay.following = false;
+                    replay.check_follow = true;
+                    replay.scroll_pending.set(false);
+                    app.detail_changed(cx);
+                    // ListState はこのコールバック中に借用されているので、端の判定を遅延する。
+                    cx.defer_in(window, move |app, _, cx| {
+                        if app.selected == Some(sel) && app.replay.is_some() {
+                            app.check_replay_follow(cx);
+                        }
+                    });
+                }
+            });
         });
         list(self.detail_list.state.clone(), move |row, _, cx| {
             app.update(cx, |app, cx| app.detail_list_item(sel, row, cx)).unwrap_or_else(|_| div().into_any_element())
@@ -1901,7 +2025,9 @@ impl Rireki {
                 .child(self.selection_summary(sel, cx))
                 .child(self.event_list_header(cx)).into_any_element(),
             Some(DetailRow::Empty) => return div().py_2().text_xs().text_color(c(theme::SUBTLE))
-                .child("該当するイベントはありません").into_any_element(),
+                .child(if self.replay.as_ref().is_some_and(|replay| !replay.is_finished()) {
+                    "次のイベントを待っています…"
+                } else { "該当するイベントはありません" }).into_any_element(),
             Some(DetailRow::Limit) => return div().pt_1().text_xs().text_color(c(theme::MUTED)).child(format!(
                 "先頭 {} 件を表示しています（全 {} 件）", fmt_n(DETAIL_MAX), fmt_n(sel.last - sel.first + 1)
             )).into_any_element(),
@@ -2365,6 +2491,7 @@ mod tests {
         let state = DetailList::new();
         let key = |generation, filter, width, last| DetailListKey {
             sel: Selection { session: 1, lane: 2, first: 10, last }, generation, filter, reversed: false, width, live: false,
+            replay_visible: None,
         };
         state.prepare(key(1, None, 400, 12), &events);
         state.state.scroll_to(ListOffset { item_ix: 2, offset_in_item: px(17.0) });
@@ -2411,6 +2538,7 @@ mod tests {
         let key = |generation, last, reversed| DetailListKey {
             sel: Selection { session: 1, lane: 2, first: 10, last }, generation, filter: None, reversed,
             width: 400, live: false,
+            replay_visible: None,
         };
         state.prepare(key(1, 12, false), &events);
         state.state.scroll_to(ListOffset { item_ix: 1, offset_in_item: px(17.0) });
@@ -2426,6 +2554,73 @@ mod tests {
         state.prepare(key(2, 13, false), &events);
         let offset = state.state.logical_scroll_top();
         assert_eq!((offset.item_ix, offset.offset_in_item), (1, px(17.0)));
+    }
+
+    #[test]
+    fn replay_list_appends_filtered_events_keeps_scroll_and_rewinds() {
+        let events = vec![list_event("Read", Status::Ok), list_event("Edit", Status::Error), list_event("Edit", Status::Ok)];
+        let state = DetailList::new();
+        let key = |visible, filter| DetailListKey {
+            sel: Selection { session: 1, lane: 2, first: 10, last: 12 },
+            generation: 1, filter, reversed: false, width: 400, live: false,
+            replay_visible: Some(visible),
+        };
+        let edit = Some(RowFilter::Name("Edit".into()));
+        state.prepare(key(1, edit.clone()), &events);
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows, [DetailRow::Empty]);
+        state.prepare(key(2, edit.clone()), &events);
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows, [DetailRow::Event(1)]);
+        state.state.scroll_to(ListOffset { item_ix: 0, offset_in_item: px(17.0) });
+        state.prepare(key(3, edit.clone()), &events);
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows, [DetailRow::Event(1), DetailRow::Event(2)]);
+        assert_eq!(state.state.logical_scroll_top().offset_in_item, px(17.0));
+        state.prepare(key(1, edit), &events);
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows, [DetailRow::Empty]);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (0, px(0.0)));
+        state.prepare(key(1, None), &events);
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows, [DetailRow::Event(0)]);
+        state.prepare(key(3, None), &events);
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows, [DetailRow::Event(0), DetailRow::Event(1), DetailRow::Event(2)]);
+    }
+
+    #[test]
+    fn reversed_replay_prepends_new_events_and_preserves_the_event_being_read() {
+        let events = vec![list_event("Read", Status::Ok); 5];
+        let state = DetailList::new();
+        let key = |visible, reversed| DetailListKey {
+            sel: Selection { session: 1, lane: 2, first: 10, last: 14 },
+            generation: 1, filter: None, reversed, width: 400, live: false,
+            replay_visible: Some(visible),
+        };
+        state.prepare(key(3, true), &events);
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows, [DetailRow::Event(2), DetailRow::Event(1), DetailRow::Event(0)]);
+        state.state.scroll_to(ListOffset { item_ix: 1, offset_in_item: px(17.0) });
+        state.prepare(key(5, true), &events);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (3, px(17.0)));
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows[offset.item_ix], DetailRow::Event(1));
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows[0], DetailRow::Event(4));
+        state.prepare(key(5, false), &events);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (1, px(17.0)));
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows[offset.item_ix], DetailRow::Event(1));
+        state.scroll_to_latest(false);
+        assert_eq!(state.state.logical_scroll_top().item_ix, 5);
+        state.prepare(key(5, true), &events);
+        state.scroll_to_latest(true);
+        let offset = state.state.logical_scroll_top();
+        assert_eq!((offset.item_ix, offset.offset_in_item), (0, px(0.0)));
+        state.prepare(key(1, true), &events);
+        assert_eq!(state.data.borrow().as_ref().unwrap().rows, [DetailRow::Event(0)]);
+    }
+
+    #[test]
+    fn replay_top_edge_excludes_scrolling_inside_the_first_event() {
+        assert!(replay_at_top(ListOffset::default()));
+        assert!(replay_at_top(ListOffset { item_ix: 0, offset_in_item: px(4.0) }));
+        assert!(!replay_at_top(ListOffset { item_ix: 0, offset_in_item: px(17.0) }));
+        assert!(!replay_at_top(ListOffset { item_ix: 1, offset_in_item: px(0.0) }));
     }
 
     #[test]

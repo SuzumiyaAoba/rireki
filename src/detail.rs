@@ -1,6 +1,8 @@
 //! 選択範囲の本文・編集履歴・集計。背景処理の実行方法と画面の状態は呼び出し元が管理する。
 
 pub mod summary;
+pub mod analysis;
+pub mod replay;
 
 use crate::db::{Db, JsCache};
 use crate::loader;

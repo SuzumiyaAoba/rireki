@@ -50,7 +50,8 @@ use crate::time::{local, midnight};
 use crate::view_index;
 pub use keymap::init;
 use keymap::{
-    Back, CloseWindow, DetailEvents, DetailFiles, DetailSession, Dismiss, FocusSearch, Forward, GoNext, GoPrev,
+    Back, CancelAnalysisSearch, CloseWindow, DetailAnalysis, DetailEvents, DetailFiles, DetailSession,
+    Dismiss, FocusSearch, Forward, GoNext, GoPrev, ToggleDetailFullscreen,
     GoToday, NextEvent, PrevEvent, SearchCancel, SearchConfirm, SearchDown, SearchUp, ShowDay, ShowHelp, ShowTimeline,
     ShowWeek, ShowStatistics, ToggleInViewOnly, ToggleSidebar, ZoomIn, ZoomOut,
 };
@@ -235,8 +236,15 @@ pub struct Rireki {
     detail_tab: DetailTab,
     /// 詳細パネルのイベントを新しい順に表示するか
     detail_reversed: bool,
+    /// 詳細だけをウィンドウ全体に表示する。通常のパネル幅は保持する。
+    detail_fullscreen: bool,
+    analysis_state: detail::analysis::State,
     detail_scroll: ScrollHandle,
     detail_list: DetailList,
+    replay: Option<detail::replay::State>,
+    replay_speed: f64,
+    replay_task: Option<gpui::Task<()>>,
+    replay_autostart: Option<Selection>,
     file_list: FileList,
     /// 詳細パネルを最新のイベントまでスクロールするアニメーション（差し替えると前のものは止まる）
     follow_anim: Option<gpui::Task<()>>,
@@ -550,6 +558,7 @@ impl Rireki {
         let sidebar_view = cx.new(|_| SidebarView { app: weak });
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
+        let analysis_state = detail::analysis::State::new(cx);
         let mut this = Self {
             store: Snapshot::default(),
             layout_cache: RefCell::new(if profile_ui && std::env::args().any(|a| a == "--profile-full-grouping") {
@@ -594,8 +603,14 @@ impl Rireki {
             file_open: None,
             detail_tab: p.detail_tab,
             detail_reversed: p.detail_reversed,
+            detail_fullscreen: false,
+            analysis_state,
             detail_scroll: ScrollHandle::new(),
             detail_list: DetailList::new(),
+            replay: None,
+            replay_speed: 1.0,
+            replay_task: None,
+            replay_autostart: None,
             file_list: FileList::new(),
             follow_anim: None,
             copied: None,
@@ -693,7 +708,7 @@ impl Rireki {
         let started = self.profile.as_ref().map(|_| std::time::Instant::now());
         // 複数イベントの選択がレーンの末尾まで届いていれば、増えたイベントも選択に含めて追従させる
         let follow = self.selected.filter(|s| {
-            s.first < s.last
+            self.replay.is_none() && s.first < s.last
                 && self.valid(*s)
                 && s.last + 1 == self.store.sessions[s.session].lanes[s.lane].events.len()
         });
@@ -723,10 +738,15 @@ impl Rireki {
             }
             if self.valid(sel) {
                 // 再読み込みが終わるまで、本文と集計を同じ版のまま表示する。
-                self.refresh_detail(sel, cx);
-                self.detail_follow = following && at_latest && self.detail_tab == DetailTab::Events;
+                // リプレイ中は記録時刻と本文の版を固定し、終了後に更新を取り込む。
+                if self.replay.is_none() {
+                    self.refresh_detail(sel, cx);
+                    self.detail_follow = following && at_latest && self.detail_tab == DetailTab::Events;
+                }
             } else {
                 self.cancel_detail_load();
+                self.reset_analysis();
+                self.detail_fullscreen = false;
                 self.selected = None;
                 self.clear_detail_cache(cx);
                 self.detail_changed(cx);
@@ -1118,6 +1138,7 @@ impl Rireki {
         self.detail_changed(cx);
         self.sidebar_changed(cx);
         if self.selected != Some(sel) {
+            self.reset_analysis();
             self.row_filter = None;
             self.expanded.clear();
             self.file_open = None;
@@ -1181,6 +1202,8 @@ impl Rireki {
 
     /// 詳細パネルを閉じる。閉じた選択は「戻る」で開き直せる
     fn close_detail(&mut self, cx: &mut Context<Self>) {
+        self.detail_fullscreen = false;
+        self.reset_analysis();
         self.cancel_detail_load();
         if let Some(cur) = self.selected.take() {
             self.push_back(cur);
@@ -1363,6 +1386,11 @@ impl Rireki {
     }
 
     fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.is_some() && !self.statistics_open && (self.detail_fullscreen || self.detail_tab == DetailTab::Analysis) {
+            self.set_detail_tab(DetailTab::Analysis, cx);
+            self.focus_analysis_search(window, cx);
+            return;
+        }
         self.statistics_open = false;
         self.popover = None;
         if !self.sidebar_open {
@@ -1408,6 +1436,7 @@ impl Rireki {
 
     /// 表示を切り替える。タイムラインとカレンダーの間では、見ていた時刻が画面に残るようにする
     fn set_mode(&mut self, mode: Mode, window: &Window) {
+        self.detail_fullscreen = false;
         self.statistics_open = false;
         let from = self.mode;
         if from == Mode::Timeline && mode != Mode::Timeline {
@@ -1766,6 +1795,8 @@ impl Rireki {
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.popover.take().is_some() {
             cx.notify();
+        } else if self.detail_fullscreen {
+            self.toggle_detail_fullscreen(window, cx);
         } else if self.statistics_open {
             self.set_mode(self.mode, window);
             cx.notify();
@@ -1808,7 +1839,10 @@ impl Render for Rireki {
         self.profile_frame(window, cx);
         self.step_panes(window);
         self.clamp_timeline(window);
-        let main_col = if self.statistics_open {
+        let fullscreen = self.detail_fullscreen && self.selected.is_some_and(|s| self.valid(s)) && !self.statistics_open;
+        let main_col = if fullscreen {
+            div().into_any_element()
+        } else if self.statistics_open {
             self.statistics(window, cx).into_any_element()
         } else {
             let main = match self.mode {
@@ -1850,8 +1884,8 @@ impl Render for Rireki {
         };
         let (side_w, detail_w) = self.pane_widths(window);
         let (side_full, detail_full) = self.pane_full_widths(window);
-        let side_shown = !self.statistics_open && self.side_t > 0.0;
-        let detail_shown = !self.statistics_open && self.detail_t > 0.0;
+        let side_shown = !fullscreen && !self.statistics_open && self.side_t > 0.0;
+        let detail_shown = !fullscreen && !self.statistics_open && self.detail_t > 0.0;
         // 開ききっているときだけ幅を変えるつまみを出す
         let side_ready = side_shown && self.sidebar_open && self.side_t == 1.0;
         let detail_ready = detail_shown && self.selected.is_some() && self.detail_t == 1.0;
@@ -1860,6 +1894,7 @@ impl Render for Rireki {
             .flex_1()
             .min_w_0()
             .mr(px(GAP))
+            .when(fullscreen, |d| d.ml(px(GAP)))
             .mb(px(GAP))
             .relative()
             .flex()
@@ -1877,7 +1912,12 @@ impl Render for Rireki {
                 ),
             );
         }
-        panel = panel.child(main_col);
+        if fullscreen {
+            panel = panel.child(AnyView::from(self.detail_view.clone())
+                .cached(StyleRefinement::default().w(px(self.detail_content_width(window))).h_full().flex_none()));
+        } else {
+            panel = panel.child(main_col);
+        }
         if detail_shown {
             panel = panel.child(
                 div().w(px(detail_w)).h_full().flex_none().overflow_hidden().child(
@@ -1910,6 +1950,8 @@ impl Render for Rireki {
             .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .on_action(cx.listener(|t, _: &FocusSearch, window, cx| t.focus_search(window, cx)))
             .on_action(cx.listener(|t, _: &ToggleSidebar, _, cx| t.toggle_sidebar(cx)))
+            .on_action(cx.listener(|t, _: &ToggleDetailFullscreen, window, cx| t.toggle_detail_fullscreen(window, cx)))
+            .on_action(cx.listener(|t, _: &CancelAnalysisSearch, window, cx| t.cancel_analysis_search(window, cx)))
             .on_action(cx.listener(|t, _: &ToggleInViewOnly, _, cx| t.toggle_in_view_only(cx)))
             .on_action(cx.listener(|t, _: &ShowTimeline, window, cx| {
                 t.set_mode(Mode::Timeline, window);
@@ -1950,6 +1992,7 @@ impl Render for Rireki {
             .on_action(cx.listener(|t, _: &DetailEvents, _, cx| t.set_detail_tab(DetailTab::Events, cx)))
             .on_action(cx.listener(|t, _: &DetailFiles, _, cx| t.set_detail_tab(DetailTab::Files, cx)))
             .on_action(cx.listener(|t, _: &DetailSession, _, cx| t.set_detail_tab(DetailTab::Session, cx)))
+            .on_action(cx.listener(|t, _: &DetailAnalysis, _, cx| t.set_detail_tab(DetailTab::Analysis, cx)))
             .on_action(cx.listener(|t, _: &Forward, window, cx| t.go_forward(window, cx)))
             .on_action(cx.listener(|t, _: &Dismiss, window, cx| t.dismiss(window, cx)))
             .on_action(cx.listener(|t, _: &ShowHelp, _, cx| {
@@ -1968,7 +2011,7 @@ impl Render for Rireki {
             .bg(c(theme::BACKDROP))
             .text_color(c(theme::TEXT))
             .child(self.top_strip())
-            .child(div().flex().flex_1().min_h_0().child(self.rail(cx)).child(panel))
+            .child(div().flex().flex_1().min_h_0().when(!fullscreen, |d| d.child(self.rail(cx))).child(panel))
             .children(self.overlays(window, cx))
     }
 }

@@ -41,6 +41,10 @@ pub enum Icon {
     Clock,
     Locate,
     Refresh,
+    Play,
+    Pause,
+    Maximize,
+    Minimize,
     Claude,
     Codex,
     // イベントの種類（Iconify の lucide セットから取得）
@@ -66,7 +70,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    const ALL: [Icon; 55] = [
+    const ALL: [Icon; 59] = [
         Icon::CalendarDay,
         Icon::CalendarWeek,
         Icon::Calendar,
@@ -101,6 +105,10 @@ impl Icon {
         Icon::Clock,
         Icon::Locate,
         Icon::Refresh,
+        Icon::Play,
+        Icon::Pause,
+        Icon::Maximize,
+        Icon::Minimize,
         Icon::Claude,
         Icon::Codex,
         Icon::User,
@@ -160,6 +168,10 @@ impl Icon {
             Icon::Clock => "clock",
             Icon::Locate => "locate",
             Icon::Refresh => "refresh",
+            Icon::Play => "play",
+            Icon::Pause => "pause",
+            Icon::Maximize => "maximize",
+            Icon::Minimize => "minimize",
             Icon::Claude => "claude",
             Icon::Codex => "codex",
             Icon::User => "user",
@@ -196,6 +208,8 @@ impl Icon {
     /// 線画アイコンの SVG の中身（`<svg>` 要素の子）
     fn body(self) -> &'static str {
         match self {
+            Icon::Play => r#"<polygon points="6 3 20 12 6 21 6 3"/>"#,
+            Icon::Pause => r#"<rect x="6" y="3" width="4" height="18" rx="1"/><rect x="14" y="3" width="4" height="18" rx="1"/>"#,
             Icon::Claude | Icon::Codex => "",
             Icon::CalendarDay => {
                 r#"<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M12 14h.01"/>"#
@@ -264,6 +278,8 @@ impl Icon {
             Icon::Locate => {
                 r#"<path d="M2 12h3"/><path d="M19 12h3"/><path d="M12 2v3"/><path d="M12 19v3"/><circle cx="12" cy="12" r="7"/>"#
             }
+            Icon::Maximize => r#"<path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"/>"#,
+            Icon::Minimize => r#"<path d="M3 8h5V3M21 8h-5V3M16 21v-5h5M8 21v-5H3"/>"#,
             Icon::User => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></g>"#,
             Icon::MessageSquare => r#"<path fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/>"#,
             Icon::Brain => r#"<g fill="none" stroke="black" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 18V5m3 8a4.17 4.17 0 0 1-3-4a4.17 4.17 0 0 1-3 4m8.598-6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></g>"#,
