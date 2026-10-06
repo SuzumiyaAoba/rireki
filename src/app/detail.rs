@@ -117,25 +117,10 @@ fn detail_rows(events: &[Event], filter: Option<&RowFilter>, reversed: bool) -> 
         };
         if keep { rows.push(DetailRow::Event(i)); }
     }
-    if reversed { reverse_turn_rows(&mut rows[1..], events, filter.is_some()); }
+    if reversed { rows[1..].reverse(); }
     if rows.len() == 1 { rows.push(DetailRow::Empty); }
     if events.len() > DETAIL_MAX { rows.push(DetailRow::Limit); }
     rows
-}
-
-/// 新しい順でも一つの指示内では実行順を維持する。
-fn reverse_turn_rows(rows: &mut [DetailRow], events: &[Event], filtered: bool) {
-    if filtered { rows.reverse(); return; }
-    let boundaries: Vec<_> = rows.iter().enumerate().filter_map(|(row, item)| {
-        matches!(item, DetailRow::Event(i) if events[*i].kind == Kind::User).then_some(row)
-    }).chain(std::iter::once(rows.len())).collect();
-    if boundaries.len() == 1 { rows.reverse(); return; }
-    let mut first = 0;
-    for last in boundaries {
-        rows[first..last].reverse();
-        first = last;
-    }
-    rows.reverse();
 }
 
 fn detail_anchor(old: &[DetailRow], new: &[DetailRow], offset: ListOffset) -> ListOffset {
@@ -169,7 +154,6 @@ impl DetailList {
         if data.as_ref().is_some_and(|d| d.key == key) { return; }
         // 再生が進んだときは追加された行だけを挿入し、既存行の高さと位置を保つ。
         if let Some(d) = data.as_mut()
-            && !key.reversed
             && let (Some(before), Some(after)) = (d.key.replay_visible, key.replay_visible)
             && after >= before
             && key == (DetailListKey { replay_visible: Some(after), ..d.key.clone() })
@@ -826,7 +810,7 @@ impl Rireki {
         let lane = &s.lanes[sel.lane];
         let single = sel.first == sel.last;
         let e = &lane.events[sel.first];
-        let title = if single { e.name.to_string() } else { "指示ごとの履歴".into() };
+        let title = if single { e.name.to_string() } else { "イベントの履歴".into() };
         let pos = if single { fmt_n(sel.first + 1) } else {
             format!("{}–{}", fmt_n(sel.first + 1), fmt_n(sel.last + 1))
         };
@@ -1389,7 +1373,7 @@ impl Rireki {
 
     // ------------------------------------------------------------ 複数
 
-    /// 選択範囲の期間・件数・集計と、絞り込み（名前・失敗）、編集したファイル
+    /// 選択範囲のトークン使用量と、イベントの絞り込み（名前・失敗）
     fn selection_summary(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         let s = self.detail_session(sel);
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
@@ -1441,7 +1425,10 @@ impl Rireki {
             chips = chips.child(chip("chip-failed".into(), format!("失敗等 {}", st.failures()),
                 None, filter == Some(RowFilter::Failed), Some(RowFilter::Failed)));
         }
-        chips.pb_2().border_b_1().border_color(c(theme::BORDER))
+        div().flex().flex_col().gap_2()
+            .when(summary.total.usage.calls > 0, |d| d.child(usage_view(&summary.total.usage)))
+            .child(chips)
+            .pb_2().border_b_1().border_color(c(theme::BORDER))
     }
 
     /// 選択の中で編集したファイル。押すとその場で開き、編集の時系列と、編集ごとの差分を出す
@@ -1755,7 +1742,7 @@ impl Rireki {
             .child(diffs)
     }
 
-    /// イベントの一覧。絞り込みがなければユーザーの指示ごとに区切って並べる
+    /// 選択範囲のイベントを時刻順に並べる一覧
     fn event_list(&self, sel: Selection, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let s = self.detail_session(sel);
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
@@ -1941,7 +1928,7 @@ impl Rireki {
         self.rail_row(sel, idx, e, true, content.into_any_element(), cx)
     }
 
-    /// 一覧の 1 行。名前・状態・要約の下に、共通の尺度で入力・出力の使用量を出す。
+    /// 一覧の 1 行。共通の尺度で入力・出力の使用量を、本文の開閉に関係なく出す。
     fn event_row(
         &self,
         sel: Selection,
@@ -1996,7 +1983,7 @@ impl Rireki {
                         e.call_id.as_deref().and_then(|id| s.lane_spawned_by(id)),
                         |d, lane| d.child(self.subagent_button(sel, lane, cx))))
             })
-            .when(expanded && !e.usage.is_empty(), |d| d.child(usage_meter(
+            .when(!e.usage.is_empty(), |d| d.child(usage_meter(
                 ElementId::NamedInteger("usage".into(), idx as u64), &e.usage,
                 e.model.as_deref(), self.detail_list.usage_scale(),
             )));
@@ -2424,16 +2411,40 @@ mod tests {
     }
 
     #[test]
-    fn newest_history_keeps_each_prompt_before_its_executions_and_response() {
+    fn newest_history_orders_events_by_time_across_prompts() {
         let events: Vec<_> = [Kind::Tool, Kind::User, Kind::Tool, Kind::Assistant,
-            Kind::User, Kind::Thinking, Kind::Assistant].into_iter().map(|kind| {
-                Event { kind, ..list_event("event", Status::Ok) }
+            Kind::User, Kind::Thinking, Kind::Assistant].into_iter().enumerate().map(|(i, kind)| {
+                Event { start: i as f64, end: i as f64 + 1.0, kind, ..list_event("event", Status::Ok) }
             }).collect();
         assert_eq!(detail_rows(&events, None, true), [DetailRow::Summary,
-            DetailRow::Event(4), DetailRow::Event(5), DetailRow::Event(6),
-            DetailRow::Event(1), DetailRow::Event(2), DetailRow::Event(3), DetailRow::Event(0)]);
-        assert_eq!(replay::rows(&events, 6, None, true), [DetailRow::Event(4), DetailRow::Event(5),
-            DetailRow::Event(1), DetailRow::Event(2), DetailRow::Event(3), DetailRow::Event(0)]);
+            DetailRow::Event(6), DetailRow::Event(5), DetailRow::Event(4),
+            DetailRow::Event(3), DetailRow::Event(2), DetailRow::Event(1), DetailRow::Event(0)]);
+        assert_eq!(replay::rows(&events, 6, None, true), [DetailRow::Event(5), DetailRow::Event(4),
+            DetailRow::Event(3), DetailRow::Event(2), DetailRow::Event(1), DetailRow::Event(0)]);
+    }
+
+    #[test]
+    fn single_prompt_history_changes_order_in_normal_and_replay_lists() {
+        let events: Vec<_> = [Kind::User, Kind::Thinking, Kind::Tool, Kind::Assistant]
+            .into_iter().enumerate().map(|(i, kind)| {
+                Event { start: i as f64, end: i as f64 + 1.0, kind, ..list_event("event", Status::Ok) }
+            }).collect();
+        for replay_visible in [None, Some(events.len())] {
+            let state = DetailList::new();
+            let key = |reversed| DetailListKey {
+                sel: Selection { session: 1, lane: 0, first: 10, last: 13 },
+                generation: 1, filter: None, reversed, width: 400, live: false, replay_visible,
+            };
+            let shown_events = || state.data.borrow().as_ref().unwrap().rows.iter().filter_map(|row| {
+                if let DetailRow::Event(i) = row { Some(*i) } else { None }
+            }).collect::<Vec<_>>();
+            state.prepare(key(false), &events);
+            assert_eq!(shown_events(), [0, 1, 2, 3]);
+            state.prepare(key(true), &events);
+            assert_eq!(shown_events(), [3, 2, 1, 0]);
+            state.prepare(key(false), &events);
+            assert_eq!(shown_events(), [0, 1, 2, 3]);
+        }
     }
 
     #[test]
@@ -2485,6 +2496,7 @@ mod tests {
     #[test]
     fn detail_list_keeps_event_anchor_when_reversed_and_extended() {
         let mut events = vec![list_event("Read", Status::Ok), list_event("Edit", Status::Error), list_event("Edit", Status::Ok)];
+        events[0].kind = Kind::User;
         let state = DetailList::new();
         let key = |generation, last, reversed| DetailListKey {
             sel: Selection { session: 1, lane: 2, first: 10, last }, generation, filter: None, reversed,
@@ -2537,7 +2549,10 @@ mod tests {
 
     #[test]
     fn reversed_replay_prepends_new_events_and_preserves_the_event_being_read() {
-        let events = vec![list_event("Read", Status::Ok); 5];
+        let events: Vec<_> = [Kind::User, Kind::Tool, Kind::Assistant, Kind::User, Kind::Tool]
+            .into_iter().enumerate().map(|(i, kind)| {
+                Event { start: i as f64, end: i as f64 + 1.0, kind, ..list_event("event", Status::Ok) }
+            }).collect();
         let state = DetailList::new();
         let key = |visible, reversed| DetailListKey {
             sel: Selection { session: 1, lane: 2, first: 10, last: 14 },

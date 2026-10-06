@@ -7,6 +7,8 @@ use std::sync::{Arc, Weak};
 use crate::detail::Selection;
 use crate::model::{Session, Snapshot, UsageSum};
 
+const MAX_BINS: usize = 512;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
     pub start: f64,
@@ -19,7 +21,7 @@ impl View {
         (start.is_finite() && end.is_finite() && end > start && (end - start).is_finite()).then_some(Self {
             start,
             end,
-            bins: bins.clamp(1, 512),
+            bins: bins.clamp(1, MAX_BINS),
         })
     }
 
@@ -46,6 +48,14 @@ pub struct Bucket {
 }
 
 impl Bucket {
+    fn add_event(&mut self, usage: &UsageSum, sample: Selection) {
+        self.usage.merge(usage);
+        if usage.cost > self.sample_cost {
+            self.sample = sample;
+            self.sample_cost = usage.cost;
+        }
+    }
+
     fn merge(&mut self, other: &Self) {
         self.usage.merge(&other.usage);
         if other.sample_cost > self.sample_cost {
@@ -155,10 +165,31 @@ impl Cache {
             directory.sessions.push(costs);
         }
         self.sessions.retain(|si, _| seen.contains(si));
+        let mut positions = [u16::MAX; MAX_BINS];
         for directory in &mut out.directories {
             if !keep_going() {
                 return None;
             }
+            if view.bins <= MAX_BINS {
+                for session in &directory.sessions {
+                    for bucket in &session.buckets {
+                        let position = &mut positions[bucket.index];
+                        if *position == u16::MAX {
+                            *position = directory.buckets.len() as u16;
+                            directory.buckets.push(bucket.clone());
+                        } else {
+                            directory.buckets[*position as usize].merge(bucket);
+                        }
+                    }
+                }
+                for bucket in &directory.buckets {
+                    positions[bucket.index] = u16::MAX;
+                }
+                directory.buckets.sort_unstable_by_key(|b| b.index);
+                directory.buckets.shrink_to_fit();
+                continue;
+            }
+            // Viewの直接構築で上限を超えた場合も、従来の集計を使う。
             let mut buckets: BTreeMap<usize, Bucket> = BTreeMap::new();
             for session in &directory.sessions {
                 for bucket in &session.buckets {
@@ -171,6 +202,25 @@ impl Cache {
             directory.buckets = buckets.into_values().collect();
         }
         keep_going().then_some(out)
+    }
+}
+
+#[inline]
+fn event_bucket<'a>(
+    buckets: &'a mut BTreeMap<usize, Bucket>,
+    bin: usize,
+    usage: &UsageSum,
+    sample: Selection,
+) -> &'a mut Bucket {
+    match buckets.entry(bin) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(Bucket { index: bin, usage: *usage, sample, sample_cost: usage.cost })
+        }
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            let bucket = entry.into_mut();
+            bucket.add_event(usage, sample);
+            bucket
+        }
     }
 }
 
@@ -193,30 +243,69 @@ fn session_costs<'a>(
         let last = lane.events.partition_point(|e| e.start < end);
         out.active |= first < last || (first > 0 && lane.cum_end[first - 1] >= start);
         let mut bin = 0;
-        for (offset, e) in lane.events[first..last].iter().enumerate() {
-            if offset % 256 == 0 && !keep_going() {
+        let events = &lane.events[first..last];
+        if events.len() < 64 {
+            for (offset, e) in events.iter().enumerate() {
+                if offset % 256 == 0 && !keep_going() {
+                    return None;
+                }
+                if e.usage.is_empty() {
+                    continue;
+                }
+                while bin + 1 < edges.len() && e.start >= edges[bin + 1] {
+                    bin += 1;
+                }
+                let mut usage = UsageSum::default();
+                usage.add_priced(&e.usage, prices.get(e.model.as_deref()));
+                out.usage.merge(&usage);
+                event_bucket(
+                    &mut buckets,
+                    bin,
+                    &usage,
+                    Selection { session: si, lane: li, first: first + offset, last: first + offset },
+                );
+            }
+            continue;
+        }
+        // 元と同じ256イベントの先頭で確認し、区間内では集計先を再利用する。
+        for (chunk_index, chunk) in events.chunks(256).enumerate() {
+            if !keep_going() {
                 return None;
             }
-            if e.usage.is_empty() {
-                continue;
-            }
-            while bin + 1 < edges.len() && e.start >= edges[bin + 1] {
-                bin += 1;
-            }
-            let mut usage = UsageSum::default();
-            usage.add_priced(&e.usage, prices.get(e.model.as_deref()));
-            out.usage.merge(&usage);
-            let sample = Selection { session: si, lane: li, first: first + offset, last: first + offset };
-            match buckets.entry(bin) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(Bucket { index: bin, usage, sample, sample_cost: usage.cost });
+            let base = first + chunk_index * 256;
+            let mut events = chunk.iter().enumerate();
+            let mut pending = None;
+            while let Some((offset, e)) =
+                pending.take().or_else(|| events.find(|(_, e)| !e.usage.is_empty()))
+            {
+                if e.usage.is_empty() {
+                    continue;
                 }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
-                    let bucket = entry.get_mut();
-                    bucket.usage.merge(&usage);
-                    if usage.cost > bucket.sample_cost {
-                        bucket.sample = sample;
-                        bucket.sample_cost = usage.cost;
+                while bin + 1 < edges.len() && e.start >= edges[bin + 1] {
+                    bin += 1;
+                }
+                let mut usage = UsageSum::default();
+                usage.add_priced(&e.usage, prices.get(e.model.as_deref()));
+                out.usage.merge(&usage);
+                let bucket = event_bucket(
+                    &mut buckets,
+                    bin,
+                    &usage,
+                    Selection { session: si, lane: li, first: base + offset, last: base + offset },
+                );
+                for (offset, e) in events.by_ref() {
+                    if bin + 1 < edges.len() && e.start >= edges[bin + 1] {
+                        pending = Some((offset, e));
+                        break;
+                    }
+                    if !e.usage.is_empty() {
+                        let mut usage = UsageSum::default();
+                        usage.add_priced(&e.usage, prices.get(e.model.as_deref()));
+                        out.usage.merge(&usage);
+                        bucket.add_event(
+                            &usage,
+                            Selection { session: si, lane: li, first: base + offset, last: base + offset },
+                        );
                     }
                 }
             }
@@ -300,6 +389,138 @@ mod tests {
             )
         );
         assert!((actual.cost - expected.cost).abs() <= 1e-9 * expected.cost.max(1.0));
+    }
+
+    #[test]
+    fn directory_bucket_positions_preserve_order_ties_and_reset_between_directories() {
+        let store = Snapshot {
+            sessions: vec![
+                session("/a", vec![vec![event(8.0, Some("gpt-5.4"), 100), event(15.999, None, 7)]], false),
+                session("/b", vec![vec![event(0.0, Some("gpt-5.4"), 13), event(15.999, Some("gpt-5.4"), 40)]], false),
+                session("/a", vec![vec![event(1.0, Some("unpriced-test"), 11), event(8.0, Some("gpt-5.4"), 100)]], true),
+                session("/b", vec![vec![event(20.0, Some("gpt-5.4"), 19)]], false),
+                session("/empty", vec![vec![event(2.0, None, 0)]], false),
+            ],
+        };
+        for bins in [0, 1, 7, MAX_BINS, MAX_BINS + 1] {
+            let view = View { start: 0.0, end: 16.0, bins };
+            for order in [vec![], vec![0, 1, 2, 3, 4], vec![4, 3, 2, 1, 0, 0, 99]] {
+                let mut cache = Cache::default();
+                for in_view in [false, true, false] {
+                    let summary = build(&mut cache, &store, &order, view, in_view);
+                    for directory in &summary.directories {
+                        let mut expected: BTreeMap<usize, Bucket> = BTreeMap::new();
+                        for session in &directory.sessions {
+                            for bucket in &session.buckets {
+                                expected
+                                    .entry(bucket.index)
+                                    .and_modify(|b| b.merge(bucket))
+                                    .or_insert_with(|| bucket.clone());
+                            }
+                        }
+                        assert_eq!(directory.buckets.len(), expected.len());
+                        assert_eq!(directory.buckets.capacity(), directory.buckets.len());
+                        for (actual, expected) in directory.buckets.iter().zip(expected.into_values()) {
+                            assert_eq!(actual.index, expected.index);
+                            assert_eq!(actual.usage, expected.usage);
+                            assert_eq!(actual.usage.cost.to_bits(), expected.usage.cost.to_bits());
+                            assert_eq!(actual.sample, expected.sample);
+                            assert_eq!(actual.sample_cost.to_bits(), expected.sample_cost.to_bits());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bucket_runs_keep_exact_sums_samples_and_cancellation_points() {
+        let store = Snapshot {
+            sessions: vec![session(
+                "/runs",
+                (0..3)
+                    .map(|li| {
+                        (0..4096)
+                            .map(|i| {
+                                event(
+                                    i as f64,
+                                    match (i + li) % 5 {
+                                        0 => None,
+                                        1 => Some("unpriced-test"),
+                                        _ => Some("gpt-5.4"),
+                                    },
+                                    if i % 256 < 192 { 0 } else { (i % 13 + 1) * 17 },
+                                )
+                            })
+                            .collect()
+                    })
+                    .collect(),
+                false,
+            )],
+        };
+        for bins in [1, 7, 512] {
+            let view = View::new(0.0, 4096.0, bins).unwrap();
+            let mut cache = Cache::default();
+            let checks = std::cell::Cell::new(0);
+            let summary = cache
+                .build_while(&store, &[0], view, false, || {
+                    checks.set(checks.get() + 1);
+                    true
+                })
+                .unwrap();
+            // 開始・セッション・3レーン・各レーンの256件ごと・ディレクトリ・完了。
+            assert_eq!(checks.get(), 1 + 1 + 3 + 3 * 16 + 1 + 1);
+            let actual = &summary.directories[0].sessions[0];
+            let edges = &summary.edges;
+            let mut expected_bins = 0;
+            for index in 0..bins {
+                let events = store.sessions[0].lanes.iter().enumerate().flat_map(|(li, lane)| {
+                    lane.events.iter().enumerate().filter_map(move |(i, e)| {
+                        (edges[index] <= e.start
+                            && e.start < edges[index + 1]
+                            && !e.usage.is_empty())
+                        .then_some((li, i, e))
+                    })
+                });
+                let mut expected = UsageSum::default();
+                let mut sample = None;
+                for (li, i, e) in events {
+                    expected.add(&e.usage, e.model.as_deref());
+                    let price = e.model.as_deref().and_then(crate::pricing::price);
+                    let cost = price.map_or(0.0, |p| p.cost(&e.usage));
+                    if sample.is_none_or(|(_, previous)| cost > previous) {
+                        sample = Some((Selection { session: 0, lane: li, first: i, last: i }, cost));
+                    }
+                }
+                let bucket = actual.buckets.iter().find(|b| b.index == index);
+                if let Some((sample, cost)) = sample {
+                    expected_bins += 1;
+                    let bucket = bucket.unwrap();
+                    assert_eq!(bucket.usage, expected);
+                    assert_eq!(bucket.usage.cost.to_bits(), expected.cost.to_bits());
+                    assert_eq!(bucket.sample, sample);
+                    assert_eq!(bucket.sample_cost.to_bits(), cost.to_bits());
+                } else {
+                    assert!(bucket.is_none());
+                }
+            }
+            assert_eq!(actual.buckets.len(), expected_bins);
+            for stop_at in 1..=checks.get() {
+                let mut cache = Cache::default();
+                let calls = std::cell::Cell::new(0);
+                assert!(
+                    cache
+                        .build_while(&store, &[0], view, false, || {
+                            calls.set(calls.get() + 1);
+                            calls.get() < stop_at
+                        })
+                        .is_none()
+                );
+                assert_eq!(calls.get(), stop_at);
+                let resumed = build(&mut cache, &store, &[0], view, false);
+                assert_eq!(format!("{resumed:?}"), format!("{summary:?}"));
+            }
+        }
     }
 
     #[test]

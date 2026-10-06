@@ -33,7 +33,7 @@ impl State {
 pub(super) fn rows(events: &[Event], visible: usize, filter: Option<&RowFilter>, reversed: bool) -> Vec<DetailRow> {
     let mut rows = matching_rows(events, 0, visible, filter);
     if reversed {
-        super::reverse_turn_rows(&mut rows, events, filter.is_some());
+        rows.reverse();
     }
     if rows.is_empty() {
         rows.push(DetailRow::Empty);

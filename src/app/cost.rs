@@ -58,6 +58,29 @@ impl State {
         }
     }
 
+    fn request(&mut self, key: Key) -> Option<u64> {
+        if self.key == Some(key) {
+            return None;
+        }
+        self.key = Some(key);
+        Some(self.generation.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    fn publish(&mut self, key: Key, version: u64, summary: Summary) -> bool {
+        if self.key != Some(key) || self.generation.load(Ordering::Relaxed) != version {
+            return false;
+        }
+        self.summary = Some(Arc::new(summary));
+        self.shown = Some(key);
+        self.rows = None;
+        true
+    }
+
+    /// 再集計中も直前の結果を描き、新しい集計が完成してから差し替える。
+    fn summary(&self) -> Option<Arc<Summary>> {
+        self.summary.clone()
+    }
+
     fn rows(&mut self, summary: &Summary, directory: bool, collapsed: &HashSet<String>) -> Rc<Vec<Row>> {
         if let Some(rows) = &self.rows
             && rows.directory == directory
@@ -153,15 +176,13 @@ impl Rireki {
             return;
         };
         let key = (self.data_gen, view.start.to_bits(), view.end.to_bits(), view.bins, self.in_view_only);
-        if self.cost_state.key == Some(key) {
+        let Some(version) = self.cost_state.request(key) else {
             return;
-        }
-        self.cost_state.key = Some(key);
+        };
         let store = self.store.clone();
         let order = self.order.clone();
         let cache = self.cost_state.cache.clone();
         let generation = self.cost_state.generation.clone();
-        let version = generation.fetch_add(1, Ordering::Relaxed) + 1;
         self.cost_state.task = Some(cx.spawn(async move |this, cx| {
             let summary = cx
                 .background_executor()
@@ -173,12 +194,8 @@ impl Rireki {
                 .await;
             let _ = this.update(cx, |t, cx| {
                 if let Some(summary) = summary
-                    && t.cost_state.key == Some(key)
-                    && t.cost_state.generation.load(Ordering::Relaxed) == version
+                    && t.cost_state.publish(key, version, summary)
                 {
-                    t.cost_state.summary = Some(Arc::new(summary));
-                    t.cost_state.shown = Some(key);
-                    t.cost_state.rows = None;
                     cx.notify();
                 }
             });
@@ -227,9 +244,7 @@ impl Rireki {
             canvas(move |bounds, _, _| origin.set(bounds.origin), |_, _, _, _| {}).absolute().size_full(),
         );
         let mut labels = div().relative().w(px(self.label_w)).h(px(ph)).overflow_hidden();
-        let summary =
-            self.cost_state.summary.clone().filter(|_| self.cost_state.shown == self.cost_state.key);
-        if let Some(summary) = summary {
+        if let Some(summary) = self.cost_state.summary() {
             let rows = self.cost_state.rows(&summary, self.directory_timeline, &self.collapsed);
             self.row_scroll = self.row_scroll.min((rows.len() as f32 * ROW_H - ph + ROW_H).max(0.0));
             let first = (self.row_scroll / ROW_H) as usize;
@@ -291,9 +306,10 @@ impl Rireki {
                                 Selection { session: row.session, lane: li, first: 0, last: 0 }
                             })
                         });
+                    let data_gen = self.cost_state.shown.map(|key| key.0);
                     label = label.on_click(cx.listener(move |t, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        if let Some(sel) = sample.filter(|s| t.valid(*s)) {
+                        if let Some(sel) = sample.filter(|s| data_gen == Some(t.data_gen) && t.valid(*s)) {
                             t.navigate(sel, window, cx);
                         }
                     }));
@@ -420,6 +436,7 @@ impl Rireki {
             3.0
         };
         let sel = bucket.sample;
+        let data_gen = self.cost_state.shown.map(|key| key.0);
         let session = &self.store.sessions[sel.session];
         let title = if session.title.is_empty() { "(無題)" } else { &session.title };
         let precise = summary.edges[bucket.index + 1] - summary.edges[bucket.index] < 1.0;
@@ -464,16 +481,15 @@ impl Rireki {
             .tooltip(tip(detail, None))
             .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| {
                 cx.stop_propagation();
-                if t.valid(sel) {
+                // ログ更新中は旧集計のイベント位置を新しい版に適用しない。
+                if data_gen == Some(t.data_gen) && t.valid(sel) {
                     t.navigate(sel, window, cx);
                 }
             }))
     }
 
     pub(super) fn scroll_to_cost_selection(&mut self, sel: Selection, window: &Window) {
-        let Some(summary) =
-            self.cost_state.summary.clone().filter(|_| self.cost_state.shown == self.cost_state.key)
-        else {
+        let Some(summary) = self.cost_state.summary() else {
             return;
         };
         let cwd = &self.store.sessions[sel.session].cwd;
@@ -498,19 +514,17 @@ impl Rireki {
 
     pub(super) fn cost_footer(&self, window: &Window) -> Div {
         let pending = self.cost_state.shown != self.cost_state.key;
-        let detail = self
-            .cost_state
-            .summary
-            .as_ref()
-            .filter(|_| !pending)
+        let summary = self.cost_state.summary();
+        let detail = summary.as_ref()
             .map_or_else(|| self.counts.clone(), |s| usage_tip(&s.usage));
         div().h(px(FOOTER_H)).flex_none().flex().items_center().gap_3().px_3()
             .border_t_1().border_color(c(theme::BORDER)).text_xs().text_color(c(theme::MUTED))
             .child(div().id("cost-total").flex_1().min_w_0().truncate().child(self.counts.clone()).tooltip(tip(detail, None)))
-            .when(!pending && self.main_width(window) >= 900.0, |d| d.child(
+            .when(summary.is_some() && self.main_width(window) >= 900.0, |d| d.child(
                 div().id("cost-scale").flex_none().whitespace_nowrap()
                     .child(format!("高さの上限 {} / 区間", cost_amount(self.cost_state.max_bucket)))
                     .tooltip(tip("すべての行を同じ金額の縮尺で表示。表示範囲と幅に合わせて区間を分割します。", None))))
+            .when(pending && summary.is_some(), |d| d.child("集計中…"))
             .child(div().id("cost-legend").flex_none().flex().items_center().gap_1()
                 .child(div().size(px(7.0)).rounded_sm().bg(c(theme::OK))).child("API 換算")
                 .child(div().size(px(7.0)).rounded_sm().bg(c(theme::WARN))).child("料金不明")
@@ -521,6 +535,72 @@ impl Rireki {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn summary(cwd: &str) -> Summary {
+        Summary {
+            view: View::new(10.0, 20.0, 2).unwrap(),
+            edges: vec![10.0, 15.0, 20.0],
+            directories: vec![crate::cost_timeline::Directory {
+                cwd: cwd.into(), sessions: Vec::new(), usage: UsageSum::default(), buckets: Vec::new(),
+            }],
+            usage: UsageSum::default(),
+            sessions: 0,
+        }
+    }
+
+    #[test]
+    fn recalculation_keeps_the_displayed_summary_and_rows_until_completion() {
+        let mut state = State::new();
+        let key = (1, 10.0f64.to_bits(), 20.0f64.to_bits(), 2, false);
+        let version = state.request(key).unwrap();
+        assert!(state.summary().is_none());
+        assert!(state.publish(key, version, summary("/old")));
+        let displayed = state.summary().unwrap();
+        let collapsed = HashSet::new();
+        let rows = state.rows(&displayed, false, &collapsed);
+        assert_eq!(rows.len(), 1);
+
+        // ログ更新、横移動、ズーム、幅変更、期間内への絞り込みでも表示を消さない。
+        let changes = [
+            (2, key.1, key.2, key.3, key.4),
+            (2, 11.0f64.to_bits(), 21.0f64.to_bits(), key.3, key.4),
+            (2, 11.0f64.to_bits(), 16.0f64.to_bits(), key.3, key.4),
+            (2, 11.0f64.to_bits(), 16.0f64.to_bits(), 4, key.4),
+            (2, 11.0f64.to_bits(), 16.0f64.to_bits(), 4, true),
+        ];
+        let mut version = version;
+        for changed in changes {
+            version = state.request(changed).unwrap();
+            assert!(state.request(changed).is_none());
+            let retained = state.summary().unwrap();
+            assert!(Arc::ptr_eq(&displayed, &retained));
+            assert!(Rc::ptr_eq(&rows, &state.rows(&retained, false, &collapsed)));
+            assert_eq!(state.shown, Some(key));
+        }
+        assert!(state.publish(changes[4], version, summary("/new")));
+        let updated = state.summary().unwrap();
+        assert_eq!(updated.directories[0].cwd, "/new");
+        assert!(!Arc::ptr_eq(&displayed, &updated));
+        assert!(!Rc::ptr_eq(&rows, &state.rows(&updated, false, &collapsed)));
+        assert_eq!(state.shown, state.key);
+    }
+
+    #[test]
+    fn superseded_results_cannot_replace_the_display_even_after_returning_to_the_same_view() {
+        let mut state = State::new();
+        let key = (1, 10.0f64.to_bits(), 20.0f64.to_bits(), 2, false);
+        let old_version = state.request(key).unwrap();
+        assert!(state.publish(key, old_version, summary("/displayed")));
+        let displayed = state.summary().unwrap();
+        let other = (key.0, 20.0f64.to_bits(), 30.0f64.to_bits(), key.3, key.4);
+        let other_version = state.request(other).unwrap();
+        let latest_version = state.request(key).unwrap();
+        assert!(!state.publish(other, other_version, summary("/superseded")));
+        assert!(!state.publish(key, old_version, summary("/old-version")));
+        assert!(Arc::ptr_eq(&displayed, &state.summary().unwrap()));
+        assert!(state.publish(key, latest_version, summary("/latest")));
+        assert_eq!(state.summary().unwrap().directories[0].cwd, "/latest");
+    }
 
     #[test]
     fn cost_labels_distinguish_missing_unpriced_free_and_small_paid_usage() {
