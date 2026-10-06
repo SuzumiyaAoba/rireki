@@ -556,14 +556,17 @@ impl Rireki {
                 if self.cache(sel).is_none() {
                     body = body.child(div().text_xs().text_color(c(theme::MUTED)).child("詳細を読み込み中…"));
                 } else if sel.first == sel.last {
-                    body = body.child(self.event_view(sel, cx));
+                    body = body.child(self.replay_controls(sel, cx)).child(self.event_view(sel, cx));
                 } else {
                     return panel
                         .child(self.detail_header(sel, cx))
                         .child(self.context_bar(sel, cx))
                         .child(self.detail_tabs(sel, tab, files, cx))
-                        .child(self.replay_controls(sel, cx))
-                        .child(div().flex_1().min_h_0().p_3().flex().flex_col().child(self.event_list(sel, window, cx)))
+                        .child(
+                            div().flex_1().min_h_0().p_3().flex().flex_col().gap_2()
+                                .when(self.replay.is_some(), |d| d.child(self.event_list_header(sel, cx)))
+                                .child(self.event_list(sel, window, cx)),
+                        )
                         .into_any_element();
                 }
             }
@@ -600,7 +603,6 @@ impl Rireki {
             .child(self.detail_header(sel, cx))
             .child(self.context_bar(sel, cx))
             .child(self.detail_tabs(sel, tab, files, cx))
-            .when(tab == DetailTab::Events, |d| d.child(self.replay_controls(sel, cx)))
             .child(body)
             .into_any_element()
     }
@@ -1986,34 +1988,42 @@ impl Rireki {
         }).w_full().min_w_0().flex_1().min_h_0().into_any_element()
     }
 
-    /// 集計の下、イベント行の直前に見出しと並び順の選択肢を置く
-    fn event_list_header(&self, cx: &mut Context<Self>) -> Div {
+    /// 集計の下、イベント行の直前に見出し・並び順・再生操作をまとめる
+    fn event_list_header(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         div()
+            .flex_none()
             .flex()
-            .flex_wrap()
-            .items_center()
+            .flex_col()
             .gap_2()
-            .child(label("イベント一覧"))
             .child(
                 div()
-                    .id("detail-order")
-                    .flex_none()
                     .flex()
+                    .flex_wrap()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
+                    .child(label("イベント一覧"))
                     .child(
-                        self.icon_button(
-                            "detail-order-oldest", Some(Icon::ArrowDown), "古い順", !self.detail_reversed, cx,
-                            |t, _, cx| t.set_detail_order(false, cx),
-                        ).tooltip(tip("時刻の古いイベントから表示", None)),
-                    )
-                    .child(
-                        self.icon_button(
-                            "detail-order-newest", Some(Icon::ArrowUp), "新しい順", self.detail_reversed, cx,
-                            |t, _, cx| t.set_detail_order(true, cx),
-                        ).tooltip(tip("時刻の新しいイベントから表示", None)),
+                        div()
+                            .id("detail-order")
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                self.icon_button(
+                                    "detail-order-oldest", Some(Icon::ArrowDown), "古い順", !self.detail_reversed, cx,
+                                    |t, _, cx| t.set_detail_order(false, cx),
+                                ).tooltip(tip("時刻の古いイベントから表示", None)),
+                            )
+                            .child(
+                                self.icon_button(
+                                    "detail-order-newest", Some(Icon::ArrowUp), "新しい順", self.detail_reversed, cx,
+                                    |t, _, cx| t.set_detail_order(true, cx),
+                                ).tooltip(tip("時刻の新しいイベントから表示", None)),
+                            ),
                     ),
             )
+            .child(self.replay_controls(sel, cx))
     }
 
     fn detail_list_item(&self, sel: Selection, row: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -2023,7 +2033,7 @@ impl Rireki {
         let i = match item {
             Some(DetailRow::Summary) => return div().w_full().min_w_0().flex().flex_col().gap_2().pb_2()
                 .child(self.selection_summary(sel, cx))
-                .child(self.event_list_header(cx)).into_any_element(),
+                .child(self.event_list_header(sel, cx)).into_any_element(),
             Some(DetailRow::Empty) => return div().py_2().text_xs().text_color(c(theme::SUBTLE))
                 .child(if self.replay.as_ref().is_some_and(|replay| !replay.is_finished()) {
                     "次のイベントを待っています…"

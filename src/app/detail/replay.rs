@@ -209,13 +209,9 @@ impl Rireki {
         };
         let mut controls = div()
             .flex_none()
-            .px_3()
-            .py_2()
             .flex()
             .flex_col()
             .gap_2()
-            .border_b_1()
-            .border_color(c(theme::BORDER))
             .text_xs();
         let mut actions = div().flex().flex_wrap().items_center().gap_1().child(self.icon_button(
             "replay-toggle",
@@ -330,7 +326,6 @@ impl Rireki {
                         )
                     })),
             )
-            .when(self.replay.is_some(), |d| d.child(self.event_list_header(cx)))
     }
 }
 
