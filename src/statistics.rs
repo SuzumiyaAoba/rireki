@@ -462,7 +462,7 @@ mod tests {
             kind,
             usage,
             name: "".into(),
-            summary: String::new(),
+            summary: Default::default(),
             input: String::new(),
             output: String::new(),
             call_id: None,

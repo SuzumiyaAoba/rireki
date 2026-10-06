@@ -51,6 +51,8 @@ pub struct Prefs {
     pub gran: Granularity,
     /// タイムラインで表示範囲内のセッションだけを並べるか
     pub in_view_only: bool,
+    /// タイムラインでディレクトリごとにメインイベントを詰めて表示するか
+    pub directory_timeline: bool,
     pub source: SourceFilter,
     /// 絞り込み中のプロジェクト（作業ディレクトリ）
     pub focus: Option<String>,
@@ -76,6 +78,7 @@ impl Default for Prefs {
             detail_w: 440.0,
             gran: Granularity::Auto,
             in_view_only: false,
+            directory_timeline: false,
             source: SourceFilter::All,
             focus: None,
             collapsed: Vec::new(),
@@ -119,7 +122,7 @@ mod tests {
     fn roundtrip_and_partial() {
         let p = Prefs {
             focus: Some("/w".into()), gran: Granularity::Turn, statistics: true,
-            detail_reversed: true, ..Prefs::default()
+            detail_reversed: true, directory_timeline: true, ..Prefs::default()
         };
         let s = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&s).unwrap(), p);
@@ -128,5 +131,6 @@ mod tests {
         assert_eq!((q.mode, q.sidebar), (Mode::Day, true));
         assert!(!q.statistics);
         assert!(!q.detail_reversed);
+        assert!(!q.directory_timeline);
     }
 }

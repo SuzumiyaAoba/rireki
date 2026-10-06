@@ -4,6 +4,7 @@ mod range;
 mod search;
 mod statistics;
 mod summary;
+mod parse;
 #[cfg(target_os = "macos")]
 mod memory;
 #[cfg(target_os = "macos")]
@@ -55,7 +56,12 @@ fn items_hash(items: &[Loaded]) -> u64 {
             lane.events.len().hash(&mut hash);
             for e in &lane.events {
                 (e.start.to_bits(), e.end.to_bits(), e.kind as u8, e.status as u8).hash(&mut hash);
-                (&e.name, &e.summary, &e.input, &e.output, &e.call_id, &e.model).hash(&mut hash);
+                let (input, output) = match e.text() {
+                    EventText::Inline(i, o) => (std::borrow::Cow::Borrowed(i), std::borrow::Cow::Borrowed(o)),
+                    EventText::Pending(i, o) => (std::borrow::Cow::Owned(i), std::borrow::Cow::Owned(o)),
+                    EventText::Row(_) => (std::borrow::Cow::Borrowed(e.input.as_str()), std::borrow::Cow::Borrowed(e.output.as_str())),
+                };
+                (&e.name, &e.summary, input.as_ref(), output.as_ref(), &e.call_id, &e.model).hash(&mut hash);
                 (
                     e.usage.input,
                     e.usage.cache_read,
@@ -428,7 +434,7 @@ pub fn view(index: Option<&Path>) {
                     Kind::Tool
                 },
                 name: "exec_command".into(),
-                summary: String::new(),
+                summary: Default::default(),
                 input: String::new(),
                 output: String::new(),
                 call_id: None,
@@ -698,4 +704,8 @@ pub fn detail_summary(index: &Path) {
 
 pub fn search(index: &Path) {
     search::benchmark(index);
+}
+
+pub fn parse(manifest: &Path) {
+    parse::benchmark(manifest);
 }

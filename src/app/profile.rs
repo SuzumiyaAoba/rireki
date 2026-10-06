@@ -2,6 +2,8 @@
 //! GPUI の描画・提示・要素解放を含む経過時間は ZED_MEASUREMENTS=1 で別途記録できる
 
 use std::time::{Duration, Instant};
+use std::cell::Cell;
+use std::rc::Rc;
 
 use gpui::{Context, ListOffset, Window, px};
 
@@ -12,6 +14,48 @@ use crate::prefs::{DetailTab, Mode};
 
 const TICK: Duration = Duration::from_millis(5);
 
+#[derive(Clone, Copy, Default, serde::Serialize)]
+pub(super) struct TimelineMeasurements {
+    pub(super) build_ms: f64,
+    pub(super) rows_ms: f64,
+    pub(super) aggregate_ms: f64,
+    pub(super) description_ms: f64,
+    pub(super) paint_ms: f64,
+    pub(super) paint_cpu_ms: f64,
+    pub(super) minimap_ms: f64,
+    pub(super) minimap_cpu_ms: f64,
+    pub(super) minimap_calls: usize,
+    pub(super) minimap_quads: usize,
+    pub(super) lane_map_ms: f64,
+    pub(super) lane_map_cpu_ms: f64,
+    pub(super) lane_map_calls: usize,
+    pub(super) lane_map_quads: usize,
+    pub(super) build_calls: usize,
+    pub(super) aggregate_calls: usize,
+    pub(super) paint_calls: usize,
+    #[serde(skip)]
+    pub(super) paint_hash: u64,
+    #[serde(skip)]
+    pub(super) minimap_hash: u64,
+    #[serde(skip)]
+    pub(super) lane_map_hash: u64,
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn thread_cpu_ns() -> Option<u64> {
+    unsafe extern "C" { fn clock_gettime_nsec_np(clock: i32) -> u64; }
+    // Apple SDK の CLOCK_THREAD_CPUTIME_ID は 16。引数は clockid_t、戻り値はナノ秒。
+    let value = unsafe { clock_gettime_nsec_np(16) };
+    (value != 0).then_some(value)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(super) fn thread_cpu_ns() -> Option<u64> { None }
+
+pub(super) fn cpu_delta_ms(start: Option<u64>) -> Option<f64> {
+    start.zip(thread_cpu_ns()).and_then(|(a, b)| b.checked_sub(a)).map(|ns| ns as f64 / 1_000_000.0)
+}
+
 #[derive(Default)]
 pub(super) struct State {
     first_frame_queued: bool,
@@ -20,6 +64,14 @@ pub(super) struct State {
     rendered_generation: Option<u64>,
     manual: bool,
     eager_files: bool,
+    pub(super) timeline: bool,
+    pub(super) uncached_rows: bool,
+    pub(super) sidebar: bool,
+    pub(super) eager_sidebar: bool,
+    pub(super) unbatched_minimap: bool,
+    pub(super) unbatched_lane_map: bool,
+    dense_timeline: bool,
+    pub(super) measurements: Option<Rc<Cell<TimelineMeasurements>>>,
 }
 
 impl State {
@@ -28,21 +80,33 @@ impl State {
         Self {
             manual: args.iter().any(|a| a == "--profile-render"),
             eager_files: args.iter().any(|a| a == "--profile-eager-files"),
+            timeline: args.iter().any(|a| matches!(a.as_str(), "--profile-timeline" | "--profile-dense-timeline" | "--profile-lane-map")),
+            uncached_rows: args.iter().any(|a| a == "--profile-uncached-rows"),
+            sidebar: args.iter().any(|a| a == "--profile-sidebar"),
+            eager_sidebar: args.iter().any(|a| a == "--profile-eager-sidebar"),
+            unbatched_minimap: args.iter().any(|a| a == "--profile-unbatched-minimap"),
+            unbatched_lane_map: args.iter().any(|a| a == "--profile-unbatched-lane-map"),
+            dense_timeline: args.iter().any(|a| a == "--profile-dense-timeline"),
+            measurements: args.iter().any(|a| a == "--profile-components").then(Default::default),
             ..Self::default()
         }
     }
 }
 
 /// 画面ロック中も構築・レイアウト・paint 命令生成を検証する。GPU への present は含まない
-fn render_only(cx: &mut gpui::AsyncWindowContext, stage: &str) -> bool {
+fn render_only(cx: &mut gpui::AsyncWindowContext, stage: &str, measurements: Option<&Rc<Cell<TimelineMeasurements>>>) -> bool {
+    if let Some(measurements) = measurements { measurements.set(TimelineMeasurements::default()); }
     let started = Instant::now();
-    if cx.update(|window, cx| window.draw(cx).clear()).is_err() {
-        return false;
-    }
+    let Ok(cpu_ms) = cx.update(|window, cx| {
+        let cpu_started = measurements.and_then(|_| thread_cpu_ns());
+        window.draw(cx).clear();
+        measurements.and_then(|_| cpu_delta_ms(cpu_started))
+    }) else { return false; };
     println!(
         "{}",
         serde_json::json!({"ui_profile":"render", "stage":stage,
-        "ms":started.elapsed().as_secs_f64()*1000.0})
+        "ms":started.elapsed().as_secs_f64()*1000.0, "cpu_ms":cpu_ms,
+        "components":measurements.map(|m| m.get())})
     );
     true
 }
@@ -74,6 +138,38 @@ const RICH_STAGES: [(&str, usize); 4] = [
     ("detail_long_single", 240),
     ("calendar_dense_day", 120),
     ("calendar_dense_week", 120),
+];
+const CALENDAR_STAGES: [(&str, usize); 5] = [
+    ("calendar_scroll", 120),
+    ("calendar_scroll_all", 120),
+    ("calendar_zoom", 120),
+    ("calendar_dates", 40),
+    ("calendar_day_scroll", 120),
+];
+const TIMELINE_STAGES: [(&str, usize); 8] = [
+    ("timeline_lane_scroll", 120),
+    ("timeline_lane_scroll_all", 120),
+    ("timeline_directory_scroll", 120),
+    ("timeline_directory_pan", 80),
+    ("timeline_directory_zoom", 80),
+    ("timeline_collapse", 80),
+    ("timeline_scope", 80),
+    ("timeline_update", 80),
+];
+const SIDEBAR_STAGES: [(&str, usize); 8] = [
+    ("sidebar_refresh", 120), ("sidebar_all", 120), ("sidebar_scroll", 120),
+    ("sidebar_more", 80), ("sidebar_fold", 80), ("sidebar_scope", 80),
+    ("sidebar_resize", 80), ("sidebar_update", 80),
+];
+const LANE_MAP_STAGES: [(&str, usize); 5] = [
+    ("lane_map_all_scroll", 80), ("lane_map_directory_scroll", 80),
+    ("lane_map_selection", 80), ("lane_map_collapse", 80), ("lane_map_zoom", 80),
+];
+const DENSE_TIMELINE_STAGES: [(&str, usize); 8] = [
+    ("timeline_dense_pan", 80), ("timeline_dense_zoom", 80),
+    ("timeline_dense_same_tool", 80), ("timeline_dense_calls", 80),
+    ("timeline_dense_turns", 80), ("timeline_dense_directory_pan", 80),
+    ("timeline_dense_directory_zoom", 80), ("timeline_dense_update", 80),
 ];
 const FILE_STAGES: [(&str, usize); 1] = [("detail_files_checks", 240)];
 const SUMMARY_STAGES: [(&str, usize); 2] = [
@@ -113,7 +209,7 @@ fn profile_event(index: usize, start: f64) -> Event {
         end: start + index as f64 + 0.1,
         kind,
         name: name.into(),
-        summary: format!("event {index}"),
+        summary: format!("event {index}").into(),
         input,
         output: "[exit 1 · 0.1s]\nresult".into(),
         call_id: None,
@@ -181,6 +277,7 @@ impl Rireki {
     }
 
     pub(super) fn start_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let measurements = self.profile.as_ref().and_then(|p| p.measurements.clone());
         cx.spawn_in(window, async move |this, cx| {
             let started = Instant::now();
             let manual = std::env::args().any(|a| a == "--profile-render");
@@ -192,8 +289,13 @@ impl Rireki {
                 let now = Instant::now();
                 startup_gaps.push(now.duration_since(previous).as_secs_f64()*1000.0);
                 previous = now;
-                if manual && !render_only(cx, "startup") { return; }
+                if manual && !render_only(cx, "startup", measurements.as_ref()) { return; }
                 let Ok(ready) = this.update_in(cx, |app, window, cx| {
+                    // 前回の模擬プロジェクトは索引に保存しない。残った絞り込みを解除して起動待ちを進める。
+                    if app.loading.is_none() && app.order.is_empty() && app.profile.as_ref().is_some_and(|p| p.dense_timeline) {
+                        app.set_source(crate::prefs::SourceFilter::All, cx);
+                        app.set_focus(None, cx);
+                    }
                     if !window.is_window_active() {
                         window.activate_window();
                         cx.activate(true);
@@ -224,6 +326,8 @@ impl Rireki {
                     "anchor_events":app.store.sessions[anchor].lanes[0].events.len()}));
             });
             let args: Vec<_> = std::env::args().collect();
+            let paired_minimap = args.iter().any(|a| a == "--profile-paired-minimap");
+            let paired_lane_map = args.iter().any(|a| a == "--profile-paired-lane-map");
             if let Some(index) = args.iter().position(|a| a == "--profile-idle") {
                 let seconds: u64 = args.get(index + 3).map_or(15, |s| s.parse().expect("待機秒数を指定してください"));
                 let generation = this.update_in(cx, |app, _, _| app.data_gen).ok();
@@ -244,8 +348,21 @@ impl Rireki {
                 let _ = this.update_in(cx, |_, _, cx| cx.quit());
                 return;
             }
-            let stages: &[(&str, usize)] = if args.iter().any(|arg| arg == "--profile-statistics") {
+            if args.iter().any(|arg| arg == "--profile-dense-timeline") {
+                let _ = this.update_in(cx, |app, _, _| app.profile_dense_sessions(anchor));
+            }
+            let stages: &[(&str, usize)] = if args.iter().any(|arg| arg == "--profile-lane-map") {
+                &LANE_MAP_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-dense-timeline") {
+                &DENSE_TIMELINE_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-statistics") {
                 &STATISTICS_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-sidebar") {
+                &SIDEBAR_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-calendar") {
+                &CALENDAR_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-timeline") {
+                &TIMELINE_STAGES
             } else if args.iter().any(|arg| arg == "--profile-summary") {
                 &SUMMARY_STAGES
             } else if args.iter().any(|arg| arg == "--profile-files") {
@@ -270,12 +387,35 @@ impl Rireki {
                     let t = Instant::now();
                     if this.update_in(cx, |app, window, cx| app.profile_step(stage, step, anchor, window, cx)).is_err() { return; }
                     dispatch.push(t.elapsed().as_secs_f64()*1000.0);
-                    if manual && !render_only(cx, stage) { return; }
+                    if paired_minimap || paired_lane_map {
+                        // 同じ位置を二回描き、初回と再利用の影響が片方に偏らないよう順番を交互にする。
+                        for unbatched in if step.is_multiple_of(2) { [true, false] } else { [false, true] } {
+                            if this.update_in(cx, |app, _, cx| {
+                                if paired_minimap { app.profile.as_mut().unwrap().unbatched_minimap = unbatched; }
+                                if paired_lane_map { app.profile.as_mut().unwrap().unbatched_lane_map = unbatched; }
+                                cx.notify();
+                            }).is_err() { return; }
+                            let variant = format!("{stage}_{}", if unbatched { "unbatched" } else { "batched" });
+                            if !render_only(cx, &variant, measurements.as_ref()) { return; }
+                            if this.update_in(cx, |app, window, _| app.profile_timeline_frame(&variant, step, window)).is_err() { return; }
+                        }
+                        continue;
+                    }
+                    if manual && !render_only(cx, stage, measurements.as_ref()) { return; }
+                    if manual && args.iter().any(|arg| arg == "--profile-calendar") {
+                        let _ = this.update_in(cx, |app, _, _| app.profile_calendar_frame(stage, step));
+                    }
+                    if manual && args.iter().any(|arg| matches!(arg.as_str(), "--profile-timeline" | "--profile-dense-timeline" | "--profile-lane-map")) {
+                        let _ = this.update_in(cx, |app, window, _| app.profile_timeline_frame(stage, step, window));
+                    }
+                    if manual && args.iter().any(|arg| arg == "--profile-sidebar") {
+                        let _ = this.update_in(cx, |app, window, _| app.profile_sidebar_frame(stage, step, window));
+                    }
                     if (step == 0 || step + 1 == samples) && stage.starts_with("statistics_") {
                         let wait = Instant::now();
                         loop {
                             bg.timer(TICK).await;
-                            if manual && !render_only(cx, stage) { return; }
+                            if manual && !render_only(cx, stage, measurements.as_ref()) { return; }
                             let Ok(ready) = this.update_in(cx, |app, _, _| app.statistics_profile_ready()) else { return; };
                             if ready { break; }
                             if wait.elapsed() > Duration::from_secs(10) {
@@ -289,7 +429,7 @@ impl Rireki {
                         let wait = Instant::now();
                         loop {
                             bg.timer(TICK).await;
-                            if manual && !render_only(cx, stage) { return; }
+                            if manual && !render_only(cx, stage, measurements.as_ref()) { return; }
                             let Ok(ready) = this.update_in(cx, |app, _, _| {
                                 app.detail_cache.is_some() && (!app.detail_uses_list()
                                     || (app.detail_list.state.item_count() > 0
@@ -321,6 +461,21 @@ impl Rireki {
     }
 
     fn profile_step(&mut self, stage: &str, step: usize, anchor: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if stage.starts_with("lane_map_") {
+            self.profile_lane_map_step(stage, step, anchor, window, cx);
+            cx.notify();
+            return;
+        }
+        if stage.starts_with("timeline_dense_") {
+            self.profile_dense_step(stage, step, anchor, window, cx);
+            cx.notify();
+            return;
+        }
+        if stage.starts_with("sidebar_") {
+            self.profile_sidebar_step(stage, step, anchor, window, cx);
+            cx.notify();
+            return;
+        }
         if stage.starts_with("statistics_") {
             self.statistics_profile_step(stage, step, anchor, window, cx);
             cx.notify();
@@ -335,6 +490,12 @@ impl Rireki {
             self.mode = Mode::Timeline;
             self.gran = Granularity::Auto;
             self.in_view_only = true;
+            if self.profile.as_ref().is_some_and(|p| p.timeline) {
+                self.directory_timeline = false;
+                self.collapsed.clear();
+                self.set_source(crate::prefs::SourceFilter::All, cx);
+                self.set_focus(None, cx);
+            }
             let s = &self.store.sessions[anchor];
             self.t0 = s.start;
             self.spp = ((s.end - s.start) / self.plot_width(window) as f64).max(0.01);
@@ -382,9 +543,77 @@ impl Rireki {
                 self.gran = Granularity::Call;
                 self.row_scroll += 2.0;
             }
-            "calendar_scroll" => {
-                self.mode = Mode::Week;
+            "timeline_lane_scroll" | "timeline_lane_scroll_all" | "timeline_directory_scroll" => {
+                self.in_view_only = stage == "timeline_lane_scroll";
+                self.directory_timeline = stage == "timeline_directory_scroll";
+                self.row_scroll = (step % 60) as f32 * super::ROW_H;
+            }
+            "timeline_directory_pan" | "timeline_directory_zoom" => {
+                self.in_view_only = false;
+                self.directory_timeline = true;
+                if stage == "timeline_directory_pan" {
+                    self.t0 += self.spp * 2.0;
+                } else {
+                    self.spp *= if step < 40 { 0.99 } else { 1.0 / 0.99 };
+                }
+            }
+            "timeline_collapse" => {
+                self.in_view_only = false;
+                if step.is_multiple_of(10) {
+                    let cwd = self.store.sessions[anchor].cwd.clone();
+                    if !self.collapsed.remove(&cwd) { self.collapsed.insert(cwd); }
+                }
+                self.row_scroll = (step % 10) as f32 * super::ROW_H;
+            }
+            "timeline_scope" => {
+                self.in_view_only = false;
+                if step.is_multiple_of(10) {
+                    let source = match (step / 10) % 3 {
+                        0 => crate::prefs::SourceFilter::All,
+                        1 => crate::prefs::SourceFilter::Claude,
+                        _ => crate::prefs::SourceFilter::Codex,
+                    };
+                    self.set_source(source, cx);
+                    let focus = (step / 10).is_multiple_of(2).then(|| self.store.sessions[anchor].cwd.clone());
+                    self.set_focus(focus, cx);
+                }
+                self.row_scroll = (step % 10) as f32 * super::ROW_H;
+            }
+            "timeline_update" => {
+                self.in_view_only = false;
+                if step == 0 {
+                    self.profile_timeline_session(anchor);
+                } else if step.is_multiple_of(10) {
+                    let si = self.store.sessions.iter().position(|s| s.id == "rireki-timeline-profile").unwrap();
+                    let session = std::sync::Arc::make_mut(&mut self.store.sessions[si]);
+                    let n = session.lanes[0].events.len();
+                    let start = session.start;
+                    session.lanes[0].events.extend((n..n + 10).map(|i| profile_event(i, start)));
+                    session.finalize();
+                    self.layout_cache.borrow_mut().invalidate(&[si]);
+                    self.rebuild_order();
+                }
+                self.row_scroll = (step % 10) as f32 * super::ROW_H;
+            }
+            "calendar_scroll" | "calendar_scroll_all" | "calendar_day_scroll" => {
+                self.in_view_only = stage == "calendar_scroll";
+                self.mode = if stage == "calendar_day_scroll" { Mode::Day } else { Mode::Week };
+                self.px_per_hour = 60.0;
                 self.cal_scroll = step as f32 * 3.0;
+            }
+            "calendar_zoom" => {
+                self.in_view_only = false;
+                self.mode = Mode::Week;
+                self.px_per_hour = 40.0 + (step % 20) as f32 * 2.0;
+                self.cal_scroll = step as f32 * 3.0;
+            }
+            "calendar_dates" => {
+                self.in_view_only = false;
+                self.mode = Mode::Week;
+                self.px_per_hour = 60.0;
+                self.day0 = super::local(self.store.sessions[anchor].start).date_naive()
+                    - chrono::Duration::days((step % 3) as i64 * 7);
+                self.cal_scroll = 180.0;
             }
             "calendar_dense_day" | "calendar_dense_week" => {
                 self.mode = if stage.ends_with("week") { Mode::Week } else { Mode::Day };
@@ -616,6 +845,337 @@ impl Rireki {
             );
         }
         cx.notify();
+    }
+
+    fn profile_lane_map_step(&mut self, stage: &str, step: usize, anchor: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if step == 0 {
+            window.activate_window();
+            cx.activate(true);
+            self.search_input.update(cx, |input, cx| input.set_text("", cx));
+            self.close_detail(cx);
+            self.detail_t = 0.0;
+            self.mode = Mode::Timeline;
+            self.gran = Granularity::Auto;
+            self.in_view_only = false;
+            self.directory_timeline = stage.contains("directory");
+            self.collapsed.clear();
+            self.set_source(crate::prefs::SourceFilter::All, cx);
+            self.set_focus(None, cx);
+            let (start, end) = self.order.iter().map(|&si| &self.store.sessions[si])
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), s| (a.min(s.start), b.max(s.end)));
+            assert!(start.is_finite() && end > start, "lane map profile has no history");
+            self.pick = Some((start, end));
+            self.set_range(start, end, window);
+        }
+        match stage {
+            "lane_map_selection" => {
+                self.selected = step.is_multiple_of(2).then_some(Selection { session: anchor, lane: 0, first: 0, last: 0 });
+                // 選択に伴う詳細パネルのアニメーションで、比較する二画面の幅が変わらないようにする。
+                self.detail_t = if self.selected.is_some() { 1.0 } else { 0.0 };
+                let (start, end) = self.pick.unwrap();
+                self.set_range(start, end, window);
+            }
+            "lane_map_collapse" if step.is_multiple_of(10) => {
+                let cwd = self.store.sessions[anchor].cwd.clone();
+                if !self.collapsed.remove(&cwd) { self.collapsed.insert(cwd); }
+            }
+            "lane_map_zoom" => self.spp *= if step < 40 { 0.99 } else { 1.0 / 0.99 },
+            _ => {}
+        }
+        let rows = self.rows_in(self.t0, self.t0 + self.spp * self.plot_width(window) as f64);
+        let total = rows.rows.len() as f32 * super::ROW_H;
+        self.row_scroll = (total - self.plot_height(window) + super::ROW_H).max(0.0)
+            * (step % 20) as f32 / 19.0;
+    }
+
+    fn profile_dense_sessions(&mut self, anchor: usize) {
+        let source = self.store.sessions[anchor].source;
+        let start = self.store.sessions[anchor].start;
+        let names: Vec<std::sync::Arc<str>> = ["User", "read_file", "exec_command", "apply_patch", "Assistant", "spawn_agent"]
+            .into_iter().map(Into::into).collect();
+        for i in 0..24 {
+            let mut lane = Lane::new("main");
+            lane.events = (0..12000).map(|j| {
+                let mut event = profile_event(j, start + i as f64 * 0.013);
+                event.name = names[j % names.len()].clone();
+                event.kind = if j.is_multiple_of(200) { Kind::Agent } else { event.kind };
+                event.end = event.start + if j.is_multiple_of(257) { 12.0 } else { 0.1 };
+                event.input.clear();
+                event.output.clear();
+                event
+            }).collect();
+            let mut session = Session {
+                id: format!("rireki-dense-profile-{i}"), source, cwd: "rireki-timeline-dense".into(),
+                headless: false, title: format!("Dense timeline {i}"), branch: String::new(), version: String::new(),
+                lanes: vec![lane], start, end: start, parents: Vec::new(), tree: Vec::new(),
+            };
+            session.finalize();
+            self.store.sessions.push(std::sync::Arc::new(session));
+        }
+        self.rebuild_order();
+    }
+
+    fn profile_dense_step(&mut self, stage: &str, step: usize, anchor: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.hovered = None;
+        if step == 0 {
+            window.activate_window();
+            cx.activate(true);
+            self.search_input.update(cx, |input, cx| input.set_text("", cx));
+            self.close_detail(cx);
+            self.detail_t = 0.0;
+            self.sidebar_open = false;
+            self.side_t = 0.0;
+            self.mode = Mode::Timeline;
+            self.gran = Granularity::Auto;
+            self.in_view_only = false;
+            self.directory_timeline = stage.contains("directory");
+            self.collapsed.clear();
+            self.set_source(crate::prefs::SourceFilter::All, cx);
+            self.set_focus(Some("rireki-timeline-dense".into()), cx);
+            self.t0 = self.store.sessions[anchor].start + 6000.0;
+            self.spp = 0.03;
+            self.row_scroll = 0.0;
+        }
+        match stage {
+            "timeline_dense_pan" | "timeline_dense_directory_pan" => self.t0 += self.spp * 2.0,
+            "timeline_dense_calls" => {
+                self.gran = Granularity::Call;
+                self.t0 += self.spp * 2.0;
+            }
+            "timeline_dense_turns" => {
+                self.gran = Granularity::Turn;
+                self.t0 += self.spp * 2.0;
+            }
+            "timeline_dense_same_tool" => {
+                self.gran = Granularity::SameTool;
+                self.spp *= if step < 40 { 0.99 } else { 1.0 / 0.99 };
+            }
+            "timeline_dense_update" => {
+                if step.is_multiple_of(10) {
+                    let si = self.store.sessions.iter().position(|s| s.id == "rireki-dense-profile-0").unwrap();
+                    let start = self.store.sessions[anchor].start + 6003.0;
+                    let session = std::sync::Arc::make_mut(&mut self.store.sessions[si]);
+                    let mut event = profile_event(step, start);
+                    event.name = "read_file".into();
+                    session.lanes[0].events.push(event);
+                    session.finalize();
+                    self.layout_cache.borrow_mut().invalidate(&[si]);
+                    self.rebuild_order();
+                }
+                self.spp *= if step < 40 { 0.99 } else { 1.0 / 0.99 };
+            }
+            _ => self.spp *= if step < 40 { 0.99 } else { 1.0 / 0.99 },
+        }
+    }
+
+    fn profile_sidebar_step(&mut self, stage: &str, step: usize, anchor: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if step == 0 {
+            window.activate_window();
+            cx.activate(true);
+            self.search_input.update(cx, |input, cx| input.set_text("", cx));
+            self.close_detail(cx);
+            self.detail_t = 0.0;
+            self.mode = Mode::Timeline;
+            self.sidebar_open = true;
+            self.side_t = 1.0;
+            self.sidebar_w = 320.0;
+            self.in_view_only = true;
+            self.directory_timeline = false;
+            for key in ["live", "projects", "sessions"] { self.folded.remove(key); }
+            self.set_source(crate::prefs::SourceFilter::All, cx);
+            self.set_focus(None, cx);
+            self.sidebar_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+            self.navigator_list.state.scroll_to(ListOffset::default());
+            let session = &self.store.sessions[anchor];
+            self.t0 = session.start;
+            self.spp = ((session.end - session.start) / self.plot_width(window) as f64).max(0.01);
+        }
+        match stage {
+            "sidebar_all" => self.session_limit = usize::MAX,
+            "sidebar_scroll" => {
+                self.session_limit = usize::MAX;
+                self.sidebar_scroll.set_offset(gpui::point(px(0.0), px(-((step % 60) as f32) * 28.0)));
+                if step.is_multiple_of(60) {
+                    self.navigator_list.state.scroll_to(ListOffset::default());
+                } else {
+                    self.navigator_list.state.scroll_by(px(28.0));
+                }
+            }
+            "sidebar_more" if step.is_multiple_of(10) => self.session_limit += 100,
+            "sidebar_fold" if step.is_multiple_of(10) => {
+                let key = ["projects", "sessions", "live"][(step / 10) % 3];
+                if !self.folded.remove(key) { self.folded.insert(key.into()); }
+            }
+            "sidebar_scope" if step.is_multiple_of(10) => {
+                let source = match (step / 10) % 3 {
+                    0 => crate::prefs::SourceFilter::All,
+                    1 => crate::prefs::SourceFilter::Claude,
+                    _ => crate::prefs::SourceFilter::Codex,
+                };
+                self.set_source(source, cx);
+                let focus = (step / 10).is_multiple_of(2).then(|| self.store.sessions[anchor].cwd.clone());
+                self.set_focus(focus, cx);
+            }
+            "sidebar_resize" => self.sidebar_w = 260.0 + (step % 20) as f32 * 6.0,
+            "sidebar_update" => {
+                if step == 0 {
+                    self.profile_session(anchor);
+                } else if step.is_multiple_of(10) {
+                    let si = self.store.sessions.iter().position(|s| s.id == "rireki-ui-profile").unwrap();
+                    let session = std::sync::Arc::make_mut(&mut self.store.sessions[si]);
+                    let start = session.start;
+                    let n = session.lanes[0].events.len();
+                    session.lanes[0].events.extend((n..n + 10).map(|i| profile_event(i, start)));
+                    session.finalize();
+                    self.layout_cache.borrow_mut().invalidate(&[si]);
+                    self.rebuild_order();
+                }
+            }
+            _ => {}
+        }
+        self.sidebar_changed(cx);
+    }
+
+    fn profile_sidebar_frame(&self, stage: &str, step: usize, window: &Window) {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        use super::sidebar::NavRow;
+        let rows = self.navigator_rows();
+        assert_eq!(&**self.navigator_list.rows().unwrap(), &rows, "navigator changed in {stage} step {step}");
+        let eager = !self.navigator_virtual.get();
+        let viewport = if eager { self.sidebar_scroll.bounds() } else { self.navigator_list.state.viewport_bounds() };
+        let rem = f32::from(window.rem_size());
+        let mut geometry = Vec::new();
+        for (i, row) in rows.iter().enumerate() {
+            let bounds = if eager {
+                self.sidebar_scroll.bounds_for_item(i).map(|b| gpui::Bounds::new(b.origin + self.sidebar_scroll.offset(), b.size))
+            } else {
+                self.navigator_list.state.bounds_for_item(i).map(|mut b| {
+                    // List の外枠に含めた余白を除き、従来のクリック対象の行を照合する。
+                    let (top, bottom) = match row {
+                        NavRow::Section(_, _) => (
+                            rem * if i > 0 && matches!(rows[i - 1], NavRow::Section(_, _)) { 0.625 } else { 0.75 }, rem * 0.125,
+                        ),
+                        NavRow::More(_) => (
+                            rem * if i > 0 && matches!(rows[i - 1], NavRow::Section(_, _)) { 0.125 } else { 0.25 }, 0.0,
+                        ),
+                        _ => (0.0, 0.0),
+                    };
+                    b.origin.x += px(rem * 0.5);
+                    b.origin.y += px(top);
+                    b.size.width -= px(rem);
+                    b.size.height -= px(top + bottom);
+                    b
+                })
+            };
+            if let Some(b) = bounds.filter(|b| b.bottom() > viewport.top() && b.top() < viewport.bottom()) {
+                let coords = [b.left(), b.top(), b.size.width, b.size.height]
+                    .map(|p| (f32::from(p) * 1000.0).round() as i64);
+                geometry.push((i, coords));
+            }
+        }
+        let mut hash = DefaultHasher::new();
+        for row in &rows {
+            match row {
+                NavRow::Live(si) | NavRow::Session(si) => {
+                    std::mem::discriminant(row).hash(&mut hash);
+                    self.store.sessions[*si].id.hash(&mut hash);
+                }
+                NavRow::Project(i) => {
+                    std::mem::discriminant(row).hash(&mut hash);
+                    let p = &self.projects[*i];
+                    (&p.cwd, &p.name, p.sessions).hash(&mut hash);
+                }
+                _ => row.hash(&mut hash),
+            }
+        }
+        println!("{}", serde_json::json!({"ui_profile":"sidebar_frame", "stage":stage, "step":step,
+            "rows":rows.len(), "row_hash":format!("{:016x}",hash.finish()),
+            "built":self.navigator_rendered.get(), "limit":self.session_limit,
+            "live":rows.iter().filter(|r| matches!(r, NavRow::Live(_))).count(), "geometry":geometry}));
+    }
+
+    fn profile_calendar_frame(&self, stage: &str, step: usize) {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hash = DefaultHasher::new();
+        for &(rect, sel) in &self.hits {
+            [rect.0.to_bits(), rect.1.to_bits(), rect.2.to_bits(), rect.3.to_bits()].hash(&mut hash);
+            self.store.sessions[sel.session].id.hash(&mut hash);
+            (sel.lane, sel.first, sel.last).hash(&mut hash);
+        }
+        println!("{}", serde_json::json!({"ui_profile":"calendar_frame", "stage":stage,
+            "step":step, "blocks":self.hits.len(), "counts":self.counts,
+            "hit_hash":format!("{:016x}", hash.finish())}));
+    }
+
+    fn profile_timeline_frame(&self, stage: &str, step: usize, window: &Window) {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        if self.profile.as_ref().is_some_and(|p| p.dense_timeline) {
+            assert!(self.hits.len() >= 10, "dense timeline has no visible workload in {stage} step {step}");
+        }
+        let v1 = self.t0 + self.spp * self.plot_width(window) as f64;
+        let actual = self.rows_in(self.t0, v1);
+        let reference = self.build_rows_in(self.t0, v1);
+        let rows_hash = self.profile_rows_hash(&actual.rows);
+        assert_eq!(rows_hash, self.profile_rows_hash(&reference), "timeline rows changed in {stage} step {step}");
+        let mut hash = DefaultHasher::new();
+        for &(rect, sel) in &self.hits {
+            [rect.0.to_bits(), rect.1.to_bits(), rect.2.to_bits(), rect.3.to_bits()].hash(&mut hash);
+            self.store.sessions[sel.session].id.hash(&mut hash);
+            (sel.lane, sel.first, sel.last).hash(&mut hash);
+        }
+        let mut frame = serde_json::json!({"ui_profile":"timeline_frame", "stage":stage,"step":step,
+            "rows":actual.rows.len(), "row_hash":format!("{rows_hash:016x}"),
+            "blocks":self.hits.len(), "counts":self.counts,"hit_hash":format!("{:016x}",hash.finish())});
+        if let Some(measurements) = self.profile.as_ref().and_then(|p| p.measurements.as_ref()) {
+            frame["paint_hash"] = format!("{:016x}", measurements.get().paint_hash).into();
+            frame["minimap_hash"] = format!("{:016x}", measurements.get().minimap_hash).into();
+            frame["minimap_quads"] = measurements.get().minimap_quads.into();
+            frame["lane_map_hash"] = format!("{:016x}", measurements.get().lane_map_hash).into();
+            frame["lane_map_quads"] = measurements.get().lane_map_quads.into();
+        }
+        println!("{frame}");
+    }
+
+    fn profile_rows_hash(&self, rows: &[super::Row]) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hash = DefaultHasher::new();
+        rows.len().hash(&mut hash);
+        for row in rows {
+            match row {
+                super::Row::Header { cwd, sessions, collapsed, active, .. } => {
+                    (0u8, cwd, collapsed, active).hash(&mut hash);
+                    sessions.len().hash(&mut hash);
+                    for &si in sessions { self.store.sessions[si].id.hash(&mut hash); }
+                }
+                super::Row::Lane(track) => {
+                    (1u8, &self.store.sessions[track.session].id, track.lane, track.depth, track.active).hash(&mut hash);
+                    track.link.map(|(si, li, time)| (&self.store.sessions[si].id, li, time.to_bits())).hash(&mut hash);
+                }
+                super::Row::Packed(_) => 2u8.hash(&mut hash),
+            }
+            row.packed_blocks().len().hash(&mut hash);
+            for block in row.packed_blocks() {
+                (&self.store.sessions[block.session].id, block.block.start.to_bits(), block.block.end.to_bits(),
+                    block.block.first, block.block.last, block.x.to_bits(), block.width.to_bits()).hash(&mut hash);
+            }
+        }
+        hash.finish()
+    }
+
+    fn profile_timeline_session(&mut self, anchor: usize) {
+        let source = &self.store.sessions[anchor];
+        let start = source.start;
+        let mut lane = Lane::new("main");
+        lane.origin = "rireki-timeline-profile".into();
+        lane.events = (0..60).map(|i| profile_event(i, start)).collect();
+        let mut session = Session {
+            id: "rireki-timeline-profile".into(), source: source.source, cwd: source.cwd.clone(),
+            headless: false, title: "Timeline profile".into(), branch: String::new(), version: String::new(),
+            lanes: vec![lane], start, end: start, parents: Vec::new(), tree: Vec::new(),
+        };
+        session.finalize();
+        self.store.sessions.push(std::sync::Arc::new(session));
+        self.rebuild_order();
     }
 
     fn profile_session(&mut self, anchor: usize) -> usize {

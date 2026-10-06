@@ -1,6 +1,8 @@
 //! サイドバー。上に検索欄を置き、その下に進行中のセッション・プロジェクト・セッションの一覧を並べる。
 //! 検索語があるときは一覧の代わりに検索結果を出す
 
+mod navigator;
+pub(super) use navigator::NavigatorList;
 use gpui::{
     AnyElement, ClickEvent, Context, Div, ElementId, Focusable, FontWeight, HighlightStyle, SharedString, Stateful,
     StyledText, WeakEntity, Window, div, prelude::*, px,
@@ -27,11 +29,22 @@ impl Render for SidebarView {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub(super) enum NavRow {
+    Section(&'static str, usize),
+    Live(usize),
+    AllProjects,
+    Project(usize),
+    Session(usize),
+    More(usize),
+}
+
 /// 一覧の 1 行の高さ
 const ROW: f32 = 28.0;
 
 impl Rireki {
     pub(super) fn sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let started = self.profile.as_ref().filter(|p| p.sidebar).map(|_| std::time::Instant::now());
         let placeholder = match (&self.focus, self.source) {
             (Some(f), _) => format!("{} を検索", self.project_name(f)),
             (None, SourceFilter::All) => "すべての履歴を検索".to_string(),
@@ -39,7 +52,11 @@ impl Rireki {
             (None, SourceFilter::Codex) => "Codex の履歴を検索".to_string(),
         };
         self.search_input.update(cx, |i, _| i.set_placeholder(placeholder));
-        let body = if self.results.is_some() { self.search_results(window, cx) } else { self.navigator(cx) };
+        let body = if self.results.is_some() { self.search_results(window, cx) } else { self.navigator(window, cx) };
+        if let Some(started) = started {
+            println!("{}", serde_json::json!({"ui_profile":"sidebar_build", "built":self.navigator_rendered.get(),
+                "ms":started.elapsed().as_secs_f64()*1000.0}));
+        }
         div()
             .size_full()
             .flex()
@@ -174,61 +191,128 @@ impl Rireki {
             .when(!selected, |d| d.hover(|s| s.bg(gpui::white().opacity(0.06))))
     }
 
-    fn navigator(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list =
-            div().id("sidebar-scroll").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.sidebar_scroll).pb_3();
-        let sel_session = self.selected.map(|s| s.session);
+    fn navigator(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let at = super::now();
+        let key = navigator::Key {
+            generation: self.data_gen, limit: self.session_limit,
+            folded: ["live", "projects", "sessions"].map(|s| self.folded.contains(s)),
+            width: self.pane_full_widths(window).0.to_bits(),
+        };
+        self.navigator_list.prepare(key, at, || {
+            let expires = self.scope.iter().map(|&si| self.store.sessions[si].end + crate::index::LIVE_SECS)
+                .filter(|&end| end > at).min_by(f64::total_cmp).unwrap_or(f64::INFINITY);
+            (self.navigator_rows(), self.projects.iter().map(|p| p.cwd.clone()).collect(), expires)
+        });
+        self.navigator_rendered.set(0);
+        let rows = self.navigator_list.rows().unwrap();
+        let offset = self.navigator_list.state.logical_scroll_top();
+        let rem = f32::from(window.rem_size());
+        let height = f32::from(window.viewport_size().height) - super::STRIP_H - HEADER_H - super::FOOTER_H - super::GAP * 2.0;
+        // 画面内に収まる数行では、List の高さ索引や外枠を作る負荷の方が大きい。
+        let fits = rows.len() <= 4 && rows.len() as f32 * (rem * 2.0 + 40.0) + rem <= height
+            && offset.item_ix == 0 && offset.offset_in_item == px(0.0);
+        let eager = self.profile.as_ref().is_some_and(|p| p.eager_sidebar);
+        self.navigator_virtual.set(!eager && !fits);
+        if eager || fits {
+            if !eager { self.sidebar_scroll.set_offset(gpui::point(px(0.0), px(0.0))); }
+            let mut list = div().id("sidebar-scroll").flex_1().min_h_0()
+                .overflow_y_scroll().track_scroll(&self.sidebar_scroll).pb_3();
+            for &row in &**rows {
+                list = list.child(self.navigator_item(row, None, cx));
+            }
+            return list.into_any_element();
+        }
+        let weak = cx.weak_entity();
+        gpui::list(self.navigator_list.state.clone(), move |index, _, cx| {
+            weak.upgrade().map_or_else(|| div().into_any_element(), |app| {
+                app.update(cx, |app, cx| {
+                    app.navigator_list.row(index).map_or_else(|| div().into_any_element(), |row| {
+                        // 外枠で行の余白も高さに含め、見出しや「さらに表示」の間隔を保つ。
+                        let previous = index.checked_sub(1).and_then(|i| app.navigator_list.row(i));
+                        div().flex().flex_col().child(app.navigator_item(row, previous, cx)).into_any_element()
+                    })
+                })
+            })
+        }).flex_1().min_h_0().pb_3().into_any_element()
+    }
 
-        // 進行中（プロジェクトの絞り込みに関係なく、読み込み元の範囲で出す）
-        let mut live: Vec<usize> =
-            self.scope.iter().copied().filter(|&si| is_live(self.store.sessions[si].end)).collect();
+    pub(super) fn navigator_rows(&self) -> Vec<NavRow> {
+        let mut rows = Vec::new();
+        let mut live: Vec<_> = self.scope.iter().copied()
+            .filter(|&si| is_live(self.store.sessions[si].end)).collect();
         live.sort_by(|&a, &b| self.store.sessions[b].end.total_cmp(&self.store.sessions[a].end));
         if !live.is_empty() {
-            list = list.child(self.section("live", "進行中".into(), Some(live.len()), cx));
+            rows.push(NavRow::Section("live", live.len()));
             if !self.folded.contains("live") {
-                for si in live {
-                    let s = &self.store.sessions[si];
-                    let (logo, logo_color) = icons::source_icon(s.source);
-                    let selected = sel_session == Some(si);
-                    list = list.child(
-                        self.row(ElementId::NamedInteger("live".into(), si as u64), selected)
-                            .py_1()
-                            .child(dot(theme::LIVE, 7.0))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().truncate().child(title_of(&s.title)))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_1()
-                                            .text_xs()
-                                            .text_color(if selected {
-                                                gpui::white().opacity(0.8)
-                                            } else {
-                                                c(theme::MUTED)
-                                            })
-                                            .child(icons::icon(logo, logo_color).size_3())
-                                            .child(div().truncate().child(self.project_name(&s.cwd)))
-                                            .child("·")
-                                            .child(div().flex_none().child(rel_time(s.end))),
-                                    ),
-                            )
-                            .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))),
-                    );
-                }
+                rows.extend(live.into_iter().map(NavRow::Live));
             }
         }
-
-        // プロジェクト
-        list = list.child(self.section("projects", "プロジェクト".into(), Some(self.projects.len()), cx));
+        rows.push(NavRow::Section("projects", self.projects.len()));
         if !self.folded.contains("projects") {
-            let all = self.focus.is_none();
-            list = list.child(
+            rows.push(NavRow::AllProjects);
+            rows.extend((0..self.projects.len()).map(NavRow::Project));
+        }
+        rows.push(NavRow::Section("sessions", self.order.len()));
+        if !self.folded.contains("sessions") {
+            let mut recent = self.order.clone();
+            recent.sort_by(|&a, &b| self.store.sessions[b].end.total_cmp(&self.store.sessions[a].end));
+            let rest = recent.len().saturating_sub(self.session_limit);
+            rows.extend(recent.into_iter().take(self.session_limit).map(NavRow::Session));
+            if rest > 0 { rows.push(NavRow::More(rest)); }
+        }
+        rows
+    }
+
+    fn navigator_item(&self, row: NavRow, previous: Option<NavRow>, cx: &mut Context<Self>) -> AnyElement {
+        self.navigator_rendered.set(self.navigator_rendered.get() + 1);
+        let sel_session = self.selected.map(|s| s.session);
+        match row {
+            NavRow::Section(key, count) => {
+                let title: SharedString = match key {
+                    "live" => "進行中".into(),
+                    "projects" => "プロジェクト".into(),
+                    _ => self.focus.as_ref().map_or_else(|| "最近のセッション".into(),
+                        |f| format!("{} のセッション", self.project_name(f)).into()),
+                };
+                self.section(key, title, Some(count), cx)
+                    .when(matches!(previous, Some(NavRow::Section(_, _))), |d| d.mt(gpui::rems(0.625)))
+                    .into_any_element()
+            }
+            NavRow::Live(si) => {
+                let s = &self.store.sessions[si];
+                let (logo, logo_color) = icons::source_icon(s.source);
+                let selected = sel_session == Some(si);
+                self.row(ElementId::NamedInteger("live".into(), si as u64), selected)
+                    .py_1()
+                    .child(dot(theme::LIVE, 7.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().child(title_of(&s.title)))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_xs()
+                                    .text_color(if selected {
+                                        gpui::white().opacity(0.8)
+                                    } else {
+                                        c(theme::MUTED)
+                                    })
+                                    .child(icons::icon(logo, logo_color).size_3())
+                                    .child(div().truncate().child(self.project_name(&s.cwd)))
+                                    .child("·")
+                                    .child(div().flex_none().child(rel_time(s.end))),
+                            ),
+                    )
+                    .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))).into_any_element()
+            }
+            NavRow::AllProjects => {
+                let all = self.focus.is_none();
                 self.row("proj-all", all)
                     .child(
                         div()
@@ -241,100 +325,81 @@ impl Rireki {
                     )
                     .child(div().flex_1().truncate().child("すべてのプロジェクト"))
                     .child(count_badge(self.scope.len(), all))
-                    .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.set_focus(None, cx))),
-            );
-            for (i, p) in self.projects.iter().enumerate() {
+                    .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.set_focus(None, cx))).into_any_element()
+            }
+            NavRow::Project(i) => {
+                let p = &self.projects[i];
                 let selected = self.focus.as_ref() == Some(&p.cwd);
                 let cwd = p.cwd.clone();
-                list = list.child(
-                    self.row(ElementId::NamedInteger("proj".into(), i as u64), selected)
-                        .child(div().relative().flex_none().child(project_tile(&p.cwd, 18.0)).when(
-                            is_live(p.last),
-                            |d| {
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .bottom(px(-2.0))
-                                        .right(px(-2.0))
-                                        .size(px(8.0))
-                                        .rounded_full()
-                                        .bg(c(theme::LIVE))
-                                        .border_1()
-                                        .border_color(c(theme::SIDEBAR)),
-                                )
-                            },
-                        ))
-                        .child(div().flex_1().truncate().child(p.name.clone()))
-                        .child(count_badge(p.sessions, selected))
-                        .tooltip(tip(format!("{}\n最終: {}", p.cwd, rel_time(p.last)), None))
-                        .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
-                            let f = if t.focus.as_ref() == Some(&cwd) { None } else { Some(cwd.clone()) };
-                            t.set_focus(f, cx);
-                        })),
-                );
+                self.row(ElementId::NamedInteger("proj".into(), i as u64), selected)
+                    .child(div().relative().flex_none().child(project_tile(&p.cwd, 18.0)).when(
+                        is_live(p.last),
+                        |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .bottom(px(-2.0))
+                                    .right(px(-2.0))
+                                    .size(px(8.0))
+                                    .rounded_full()
+                                    .bg(c(theme::LIVE))
+                                    .border_1()
+                                    .border_color(c(theme::SIDEBAR)),
+                            )
+                        },
+                    ))
+                    .child(div().flex_1().truncate().child(p.name.clone()))
+                    .child(count_badge(p.sessions, selected))
+                    .tooltip(tip(format!("{}\n最終: {}", p.cwd, rel_time(p.last)), None))
+                    .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
+                        let f = if t.focus.as_ref() == Some(&cwd) { None } else { Some(cwd.clone()) };
+                        t.set_focus(f, cx);
+                    })).into_any_element()
             }
-        }
-
-        // セッション（新しい順）
-        let title: SharedString = match &self.focus {
-            Some(f) => format!("{} のセッション", self.project_name(f)).into(),
-            None => "最近のセッション".into(),
-        };
-        list = list.child(self.section("sessions", title, Some(self.order.len()), cx));
-        if !self.folded.contains("sessions") {
-            let mut recent = self.order.clone();
-            recent.sort_by(|&a, &b| self.store.sessions[b].end.total_cmp(&self.store.sessions[a].end));
-            let rest = recent.len().saturating_sub(self.session_limit);
-            for si in recent.into_iter().take(self.session_limit) {
+            NavRow::Session(si) => {
                 let s = &self.store.sessions[si];
                 let (logo, logo_color) = icons::source_icon(s.source);
                 let selected = sel_session == Some(si);
                 let live = is_live(s.end);
                 let sub_label = if self.focus.is_none() {
                     format!("{} · {}", self.project_name(&s.cwd), super::local(s.start).format("%m/%d %H:%M"))
-                } else {
-                    super::local(s.start).format("%m/%d %H:%M").to_string()
-                };
-                list = list.child(
-                    self.row(ElementId::NamedInteger("ses".into(), si as u64), selected)
-                        .child(icons::icon(logo, if selected { theme::TEXT } else { logo_color }))
-                        .child(div().flex_1().truncate().child(title_of(&s.title)))
-                        .when(live, |d| d.child(dot(theme::LIVE, 7.0)))
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .text_color(if selected { gpui::white().opacity(0.8) } else { c(theme::SUBTLE) })
-                                .child(rel_time(s.end)),
-                        )
-                        .tooltip(tip(format!("{}\n{sub_label}", title_of(&s.title)), None))
-                        .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))),
-                );
+                } else { super::local(s.start).format("%m/%d %H:%M").to_string() };
+                self.row(ElementId::NamedInteger("ses".into(), si as u64), selected)
+                    .child(icons::icon(logo, if selected { theme::TEXT } else { logo_color }))
+                    .child(div().flex_1().truncate().child(title_of(&s.title)))
+                    .when(live, |d| d.child(dot(theme::LIVE, 7.0)))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(if selected { gpui::white().opacity(0.8) } else { c(theme::SUBTLE) })
+                            .child(rel_time(s.end)),
+                    )
+                    .tooltip(tip(format!("{}\n{sub_label}", title_of(&s.title)), None))
+                    .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))).into_any_element()
             }
-            if rest > 0 {
-                list = list.child(
-                    div()
-                        .id("more-sessions")
-                        .mx_2()
-                        .mt_1()
-                        .px_2()
-                        .h(px(ROW))
-                        .flex()
-                        .items_center()
-                        .rounded_md()
-                        .text_xs()
-                        .text_color(c(theme::ACCENT))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(gpui::white().opacity(0.06)))
-                        .child(format!("さらに表示（残り {rest} 件）"))
-                        .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
-                            t.session_limit += 100;
-                            t.sidebar_changed(cx);
-                        })),
-                );
+            NavRow::More(rest) => {
+                div()
+                    .id("more-sessions")
+                    .mx_2()
+                    .mt_1()
+                    .when(matches!(previous, Some(NavRow::Section(_, _))), |d| d.mt(gpui::rems(0.125)))
+                    .px_2()
+                    .h(px(ROW))
+                    .flex()
+                    .items_center()
+                    .rounded_md()
+                    .text_xs()
+                    .text_color(c(theme::ACCENT))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(gpui::white().opacity(0.06)))
+                    .child(format!("さらに表示（残り {rest} 件）"))
+                    .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
+                        t.session_limit += 100;
+                        t.sidebar_changed(cx);
+                    })).into_any_element()
             }
         }
-        list.into_any_element()
     }
 
     /// 検索結果の i 番目の項目が、スクロール領域の何番目の子か（`search_results` の並びと合わせる）

@@ -1,7 +1,7 @@
 //! 重ねて出すもの: ブロックのホバーカード、まとめ方のメニュー、キーボードショートカット一覧
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Corner, Div, FontWeight, MouseButton, MouseDownEvent, Window, anchored, deferred,
+    AnyElement, ClickEvent, Context, Corner, Div, FontWeight, MouseButton, MouseDownEvent, SharedString, Window, anchored, deferred,
     div, point, prelude::*, px,
 };
 
@@ -59,7 +59,7 @@ impl Rireki {
         let (start, end) = self.sel_range(sel);
         let single = evs.len() == 1;
         let head = if single { evs[0].name.to_string() } else { format!("{} 件", evs.len()) };
-        let body = if single { evs[0].summary.clone() } else { String::new() };
+        let body: SharedString = if single { evs[0].summary.clone().into() } else { SharedString::default() };
         // まとめたブロックは、多い順に名前ごとの件数を並べる
         let mut counts: Vec<(&str, usize, u32, Icon)> = Vec::new();
         if !single {

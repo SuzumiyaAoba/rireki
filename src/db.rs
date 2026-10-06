@@ -156,7 +156,7 @@ pub(crate) fn pack_file(path: &str, fp: &str, items: &[Loaded]) -> Packed {
             .events
             .iter()
             .map(|e| {
-                texts.push((pack(&e.input), pack(&e.output)));
+                texts.push(e.text_ref.compressed().unwrap_or_else(|| (pack(&e.input), pack(&e.output))));
                 Event { input: String::new(), output: String::new(), ..e.clone_meta() }
             })
             .collect(),
@@ -362,8 +362,8 @@ impl Db {
                                 e.end,
                                 kind_to_i(e.kind),
                                 e.name.as_ref(),
-                                e.summary,
-                                e.call_id,
+                                e.summary.as_ref(),
+                                e.call_id.as_deref(),
                                 e.usage.input,
                                 e.usage.cache_read,
                                 e.usage.cache_write,
@@ -454,29 +454,46 @@ impl Db {
         // 再確保時の大きなイベント配列のコピーを避け、追加のSQL走査は行わない。
         let mut counts = HashMap::<i64, usize>::with_capacity(lane_ix.len());
         for part in &parts {
-            for group in part.chunk_by(|a, b| a.0 == b.0) {
-                *counts.entry(group[0].0).or_default() += group.len();
+            match part {
+                EventRows::Grouped(groups) => for group in groups {
+                    *counts.entry(group.lane_id).or_default() += group.events.len();
+                },
+                EventRows::Flat(rows) => for group in rows.chunk_by(|a, b| a.0 == b.0) {
+                    *counts.entry(group[0].0).or_default() += group.len();
+                },
             }
         }
-        for (lane_id, count) in counts {
-            if let Some(&(ii, li)) = lane_ix.get(&lane_id) {
-                items[ii].lanes[li].events.reserve_exact(count);
-            }
-        }
-        let mut last: Option<(i64, usize, usize)> = None;
         for part in parts {
-            for (lane_id, e) in part {
-                let (ii, li) = match last {
-                    Some((id, ii, li)) if id == lane_id => (ii, li),
-                    _ => {
-                        let Some(&(ii, li)) = lane_ix.get(&lane_id) else {
-                            continue;
-                        };
-                        last = Some((lane_id, ii, li));
-                        (ii, li)
-                    }
-                };
-                items[ii].lanes[li].events.push(e);
+            match part {
+            EventRows::Grouped(groups) => for mut group in groups {
+                let Some(&(ii, li)) = lane_ix.get(&group.lane_id) else { continue };
+                let events = &mut items[ii].lanes[li].events;
+                if let Some(count) = counts.remove(&group.lane_id) {
+                    // 最初の配列をそのまま渡し、区間を跨ぐ場合だけ残りの容量を確保する。
+                    group.events.reserve_exact(count - group.events.len());
+                    *events = group.events;
+                } else {
+                    events.append(&mut group.events);
+                }
+            },
+            EventRows::Flat(rows) => {
+                let mut last = None;
+                for (lane_id, event) in rows {
+                    let (ii, li) = match last {
+                        Some((id, ii, li)) if id == lane_id => (ii, li),
+                        _ => {
+                            let Some(&(ii, li)) = lane_ix.get(&lane_id) else { continue };
+                            last = Some((lane_id, ii, li));
+                            (ii, li)
+                        }
+                    };
+                    let events = &mut items[ii].lanes[li].events;
+                    if events.is_empty()
+                        && let Some(count) = counts.remove(&lane_id)
+                    { events.reserve_exact(count); }
+                    events.push(event);
+                }
+            },
             }
         }
 
@@ -588,8 +605,96 @@ impl JsCache {
     }
 }
 
-/// events を ID 範囲ごとに並列で読む。結果は ID 順に並んだ範囲の列
-fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
+/// 同じ要約だけ共有する。枠には既読イベントの位置を持ち、共有参照を追加しない。
+struct SummaryCache([(u64, u32, u32); 1024]);
+
+impl SummaryCache {
+    fn new() -> Self { Self([(0, u32::MAX, u32::MAX); 1024]) }
+
+    fn key(s: &str) -> u64 {
+        let bytes = s.as_bytes();
+        let n = bytes.len();
+        let word = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+        let sampled = if n >= 16 {
+            word(&bytes[..8]) ^ word(&bytes[8..16]).rotate_left(21) ^ word(&bytes[n - 8..]).rotate_left(43)
+        } else if n >= 8 {
+            word(&bytes[..8]) ^ word(&bytes[n - 8..]).rotate_left(21)
+        } else {
+            let mut padded = [0; 8];
+            padded[..n].copy_from_slice(bytes);
+            u64::from_le_bytes(padded)
+        };
+        // 枠選びだけを安く済ませる。再利用には、下で必ず文字列全体を比較する。
+        let mut mixed = sampled ^ (n as u64).wrapping_mul(0x9e3779b97f4a7c15);
+        mixed ^= mixed >> 33;
+        mixed = mixed.wrapping_mul(0xff51afd7ed558ccd);
+        mixed ^= mixed >> 33;
+        mixed
+    }
+
+    fn get<'a>(&mut self, s: &str, next: (usize, usize), at: impl FnOnce(usize, usize) -> Option<&'a Event>) -> Arc<str> {
+        if s.len() > 512 { return Arc::from(s); }
+        let key = Self::key(s);
+        let slot = key as usize & 1023;
+        let (previous_key, group, index) = self.0[slot];
+        if previous_key == key
+            && let Some(event) = at(group as usize, index as usize)
+            && event.summary.as_ref() == s
+        {
+            return event.summary.clone();
+        }
+        if let (Ok(group), Ok(index)) = (u32::try_from(next.0), u32::try_from(next.1)) {
+            self.0[slot] = (key, group, index);
+        }
+        Arc::from(s)
+    }
+}
+
+/// ID 順に連続する同じレーンの行。配列は表示用レーンへ直接渡せる。
+struct EventGroup { lane_id: i64, events: Vec<Event> }
+
+impl EventGroup {
+    fn finish(&mut self) {
+        if self.events.len() < self.events.capacity() {
+            // realloc の縮小では元の大きな確保が残る場合があるため、実サイズへ移す。
+            let mut exact = Vec::with_capacity(self.events.len());
+            exact.append(&mut self.events);
+            self.events = exact;
+        }
+    }
+}
+
+enum EventRows { Grouped(Vec<EventGroup>), Flat(Vec<(i64, Event)>) }
+
+fn begin_group(groups: &mut Vec<EventGroup>, lane_id: i64, seen: usize, cap: usize) -> Option<Vec<(i64, Event)>> {
+    if groups.last().is_some_and(|g| g.lane_id == lane_id) { return None; }
+    if let Some(previous) = groups.last_mut() { previous.finish(); }
+    if groups.len() >= 64 && seen < groups.len() * 4 {
+        // 小さい群が続く入力は、イベントごとの小さな確保を増やさない。
+        let mut flat = Vec::with_capacity(cap.max(seen));
+        for group in groups.drain(..) {
+            flat.extend(group.events.into_iter().map(|e| (group.lane_id, e)));
+        }
+        return Some(flat);
+    }
+    groups.push(EventGroup { lane_id, events: Vec::with_capacity(1) });
+    None
+}
+
+fn read_event(r: &rusqlite::Row<'_>, names: &mut crate::loader::Interner, models: &mut crate::loader::Interner,
+              summary: impl FnOnce(&str) -> Arc<str>) -> rusqlite::Result<Event> {
+    Ok(Event {
+        start: r.get(2)?, end: r.get(3)?, kind: kind_of(r.get(4)?), name: names.get(r.get_ref(5)?.as_str()?),
+        summary: summary(r.get_ref(6)?.as_str()?), input: String::new(), output: String::new(),
+        call_id: r.get_ref(7)?.as_str_or_null()?.map(Into::into), text_ref: crate::model::TextRef::row(r.get(0)?),
+        usage: Usage { input: r.get(8)?, cache_read: r.get(9)?, cache_write: r.get(10)?,
+            output: r.get(11)?, reasoning: r.get(12)?, cache_write_1h: r.get(13)? },
+        model: r.get_ref(14)?.as_str_or_null()?.map(|m| models.get(m)), status: status_of(r.get(15)?),
+    })
+}
+
+/// events を ID 範囲ごとに並列で読む。範囲も各範囲内のレーン群も ID 順。
+fn read_events(conn: &Connection) -> rusqlite::Result<Vec<EventRows>> {
     let (lo, hi, n): (i64, i64, i64) =
         // MIN/MAX の単独検索と SQLite の COUNT 専用処理を使い、索引を全行走査しない。
         conn.query_row("SELECT (SELECT IFNULL(MIN(id), 0) FROM events),
@@ -600,7 +705,7 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
     if n == 0 {
         return Ok(Vec::new());
     }
-    let parts = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16) as i64;
+    let parts = (std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16) as i64).min(n);
     let step = (hi - lo) / parts + 1;
     let cap = (n / parts) as usize + 16;
     let p = PathBuf::from(conn.path().ok_or(rusqlite::Error::InvalidPath(PathBuf::new()))?);
@@ -608,7 +713,7 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
         let handles: Vec<_> = (0..parts)
             .map(|k| {
                 let p = &p;
-                sc.spawn(move || -> rusqlite::Result<Vec<(i64, Event)>> {
+                sc.spawn(move || -> rusqlite::Result<EventRows> {
                     let conn = read_conn(p)?;
                     let mut st = conn.prepare(
                         "SELECT id, lane_id, start, end, kind, name, summary, call_id, u_in, u_cr, u_cw, u_out, u_rs, u_cw1h, u_model, status
@@ -616,36 +721,36 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<Vec<(i64, Event)>>> {
                     )?;
                     let a = lo + k * step;
                     let mut rows = st.query([a, a + step])?;
-                    let mut out = Vec::with_capacity(cap);
+                    let mut out: Vec<EventGroup> = Vec::new();
+                    let mut seen = 0;
                     let mut models = crate::loader::Interner::default();
                     let mut names = crate::loader::Interner::default();
+                    let mut summaries = SummaryCache::new();
                     while let Some(r) = rows.next()? {
-                        out.push((
-                            r.get(1)?,
-                            Event {
-                                start: r.get(2)?,
-                                end: r.get(3)?,
-                                kind: kind_of(r.get(4)?),
-                                name: names.get(r.get_ref(5)?.as_str()?),
-                                summary: r.get(6)?,
-                                input: String::new(),
-                                output: String::new(),
-                                call_id: r.get(7)?,
-                                text_ref: crate::model::TextRef::row(r.get(0)?),
-                                usage: Usage {
-                                    input: r.get(8)?,
-                                    cache_read: r.get(9)?,
-                                    cache_write: r.get(10)?,
-                                    output: r.get(11)?,
-                                    reasoning: r.get(12)?,
-                                    cache_write_1h: r.get(13)?,
-                                },
-                                model: r.get_ref(14)?.as_str_or_null()?.map(|m| models.get(m)),
-                                status: status_of(r.get(15)?),
-                            },
-                        ));
+                        let lane_id = r.get(1)?;
+                        if let Some(mut flat) = begin_group(&mut out, lane_id, seen, cap) {
+                            summaries = SummaryCache::new();
+                            let event = read_event(r, &mut names, &mut models, |s|
+                                summaries.get(s, (0, flat.len()), |_, i| flat.get(i).map(|(_, e)| e)))?;
+                            flat.push((lane_id, event));
+                            // 切り替えたら平坦な配列専用のループで読む。
+                            while let Some(r) = rows.next()? {
+                                let lane_id = r.get(1)?;
+                                let event = read_event(r, &mut names, &mut models, |s|
+                                    summaries.get(s, (0, flat.len()), |_, i| flat.get(i).map(|(_, e)| e)))?;
+                                flat.push((lane_id, event));
+                            }
+                            flat.shrink_to_fit();
+                            return Ok(EventRows::Flat(flat));
+                        }
+                        let event = read_event(r, &mut names, &mut models, |s|
+                            summaries.get(s, (out.len() - 1, out.last().unwrap().events.len()),
+                                |g, i| out.get(g).and_then(|g| g.events.get(i))))?;
+                        out.last_mut().unwrap().events.push(event);
+                        seen += 1;
                     }
-                    Ok(out)
+                    if let Some(last) = out.last_mut() { last.finish(); }
+                    Ok(EventRows::Grouped(out))
                 })
             })
             .collect();
@@ -829,6 +934,70 @@ mod tests {
     }
 
     #[test]
+    fn summary_cache_preserves_collisions_versions_and_utf8_boundaries() {
+        fn add(cache: &mut SummaryCache, events: &mut Vec<EventGroup>, text: &str) -> Arc<str> {
+            if events.last().is_none_or(|g| g.events.len() == 7) {
+                events.push(EventGroup { lane_id: events.len() as i64, events: Vec::new() });
+            }
+            let summary = cache.get(text, (events.len() - 1, events.last().unwrap().events.len()),
+                |g, i| events.get(g).and_then(|g| g.events.get(i)));
+            let Loaded::Session(mut session) = fixtures::items(&[("User", "", "")]).remove(0) else { unreachable!() };
+            let mut event = session.lanes[0].events.remove(0);
+            event.summary = summary.clone();
+            events.last_mut().unwrap().events.push(event);
+            summary
+        }
+        let mut cache = SummaryCache::new();
+        let mut events = Vec::new();
+        let key = "日本語の要約";
+        let slot = |s: &str| SummaryCache::key(s) as usize & 1023;
+        let collision = (0..30_000).map(|n| format!("別の要約-{n}"))
+            .find(|s| slot(s) == slot(key)).expect("衝突する要約が必要");
+        let original = add(&mut cache, &mut events, key);
+        assert!(Arc::ptr_eq(&original, &add(&mut cache, &mut events, key)));
+        for lane_id in 10..18 { events.push(EventGroup { lane_id, events: Vec::new() }); }
+        assert!(Arc::ptr_eq(&original, &add(&mut cache, &mut events, key)));
+        let replaced = add(&mut cache, &mut events, &collision);
+        assert_eq!(original.as_ref(), key);
+        assert_eq!(replaced.as_ref(), collision);
+        assert!(Arc::ptr_eq(&replaced, &add(&mut cache, &mut events, &collision)));
+        assert_eq!(add(&mut cache, &mut events, key).as_ref(), key);
+        assert_eq!(replaced.as_ref(), collision);
+
+        let sampled_a = "0123456789abcdef中間甲abcdefgh";
+        let sampled_b = "0123456789abcdef中間乙abcdefgh";
+        assert_eq!(SummaryCache::key(sampled_a), SummaryCache::key(sampled_b));
+        let a = add(&mut cache, &mut events, sampled_a);
+        let b = add(&mut cache, &mut events, sampled_b);
+        assert_eq!(a.as_ref(), sampled_a);
+        assert_eq!(b.as_ref(), sampled_b);
+        assert_eq!(add(&mut cache, &mut events, sampled_a).as_ref(), sampled_a);
+
+        let boundary = "あ".repeat(170) + "ab";
+        assert_eq!(boundary.len(), 512);
+        let shared = add(&mut cache, &mut events, &boundary);
+        assert!(Arc::ptr_eq(&shared, &add(&mut cache, &mut events, &boundary)));
+        let longer = boundary + "é";
+        let first = add(&mut cache, &mut events, &longer);
+        let second = add(&mut cache, &mut events, &longer);
+        assert_eq!(first.as_ref(), longer);
+        assert_eq!(second.as_ref(), longer);
+        assert!(!Arc::ptr_eq(&first, &second));
+        for short in ["", "a", "1234567", "12345678", "123456789012345", "1234567890123456", "ééé", "日本"] {
+            let value = add(&mut cache, &mut events, short);
+            assert!(Arc::ptr_eq(&value, &add(&mut cache, &mut events, short)));
+        }
+        events.clear();
+        assert_eq!(add(&mut cache, &mut events, key).as_ref(), key);
+        assert_eq!(std::mem::size_of::<SummaryCache>(), 16 * 1024);
+        if usize::BITS > 32 {
+            let large = (u32::MAX as u64 + 1) as usize;
+            assert_eq!(cache.get("群の位置が大きい", (large, 0), |_, _| None).as_ref(), "群の位置が大きい");
+            assert_eq!(cache.get("行の位置が大きい", (0, large), |_, _| None).as_ref(), "行の位置が大きい");
+        }
+    }
+
+    #[test]
     fn parallel_event_reads_handle_empty_and_sparse_ids() {
         let path = std::env::temp_dir().join(format!("rireki-events-{}-{}.db", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
@@ -842,10 +1011,19 @@ mod tests {
         let ids = [-7, 0, 11, 12, 13, 4000, 900000];
         for &id in &ids {
             let name = if id == 13 { "独自ツール" } else { "User" };
-            conn.execute("INSERT INTO events VALUES (?1, 7, ?2, ?3, 0, ?4, '日本語', NULL, 1, 2, 3, 4, 5, 6, 'gpt-6-sol', 0)",
-                params![id, id as f64, id as f64 + 0.5, name]).unwrap();
+            let summary = if id == 12 { "" } else { "日本語" };
+            let call_id = match id { 0 => Some(""), 13 => Some("呼び出し-α"), _ => None };
+            conn.execute("INSERT INTO events VALUES (?1, 7, ?2, ?3, 0, ?4, ?5, ?6, 1, 2, 3, 4, 5, 6, 'gpt-6-sol', 0)",
+                params![id, id as f64, id as f64 + 0.5, name, summary, call_id]).unwrap();
         }
-        let events: Vec<_> = read_events(&conn).unwrap().into_iter().flatten().collect();
+        let parts = read_events(&conn).unwrap();
+        assert!(parts.len() <= ids.len());
+        let events: Vec<_> = parts.into_iter().flat_map(|part| match part {
+            EventRows::Grouped(groups) => groups.into_iter().flat_map(|group|
+                group.events.into_iter().map(move |event| (group.lane_id, event))
+            ).collect::<Vec<_>>(),
+            EventRows::Flat(rows) => rows,
+        }).collect();
         assert_eq!(events.len(), ids.len());
         for ((lane, event), id) in events.iter().zip(ids) {
             assert_eq!(*lane, 7);
@@ -853,13 +1031,48 @@ mod tests {
             assert_eq!((event.start, event.end), (id as f64, id as f64 + 0.5));
             assert_eq!(event.kind, Kind::User);
             assert_eq!(event.name.as_ref(), if id == 13 { "独自ツール" } else { "User" });
-            assert_eq!(event.summary, "日本語");
+            assert_eq!(event.summary.as_ref(), if id == 12 { "" } else { "日本語" });
+            assert_eq!(event.call_id.as_deref(), match id { 0 => Some(""), 13 => Some("呼び出し-α"), _ => None });
             assert_eq!(event.usage, Usage { input: 1, cache_read: 2, cache_write: 3, output: 4, reasoning: 5, cache_write_1h: 6 });
             assert_eq!(event.model.as_deref(), Some("gpt-6-sol"));
         }
         assert!(std::sync::Arc::ptr_eq(&events[0].1.name, &events[1].1.name));
+        assert!(Arc::ptr_eq(&events[0].1.summary, &events[1].1.summary));
         drop(conn);
         remove_db(&path);
+    }
+
+    #[test]
+    fn interleaved_lane_rows_switch_to_flat_reads_and_keep_order() {
+        let fixture = fixtures::Fixture::new();
+        let mut db = fixture.open();
+        let mut items = fixtures::items(&[]);
+        let Loaded::Session(session) = &mut items[0] else { unreachable!() };
+        let Loaded::Session(sample) = fixtures::items(&[("User", "入力", "結果")]).remove(0) else { unreachable!() };
+        for lane_index in 0..2 {
+            let mut lane = Lane::new(format!("lane-{lane_index}"));
+            for i in 0..2048 {
+                let mut event = sample.lanes[0].events[0].clone();
+                event.start = i as f64;
+                event.end = i as f64 + 0.5;
+                event.summary = format!("{lane_index}:{i}").into();
+                lane.events.push(event);
+            }
+            session.lanes.push(lane);
+        }
+        db.put(&pack_files(&[("file".into(), "fp".into(), &items)])).unwrap();
+        db.conn.execute("UPDATE events SET id=-id", []).unwrap();
+        db.conn.execute("UPDATE events SET id=CASE WHEN -id <= 2048 THEN (-id-1)*2+1 ELSE (-id-2049)*2+2 END", []).unwrap();
+        assert!(read_events(&db.conn).unwrap().iter().all(|part| matches!(part, EventRows::Flat(_))));
+        let files = db.load_all().unwrap();
+        let Loaded::Session(session) = &files[0].1[0] else { unreachable!() };
+        for (lane_index, lane) in session.lanes[1..].iter().enumerate() {
+            assert_eq!(lane.events.len(), 2048);
+            for (i, event) in lane.events.iter().enumerate() {
+                assert_eq!(event.summary.as_ref(), format!("{lane_index}:{i}"));
+                assert_eq!(event.row(), Some((i * 2 + lane_index + 1) as i64));
+            }
+        }
     }
 
     #[test]
@@ -874,7 +1087,7 @@ mod tests {
                 let mut event = fixtures::items(&[("User", "入力", "")]);
                 let Loaded::Session(event) = event.remove(0) else { unreachable!() };
                 let mut event = event.lanes[0].events[0].clone();
-                event.summary = format!("{lane_index}:{i}");
+                event.summary = format!("{lane_index}:{i}").into();
                 lane.events.push(event);
             }
             s.lanes.push(lane);
@@ -902,7 +1115,7 @@ mod tests {
         assert_eq!(s.lanes.len(), 4); // 元の空のmainと3レーン
         assert!(s.lanes[0].events.is_empty());
         for (lane, expected) in s.lanes[1..].iter().zip(expected) {
-            let actual: Vec<_> = lane.events.iter().map(|e| (e.row().unwrap(), e.summary.clone())).collect();
+            let actual: Vec<_> = lane.events.iter().map(|e| (e.row().unwrap(), e.summary.to_string())).collect();
             assert_eq!(actual, expected);
         }
     }

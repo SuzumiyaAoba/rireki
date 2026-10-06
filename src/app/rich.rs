@@ -8,7 +8,8 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use gpui::{
-    Div, FontStyle, FontWeight, HighlightStyle, StrikethroughStyle, StyledText, UnderlineStyle, div, prelude::*, px,
+    Div, ElementId, FontStyle, FontWeight, HighlightStyle, Stateful, StrikethroughStyle, StyledText, UnderlineStyle,
+    div, prelude::*, px,
 };
 
 use crate::theme::{self, c};
@@ -303,10 +304,30 @@ pub fn mono_spans(text: &str) -> (String, Spans) {
     (text, spans)
 }
 
+/// 本文の折り返し。文章は幅に合わせ、コードは元の行を保つ
+pub enum TextFlow {
+    Wrap,
+    Scroll,
+}
+
+/// 元の行を保ったまま横にスクロールする領域。子は内容の幅で配置する
+pub fn horizontal_scroll(id: impl Into<ElementId>) -> Stateful<Div> {
+    let mut scroll = div().id(id).min_w_0().overflow_x_scroll().whitespace_nowrap().flex();
+    // 通常の縦スクロールは外側のイベント一覧へ渡す
+    scroll.style().restrict_scroll_to_axis = Some(true);
+    scroll
+}
+
 /// 等幅のテキストの箱（コード・ツールの入力・結果）
-pub fn mono_box(text: &str) -> Div {
+pub fn mono_box(id: impl Into<ElementId>, text: &str, flow: TextFlow) -> Div {
     let (t, spans) = mono_spans(text);
-    code_frame().child(styled(if t.is_empty() { " ".into() } else { t }, spans))
+    let text = styled(if t.is_empty() { " ".into() } else { t }, spans);
+    let body = match flow {
+        TextFlow::Wrap => div().min_w_0().whitespace_normal().child(text).into_any_element(),
+        TextFlow::Scroll => horizontal_scroll(id)
+            .child(div().flex_none().min_w_full().child(text)).into_any_element(),
+    };
+    code_frame().child(body)
 }
 
 /// コードの箱の外枠
@@ -349,7 +370,7 @@ pub fn numbered(s: &str) -> Option<Vec<(Option<u32>, &str)>> {
 /// 行番号付きの表示
 pub fn numbered_view(lines: &[(Option<u32>, &str)]) -> Div {
     let width = lines.iter().filter_map(|l| l.0).max().unwrap_or(0).to_string().len().max(2) as f32 * 7.5 + 6.0;
-    code_frame().px_0().flex().flex_col().children(lines.iter().map(|&(n, body)| {
+    let rows = div().flex_none().min_w_full().flex().flex_col().children(lines.iter().map(|&(n, body)| {
         div()
             .flex()
             .min_w_0()
@@ -368,7 +389,8 @@ pub fn numbered_view(lines: &[(Option<u32>, &str)]) -> Div {
             } else {
                 body.to_string()
             }))
-    }))
+    }));
+    code_frame().px_0().child(horizontal_scroll("numbered").child(rows))
 }
 
 // ---------------------------------------------------------------- 差分
@@ -383,7 +405,7 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
     let mut col = div().flex().flex_col().gap_2().min_w_0();
     let mut budget = limit;
     let mut hidden = 0;
-    for f in files {
+    for (i, f) in files.into_iter().enumerate() {
         let numbers = f.rows.iter().any(|r| r.old.is_some() || r.new.is_some());
         let digits = f.rows.iter().filter_map(|r| r.old.max(r.new)).max().unwrap_or(0).to_string().len().max(2);
         let gutter = digits as f32 * 7.5 + 8.0;
@@ -469,7 +491,9 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
                 .border_color(c(theme::BORDER))
                 .bg(c(CODE_BG))
                 .child(head)
-                .child(div().py_0p5().flex().flex_col().text_xs().font_family(MONO).children(rows)),
+                .child(horizontal_scroll(ElementId::NamedInteger("diff".into(), i as u64)).child(
+                    div().flex_none().min_w_full().py_0p5().flex().flex_col().text_xs().font_family(MONO).children(rows),
+                )),
         );
     }
     (col, hidden)
@@ -766,8 +790,8 @@ fn inline_text(s: &str) -> StyledText {
 
 /// Markdown の表示。`color` は本文の文字の色
 pub fn markdown(s: &str, color: u32) -> Div {
-    let mut col = div().flex().flex_col().gap_1p5().min_w_0().text_color(c(color));
-    for b in blocks(s) {
+    let mut col = div().flex().flex_col().gap_1p5().min_w_0().whitespace_normal().text_color(c(color));
+    for (i, b) in blocks(s).into_iter().enumerate() {
         col = col.child(match b {
             Block::Heading(level, text) => div()
                 .pt(px(if level <= 2 { 6.0 } else { 2.0 }))
@@ -784,7 +808,10 @@ pub fn markdown(s: &str, color: u32) -> Div {
                 .relative()
                 .border_1()
                 .border_color(c(theme::BORDER))
-                .child(styled(if code.is_empty() { " ".into() } else { code }, Spans::new()))
+                .child(horizontal_scroll(ElementId::NamedInteger("code".into(), i as u64)).child(
+                    div().flex_none().min_w_full()
+                        .child(styled(if code.is_empty() { " ".into() } else { code }, Spans::new())),
+                ))
                 .when(!lang.is_empty(), |d| {
                     d.child(div().absolute().top(px(2.0)).right(px(6.0)).text_color(c(theme::SUBTLE)).child(lang))
                 }),

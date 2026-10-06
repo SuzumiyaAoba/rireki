@@ -60,6 +60,26 @@ pub enum EventText<'a> {
 }
 
 impl TextRef {
+    /// 差分解析で共有した本文を、解凍せずに安定側へ渡す。
+    pub(crate) fn compressed(&self) -> Option<(Vec<u8>, Vec<u8>)> {
+        let source = self.source.as_ref()?;
+        match &*source.0.lock().unwrap() {
+            State::Pending(texts) => Some(texts[self.index as usize].clone()),
+            State::Rows(_) => None,
+        }
+    }
+
+    pub(crate) fn retained_bytes(&self) -> usize {
+        let Some(source) = &self.source else { return 0; };
+        let overhead = std::mem::size_of::<Texts>() + 4 * std::mem::size_of::<usize>();
+        overhead + match &*source.0.lock().unwrap() {
+            State::Pending(texts) => std::mem::size_of::<Compressed>()
+                + texts.capacity() * std::mem::size_of::<(Vec<u8>, Vec<u8>)>()
+                + texts.iter().map(|(i, o)| i.capacity() + o.capacity()).sum::<usize>(),
+            State::Rows(rows) => rows.capacity() * std::mem::size_of::<i64>(),
+        }
+    }
+
     /// 既存のSQLite行は共有状態を確保せず、IDを直接保持する。
     pub fn row(id: i64) -> Self {
         if id == 0 {

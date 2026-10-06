@@ -2,7 +2,7 @@
 //!
 //! - 安定: 最終更新から `LIVE_SECS` 以上経ったファイル。パース結果を索引 DB に保存し、
 //!   以後は指紋（mtime + サイズ）が変わらない限り読み直さない。
-//! - リアルタイム: 最近更新されたファイル。DB には書かず、変更のたびにメモリ上で読み直す。
+//! - リアルタイム: 最近更新されたファイル。既読部分を照合し、追記分だけを解析する。
 //!   更新が止まれば次の同期で安定側に移る。
 
 use std::collections::HashMap;
@@ -20,6 +20,14 @@ use crate::model::{Loaded, Snapshot, Store};
 pub const LIVE_SECS: f64 = 10.0 * 60.0;
 /// 一度に処理するファイル数（進捗表示と UI 反映の単位）
 pub const CHUNK: usize = 64;
+/// 生の解析状態を保持する上限。古いものから破棄し、次回は全体解析に戻す。
+const LIVE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+struct CachedLive {
+    log: loader::LiveLog,
+    bytes: usize,
+    used: u64,
+}
 
 pub struct Indexer {
     db: Option<Db>,
@@ -30,6 +38,10 @@ pub struct Indexer {
     /// メモリ上で読んだリアルタイムファイルの指紋
     live: HashMap<String, String>,
     pending: HashMap<String, String>,
+    live_parsers: HashMap<String, CachedLive>,
+    live_bytes: usize,
+    live_tick: u64,
+    cache_live: bool,
 }
 
 struct Completion {
@@ -67,7 +79,12 @@ pub struct ViewLoader {
 
 impl ViewLoader {
     pub fn open() -> Self {
-        Self { indexer: Indexer::open(), store: Store::default() }
+        Self::open_with_live_cache(true)
+    }
+
+    /// 計測では同じ更新・保存経路を全体解析でも実行できる。
+    pub fn open_with_live_cache(cache_live: bool) -> Self {
+        Self { indexer: Indexer::open_with_live_cache(cache_live), store: Store::default() }
     }
 
     fn apply(&mut self, updates: Vec<Update>) -> Delta {
@@ -100,9 +117,28 @@ fn now() -> f64 {
 
 impl Indexer {
     pub fn open() -> Self {
+        Self::open_with_live_cache(true)
+    }
+
+    pub fn open_with_live_cache(cache_live: bool) -> Self {
         let db = Db::open().map_err(|e| eprintln!("rireki: 索引 DB を開けません: {e}")).ok();
         let writer = db.is_some().then(|| Db::open().ok()).flatten();
-        Self::with_db(db, writer)
+        let mut indexer = Self::with_db(db, writer);
+        indexer.cache_live = cache_live;
+        indexer
+    }
+
+    pub fn live_cache_bytes(&self) -> usize { self.live_bytes }
+
+    pub fn live_update_stats(&self, job: &Job) -> Option<loader::LiveStats> {
+        self.live_parsers.get(&job.key()).map(|cache| cache.log.last_update())
+    }
+
+    /// 保存を伴わない計測・テストでも、同じ探索と解析経路を使う。
+    pub fn in_memory(cache_live: bool) -> Self {
+        let mut indexer = Self::with_db(None, None);
+        indexer.cache_live = cache_live;
+        indexer
     }
 
     fn with_db(db: Option<Db>, writer: Option<Db>) -> Self {
@@ -125,7 +161,8 @@ impl Indexer {
             });
             Writer { sender: tx, completed, handle: h }
         });
-        Self { db, writer, stable, live: HashMap::new(), pending: HashMap::new() }
+        Self { db, writer, stable, live: HashMap::new(), pending: HashMap::new(),
+            live_parsers: HashMap::new(), live_bytes: 0, live_tick: 0, cache_live: true }
     }
 
     fn complete_writes(&mut self) {
@@ -182,12 +219,14 @@ impl Indexer {
         self.plan_jobs(loader::discover_in(claude, codex))
     }
 
-    fn plan_jobs(&self, jobs: Vec<Job>) -> Vec<Task> {
+    fn plan_jobs(&mut self, jobs: Vec<Job>) -> Vec<Task> {
         let t = now();
         let mut live = Vec::new();
         let mut stable = Vec::new();
+        let mut retained = std::collections::HashSet::new();
         for job in jobs {
             let key = job.key();
+            if self.live_parsers.contains_key(&key) { retained.insert(key.clone()); }
             if self.pending.get(&key) == Some(&job.fingerprint) { continue; }
             if t - job.mtime < LIVE_SECS {
                 if self.live.get(&key) != Some(&job.fingerprint) {
@@ -200,6 +239,9 @@ impl Indexer {
                 stable.push(Task { job, live: false });
             }
         }
+        self.live_parsers.retain(|key, cache| {
+            if retained.contains(key) { true } else { self.live_bytes -= cache.bytes; false }
+        });
         live.extend(stable);
         live
     }
@@ -208,20 +250,36 @@ impl Indexer {
     pub fn process(&mut self, tasks: &[Task]) -> Vec<Update> {
         self.complete_writes();
         let save = self.writer.is_some();
-        let parsed: Vec<_> = tasks.par_iter().map(|t| {
-            let mut items = loader::parse(&t.job);
+        // 並列で解析した状態を collect に大量に溜めない。既存の保持分は後でLRUで整理する。
+        let batch_bytes = std::sync::atomic::AtomicUsize::new(0);
+        let states: Vec<_> = tasks.iter().map(|t| {
+            let cached = self.live_parsers.remove(&t.job.key()).map(|cache| {
+                self.live_bytes -= cache.bytes;
+                cache.log
+            });
+            cached.or_else(|| (t.live && self.cache_live).then(loader::LiveLog::default))
+        }).collect();
+        let parsed: Vec<_> = tasks.par_iter().zip(states.into_par_iter()).map(|(t, mut state)| {
+            let mut items = state.as_mut().map_or_else(|| loader::parse(&t.job), |log| log.parse(&t.job));
             let origin = t.job.key();
             let packed = (save && !t.live).then(|| {
                 let packed = db::pack_file(&origin, &t.job.fingerprint, &items);
                 packed.release_texts(&mut items);
                 packed
             });
-            (Update { origin, items }, packed)
+            let state = t.live.then_some(state).flatten().and_then(|log| {
+                let bytes = log.retained_bytes();
+                use std::sync::atomic::Ordering::Relaxed;
+                batch_bytes.fetch_update(Relaxed, Relaxed, |held| {
+                    held.checked_add(bytes).filter(|total| *total <= LIVE_CACHE_BYTES)
+                }).ok().map(|_| (log, bytes))
+            });
+            (Update { origin, items }, packed, state)
         }).collect();
 
         let mut updates = Vec::with_capacity(tasks.len());
         let mut packed = Vec::new();
-        for (t, (update, file)) in tasks.iter().zip(parsed) {
+        for (t, (update, file, state)) in tasks.iter().zip(parsed) {
             if t.live {
                 self.pending.remove(&update.origin);
                 self.live.insert(update.origin.clone(), t.job.fingerprint.clone());
@@ -229,6 +287,7 @@ impl Indexer {
                 self.live.remove(&update.origin);
             }
             if let Some(file) = file { packed.push(file); }
+            if let Some((log, bytes)) = state { self.cache_live_log(update.origin.clone(), log, bytes); }
             updates.push(update);
         }
         if let Some(writer) = &self.writer
@@ -238,6 +297,18 @@ impl Indexer {
             if writer.sender.send(packed).is_ok() { self.pending.extend(files); }
         }
         updates
+    }
+
+    fn cache_live_log(&mut self, origin: String, log: loader::LiveLog, bytes: usize) {
+        if let Some(old) = self.live_parsers.remove(&origin) { self.live_bytes -= old.bytes; }
+        if bytes > LIVE_CACHE_BYTES { return; }
+        while self.live_bytes + bytes > LIVE_CACHE_BYTES {
+            let Some(oldest) = self.live_parsers.iter().min_by_key(|(_, c)| c.used).map(|(key, _)| key.clone()) else { break };
+            self.live_bytes -= self.live_parsers.remove(&oldest).unwrap().bytes;
+        }
+        self.live_tick = self.live_tick.wrapping_add(1);
+        self.live_parsers.insert(origin, CachedLive { log, bytes, used: self.live_tick });
+        self.live_bytes += bytes;
     }
 
 }
@@ -296,7 +367,7 @@ mod tests {
             let e = &s.lanes[0].events[0];
             let (input, output) = match e.text() {
                 EventText::Inline(i, o) if t.live => (i.to_owned(), o.to_owned()),
-                EventText::Pending(i, o) if !t.live => (i, o),
+                EventText::Pending(i, o) => (i, o),
                 _ => panic!("unexpected body state"),
             };
             assert_eq!((input, output), (format!("入力 {i}"), String::new()));
@@ -353,8 +424,8 @@ mod tests {
         assert!(indexer.stable.is_empty());
         assert_eq!(indexer.live.get(&task.job.key()).map(String::as_str), Some("live"));
         let Loaded::Session(s) = &updates[0].items[0] else { unreachable!() };
-        assert!(matches!(s.lanes[0].events[0].text(), EventText::Inline(_, _)));
-        assert_eq!(s.lanes[0].events[0].input, "日本語の入力");
+        let EventText::Pending(input, output) = s.lanes[0].events[0].text() else { panic!("live text expected") };
+        assert_eq!((input, output), ("日本語の入力".into(), String::new()));
         indexer.pending.insert(task.job.key(), "newer".into());
         indexer.finish_write(Completion { files: vec![(task.job.key(), "older".into())], saved: true });
         assert_eq!(indexer.pending.get(&task.job.key()).map(String::as_str), Some("newer"));
@@ -394,5 +465,68 @@ mod tests {
         let EventText::Pending(i, o) = s.lanes[0].events[0].text() else { panic!("terminated writer must keep body") };
         assert_eq!((i.as_str(), o.as_str()), ("日本語の入力", ""));
         assert_eq!(indexer.plan_jobs(vec![task.job.clone()]).len(), 1);
+    }
+
+    #[test]
+    fn live_to_stable_keeps_compressed_bodies_on_failed_and_successful_writes() {
+        let fixture = Fixture::new();
+        let mut indexer = Indexer::with_db(Some(fixture.open()), Some(fixture.open()));
+        let mut task = task(&fixture);
+        task.live = true;
+        let live = indexer.process(std::slice::from_ref(&task));
+        let Loaded::Session(old) = &live[0].items[0] else { unreachable!() };
+        assert!(indexer.live_bytes > 0);
+        assert!(indexer.stable.is_empty());
+        let expected = ("日本語の入力".to_owned(), String::new());
+        let EventText::Pending(i, o) = old.lanes[0].events[0].text() else { panic!("shared live text expected") };
+        assert_eq!((i, o), expected);
+        fixture.reject_writes(true);
+        task.live = false;
+        let failed = indexer.process(std::slice::from_ref(&task));
+        completion(&mut indexer);
+        assert!(indexer.live_parsers.is_empty() && indexer.live_bytes == 0);
+        let Loaded::Session(s) = &failed[0].items[0] else { unreachable!() };
+        let EventText::Pending(i, o) = s.lanes[0].events[0].text() else { panic!("failed save must keep shared text") };
+        assert_eq!((i, o), expected);
+        fixture.reject_writes(false);
+        let saved = indexer.process(std::slice::from_ref(&task));
+        completion(&mut indexer);
+        let Loaded::Session(s) = &saved[0].items[0] else { unreachable!() };
+        let EventText::Row(id) = s.lanes[0].events[0].text() else { panic!("committed row expected") };
+        assert_eq!(Db::open_index_read(&fixture.texts).unwrap().details(&[id])[&id], expected);
+        let EventText::Pending(i, o) = old.lanes[0].events[0].text() else { panic!("old snapshot must remain readable") };
+        assert_eq!((i, o), expected);
+    }
+
+    #[test]
+    fn live_cache_budget_eviction_and_removed_files_fall_back_to_full_parsing() {
+        let fixture = Fixture::new();
+        let mut indexer = Indexer::with_db(None, None);
+        let mut first = task(&fixture);
+        first.live = true;
+        let _ = indexer.process(std::slice::from_ref(&first));
+        let old = indexer.live_parsers.remove(&first.job.key()).unwrap();
+        indexer.live_bytes -= old.bytes;
+        // 小さいログの容量見積もりだけを大きくして、実メモリを大量に確保せず上限到達を再現する。
+        indexer.cache_live_log(first.job.key(), old.log, LIVE_CACHE_BYTES / 2 + 1);
+        let second_path = fixture.index.with_file_name("second.jsonl");
+        std::fs::copy(&first.job.path, &second_path).unwrap();
+        let second = Task { live: true, job: Job { path: second_path, ..first.job.clone() } };
+        let mut second_cache = loader::LiveLog::default();
+        second_cache.parse(&second.job);
+        indexer.cache_live_log(second.job.key(), second_cache, LIVE_CACHE_BYTES / 2 + 1);
+        assert!(!indexer.live_parsers.contains_key(&first.job.key()));
+        assert!(indexer.live_bytes <= LIVE_CACHE_BYTES);
+        first.job.fingerprint = "changed".into();
+        let updates = indexer.process(std::slice::from_ref(&first));
+        let Loaded::Session(s) = &updates[0].items[0] else { unreachable!() };
+        let EventText::Pending(i, o) = s.lanes[0].events[0].text() else { panic!("reloaded body expected") };
+        assert_eq!((i, o), ("日本語の入力".into(), String::new()));
+        indexer.plan_jobs(vec![first.job.clone()]);
+        assert!(!indexer.live_parsers.contains_key(&second.job.key()));
+        indexer.plan_jobs(Vec::new());
+        assert!(indexer.live_parsers.is_empty() && indexer.live_bytes == 0);
+        indexer.cache_live_log(first.job.key(), loader::LiveLog::default(), LIVE_CACHE_BYTES + 1);
+        assert!(indexer.live_parsers.is_empty());
     }
 }

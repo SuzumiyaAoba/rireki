@@ -183,7 +183,7 @@ mod tests {
                         Kind::Thinking,
                     ][i % 5],
                     name: ["Read", "Edit", "Agent", "User"][i % 4].into(),
-                    summary: String::new(),
+                    summary: Default::default(),
                     input: String::new(),
                     output: String::new(),
                     call_id: None,

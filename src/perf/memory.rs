@@ -27,6 +27,11 @@ fn usage() -> Usage {
     stats
 }
 
+pub(crate) fn current() -> (usize, usize) {
+    let stats = usage();
+    (stats.live, stats.reserved)
+}
+
 #[derive(Default)]
 struct Peaks {
     live: AtomicUsize,

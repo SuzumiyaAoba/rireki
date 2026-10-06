@@ -373,8 +373,9 @@ impl Rireki {
         self.detail_changed(cx);
     }
 
-    fn toggle_detail_order(&mut self, cx: &mut Context<Self>) {
-        self.detail_reversed = !self.detail_reversed;
+    fn set_detail_order(&mut self, reversed: bool, cx: &mut Context<Self>) {
+        if self.detail_reversed == reversed { return; }
+        self.detail_reversed = reversed;
         self.cancel_detail_follow();
         self.persist();
         self.detail_changed(cx);
@@ -489,6 +490,7 @@ impl Rireki {
             .flex()
             .flex_col()
             .gap_3();
+        body.style().restrict_scroll_to_axis = Some(true);
         match tab {
             DetailTab::Events => {
                 if self.cache(sel).is_none() {
@@ -1267,7 +1269,7 @@ impl Rireki {
                     .child(div().flex_1())
                     .when(!copy.is_empty(), |d| d.child(self.copy_button(copy_id, copy.to_string(), cx).flex_none())),
             )
-            .child(body)
+            .child(div().id(SharedString::from(format!("{copy_id}-body"))).min_w_0().child(body))
     }
 
     /// 「残り N 行を表示」。押すと `id` の本文を全部出す
@@ -1293,14 +1295,14 @@ impl Rireki {
     }
 
     /// 長い本文を `FOLD_LINES` 行で畳んだ等幅の箱
-    fn folded_mono(&self, id: &'static str, text: &str, cx: &mut Context<Self>) -> Div {
+    fn folded_mono(&self, id: &'static str, text: &str, flow: rich::TextFlow, cx: &mut Context<Self>) -> Div {
         let (shown, hidden) = if self.expanded.contains(id) { (text, 0) } else { rich::head_lines(text, FOLD_LINES) };
         div()
             .flex()
             .flex_col()
             .gap_1()
             .min_w_0()
-            .child(rich::mono_box(shown))
+            .child(rich::mono_box(id, shown, flow))
             .when(hidden > 0, |d| d.child(self.expand_button(id, hidden, cx)))
     }
 
@@ -1321,7 +1323,8 @@ impl Rireki {
                     t.detail_changed(cx);
                 });
             let text = if show { raw } else { input };
-            let body = div().flex().flex_col().gap_1p5().child(toggle).child(self.folded_mono("in", text, cx));
+            let body = div().flex().flex_col().gap_1p5().min_w_0()
+                .child(toggle).child(self.folded_mono("in", text, rich::TextFlow::Scroll, cx));
             ("入力", body.into_any_element())
         } else if rich::is_patch(input) {
             let files = rich::parse_patch(input);
@@ -1337,9 +1340,9 @@ impl Rireki {
         } else if markdown {
             ("内容", rich::markdown(input, theme::TEXT).text_size(px(13.0)).into_any_element())
         } else if input.starts_with("$ ") {
-            ("コマンド", self.folded_mono("in", input, cx).into_any_element())
+            ("コマンド", self.folded_mono("in", input, rich::TextFlow::Scroll, cx).into_any_element())
         } else {
-            ("入力", self.folded_mono("in", input, cx).into_any_element())
+            ("入力", self.folded_mono("in", input, rich::TextFlow::Wrap, cx).into_any_element())
         };
         let copy = if self.show_raw { raw.unwrap_or(input) } else { input };
         div()
@@ -1347,7 +1350,7 @@ impl Rireki {
             .flex_col()
             .gap_1p5()
             .min_w_0()
-            .when_some(caption, |d, cap| d.child(div().text_sm().child(cap)))
+            .when_some(caption, |d, cap| d.child(div().text_sm().child(SharedString::from(cap))))
             .child(self.titled(Some(label(title)), "copy-in", copy, body, cx))
     }
 
@@ -1395,7 +1398,7 @@ impl Rireki {
                 .when(hidden > 0, |d| d.child(self.expand_button("out", hidden, cx)))
                 .into_any_element()
         } else {
-            self.folded_mono("out", output, cx).into_any_element()
+            self.folded_mono("out", output, rich::TextFlow::Scroll, cx).into_any_element()
         };
         let failed = e.status.failed();
         self.titled(Some(head), "copy-out", output, body, cx).when(failed && !output.is_empty(), |d| {
@@ -1854,50 +1857,39 @@ impl Rireki {
         self.detail_list.state.set_scroll_handler(move |_, _, cx| {
             let _ = scrolling.update(cx, |app, _| app.cancel_detail_follow());
         });
-        let events = list(self.detail_list.state.clone(), move |row, _, cx| {
+        list(self.detail_list.state.clone(), move |row, _, cx| {
             app.update(cx, |app, cx| app.detail_list_item(sel, row, cx)).unwrap_or_else(|_| div().into_any_element())
-        }).flex_1().min_h_0();
+        }).w_full().min_w_0().flex_1().min_h_0().into_any_element()
+    }
+
+    /// 集計の下、イベント行の直前に見出しと並び順の選択肢を置く
+    fn event_list_header(&self, cx: &mut Context<Self>) -> Div {
         div()
-            .flex_1()
-            .min_h_0()
             .flex()
-            .flex_col()
+            .flex_wrap()
+            .items_center()
             .gap_2()
+            .child(label("イベント一覧"))
             .child(
                 div()
+                    .id("detail-order")
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(label("イベント一覧"))
-                    .child(div().flex_1())
+                    .gap_1()
                     .child(
-                        div()
-                            .id("detail-order")
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(c(theme::BORDER))
-                            .bg(c(theme::BG))
-                            .text_xs()
-                            .text_color(c(theme::MUTED))
-                            .cursor_pointer()
-                            .hover(|d| d.bg(c(theme::HOVER)).text_color(c(theme::TEXT)))
-                            .child(icons::icon(
-                                if self.detail_reversed { Icon::ChevronUp } else { Icon::ChevronDown }, theme::MUTED,
-                            ).size_3())
-                            .child(if self.detail_reversed { "新しい順" } else { "古い順" })
-                            .tooltip(tip(if self.detail_reversed { "古い順に切り替える" } else { "新しい順に切り替える" }, None))
-                            .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.toggle_detail_order(cx))),
+                        self.icon_button(
+                            "detail-order-oldest", Some(Icon::ArrowDown), "古い順", !self.detail_reversed, cx,
+                            |t, _, cx| t.set_detail_order(false, cx),
+                        ).tooltip(tip("時刻の古いイベントから表示", None)),
+                    )
+                    .child(
+                        self.icon_button(
+                            "detail-order-newest", Some(Icon::ArrowUp), "新しい順", self.detail_reversed, cx,
+                            |t, _, cx| t.set_detail_order(true, cx),
+                        ).tooltip(tip("時刻の新しいイベントから表示", None)),
                     ),
             )
-            .child(events)
-            .into_any_element()
     }
 
     fn detail_list_item(&self, sel: Selection, row: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -1905,7 +1897,9 @@ impl Rireki {
         let item = self.detail_list.data.borrow().as_ref().and_then(|d| d.rows.get(row)).copied();
         self.detail_list.rendered.set(self.detail_list.rendered.get() + 1);
         let i = match item {
-            Some(DetailRow::Summary) => return div().pb_3().child(self.selection_summary(sel, cx)).into_any_element(),
+            Some(DetailRow::Summary) => return div().w_full().min_w_0().flex().flex_col().gap_2().pb_2()
+                .child(self.selection_summary(sel, cx))
+                .child(self.event_list_header(cx)).into_any_element(),
             Some(DetailRow::Empty) => return div().py_2().text_xs().text_color(c(theme::SUBTLE))
                 .child("該当するイベントはありません").into_any_element(),
             Some(DetailRow::Limit) => return div().pt_1().text_xs().text_color(c(theme::MUTED)).child(format!(
@@ -1939,7 +1933,7 @@ impl Rireki {
             facts.push(fmt_dur(until - e.start));
         }
         let color = theme::event_color(e);
-        let text = if text.is_empty() { e.summary.as_str() } else { text };
+        let text = if text.is_empty() { e.summary.as_ref() } else { text };
         let content = div()
             .my_1()
             .px_2p5()
@@ -1951,6 +1945,8 @@ impl Rireki {
             .flex()
             .flex_col()
             .gap_1()
+            .min_w_0()
+            .whitespace_normal()
             .child(
                 div()
                     .flex()
@@ -1985,10 +1981,10 @@ impl Rireki {
         let (added, removed) = touched.iter().fold((0, 0), |(a, r), t| (a + t.1, r + t.2));
         // ファイルのパスは作業ディレクトリからの相対にして短くする
         let commands = self.cache(sel).and_then(|d| d.commands.get(i)).map_or(&[][..], Vec::as_slice);
-        let body = if message {
-            if text.is_empty() { e.summary.clone() } else { one_line(text, 400) }
+        let body: SharedString = if message {
+            if text.is_empty() { e.summary.clone().into() } else { one_line(text, 400).into() }
         } else {
-            rich::rel_path(&e.summary, &s.cwd).to_string()
+            rich::rel_path(&e.summary, &s.cwd).to_string().into()
         };
         let num = |t: String, col: u32| div().flex_none().text_color(c(col)).child(t);
         let content = div()
@@ -2028,25 +2024,28 @@ impl Rireki {
                         ))
                     }),
             )
-            // コマンドは省略せず、折り返して全文を出す
+            // コマンドは元の行を保ち、横スクロールで全文を出す
             .when(!commands.is_empty(), |d| {
-                d.child(div().flex().flex_col().gap_0p5().children(commands.iter().map(|cmd| {
-                    div()
-                        .flex()
-                        .gap_1p5()
-                        .min_w_0()
-                        .text_xs()
-                        .font_family(rich::MONO)
-                        .child(div().flex_none().text_color(c(theme::SUBTLE)).child("$"))
-                        .child(div().flex_1().min_w_0().text_color(c(theme::MUTED)).child(cmd.clone()))
-                })))
+                d.child(rich::horizontal_scroll("commands").child(
+                    div().flex_none().min_w_full().flex().flex_col().gap_0p5()
+                        .children(commands.iter().map(|cmd| {
+                            div()
+                                .flex()
+                                .gap_1p5()
+                                .text_xs()
+                                .font_family(rich::MONO)
+                                .child(div().flex_none().text_color(c(theme::SUBTLE)).child("$"))
+                                .child(div().flex_none().text_color(c(theme::MUTED)).child(cmd.clone()))
+                        })),
+                ))
             })
             .when(commands.is_empty() && !body.is_empty(), |d| {
                 d.child(
                     div()
                         .text_xs()
-                        .when(message, |d| d.line_clamp(if e.kind == Kind::Thinking { 2 } else { 3 }))
-                        .when(!message, |d| d.truncate().font_family(rich::MONO))
+                        .whitespace_normal()
+                        .line_clamp(if e.kind == Kind::Thinking { 2 } else { 3 })
+                        .when(!message, |d| d.font_family(rich::MONO))
                         .text_color(c(match e.kind {
                             Kind::Assistant => theme::TEXT,
                             _ => theme::MUTED,
@@ -2073,6 +2072,8 @@ impl Rireki {
         let node = if turn { 22.0 } else { 18.0 };
         div()
             .id(ElementId::NamedInteger("ev".into(), idx as u64))
+            // List は行を独立して計測するため、幅を指定しないと本文の長さまで広がる。
+            .w_full()
             .min_w_0()
             .flex()
             .gap_2()
@@ -2325,7 +2326,7 @@ mod tests {
 
     fn list_event(name: &str, status: Status) -> Event {
         Event {
-            start: 1.0, end: 2.0, kind: Kind::Tool, name: name.into(), summary: String::new(),
+            start: 1.0, end: 2.0, kind: Kind::Tool, name: name.into(), summary: Default::default(),
             input: String::new(), output: String::new(), call_id: None, text_ref: Default::default(),
             usage: Default::default(), model: None, status,
         }

@@ -20,6 +20,9 @@ static PROCESS_STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::Onc
 fn main() {
     PROCESS_STARTED.set(std::time::Instant::now()).unwrap();
     let args: Vec<_> = std::env::args().collect();
+    if args.get(1).is_some_and(|a| a == "--bench-parse") {
+        return perf::parse(std::path::Path::new(args.get(2).expect("manifest を指定してください")));
+    }
     if args.get(1).is_some_and(|a| a == "--bench-search") {
         return perf::search(std::path::Path::new(args.get(2).expect("索引 DB を指定してください")));
     }
@@ -64,8 +67,14 @@ fn main() {
         return print_stats();
     }
     let profile_ui = args.iter().any(|a| a == "--profile-ui");
-    if args.iter().any(|a| matches!(a.as_str(), "--profile-startup" | "--profile-ingest" | "--profile-idle" | "--profile-render" | "--profile-eager-files" | "--profile-detail" | "--profile-rich" | "--profile-files" | "--profile-statistics" | "--profile-summary")) && !profile_ui {
+    if args.iter().any(|a| matches!(a.as_str(), "--profile-startup" | "--profile-ingest" | "--profile-idle" | "--profile-render" | "--profile-eager-files" | "--profile-detail" | "--profile-rich" | "--profile-files" | "--profile-statistics" | "--profile-summary" | "--profile-calendar" | "--profile-timeline" | "--profile-dense-timeline" | "--profile-components" | "--profile-exact-group-scale" | "--profile-unbatched-minimap" | "--profile-paired-minimap" | "--profile-full-grouping" | "--profile-uncached-rows" | "--profile-sidebar" | "--profile-eager-sidebar")) && !profile_ui {
         eprintln!("画面計測には --profile-ui も指定してください");
+        std::process::exit(1);
+    }
+    if args.iter().any(|a| a == "--profile-paired-minimap")
+        && !(args.iter().any(|a| a == "--profile-render") && args.iter().any(|a| a == "--profile-dense-timeline"))
+    {
+        eprintln!("--profile-paired-minimap は --profile-render と --profile-dense-timeline も指定してください");
         std::process::exit(1);
     }
     if profile_ui

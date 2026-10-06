@@ -4550,7 +4550,9 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "simdutf8",
  "two-face",
+ "twox-hash",
  "unicode-segmentation",
 ]
 

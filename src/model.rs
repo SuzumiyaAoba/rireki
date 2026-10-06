@@ -175,11 +175,12 @@ pub struct Event {
     pub kind: Kind,
     /// ツール名、または "User" / "Assistant" など。同じ名前はイベント間で共有する
     pub name: Arc<str>,
-    pub summary: String,
+    /// 要約は公開した版の間で共有する。変更時は別の文字列へ差し替える。
+    pub summary: Arc<str>,
     pub input: String,
     pub output: String,
     /// ツール呼び出し ID（サブエージェントとの紐付けに使う）
-    pub call_id: Option<String>,
+    pub call_id: Option<Arc<str>>,
     /// 索引DBの行IDまたは保存待ちの共有本文。本文は詳細表示時に取り出す。
     pub text_ref: TextRef,
     /// この時点の API 呼び出しのトークン使用量（なければ空）
@@ -605,6 +606,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metadata_versions_share_text_and_preserve_replaced_values() {
+        let mut original = test_lane("exec_command", 1.0).events.remove(0);
+        original.summary = "日本語の要約".into();
+        original.call_id = Some("call-α".into());
+        let metadata = original.clone_meta();
+        let full = original.clone();
+        assert!(Arc::ptr_eq(&original.summary, &metadata.summary));
+        assert!(Arc::ptr_eq(original.call_id.as_ref().unwrap(), metadata.call_id.as_ref().unwrap()));
+        assert!(Arc::ptr_eq(&original.summary, &full.summary));
+        assert!(metadata.input.is_empty() && metadata.output.is_empty());
+        assert_eq!(full.input, original.input);
+        original.summary = "更新後".into();
+        original.call_id = None;
+        drop(original);
+        assert_eq!(metadata.summary.as_ref(), "日本語の要約");
+        assert_eq!(metadata.call_id.as_deref(), Some("call-α"));
+        assert_eq!(full.summary, metadata.summary);
+        assert_eq!(full.call_id, metadata.call_id);
+    }
+
+    #[test]
     fn tool_end_prefix_ignores_other_kinds_and_rebuilds_after_changes() {
         let mut session = test_session();
         let template = session.lanes[0].events[0].clone();
@@ -694,7 +716,7 @@ mod tests {
     #[test]
     fn finalize_preserves_nested_parents_spawn_times_and_duplicate_ids() {
         let event = |start, id: &str| Event {
-            start, end: start + 1.0, kind: Kind::Agent, name: "Agent".into(), summary: String::new(),
+            start, end: start + 1.0, kind: Kind::Agent, name: "Agent".into(), summary: Default::default(),
             input: String::new(), output: String::new(), call_id: Some(id.into()), text_ref: Default::default(),
             usage: Default::default(), model: None, status: Default::default(),
         };

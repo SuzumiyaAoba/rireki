@@ -23,6 +23,7 @@ pub enum Icon {
     ArrowLeft,
     ArrowRight,
     ArrowUp,
+    ArrowDown,
     Bot,
     Layers,
     Folder,
@@ -65,7 +66,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    const ALL: [Icon; 54] = [
+    const ALL: [Icon; 55] = [
         Icon::CalendarDay,
         Icon::CalendarWeek,
         Icon::Calendar,
@@ -82,6 +83,7 @@ impl Icon {
         Icon::ArrowLeft,
         Icon::ArrowRight,
         Icon::ArrowUp,
+        Icon::ArrowDown,
         Icon::Bot,
         Icon::Layers,
         Icon::Folder,
@@ -140,6 +142,7 @@ impl Icon {
             Icon::ArrowLeft => "arrow-left",
             Icon::ArrowRight => "arrow-right",
             Icon::ArrowUp => "arrow-up",
+            Icon::ArrowDown => "arrow-down",
             Icon::Bot => "bot",
             Icon::Layers => "layers",
             Icon::Folder => "folder",
@@ -224,6 +227,7 @@ impl Icon {
             Icon::ArrowLeft => r#"<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>"#,
             Icon::ArrowRight => r#"<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>"#,
             Icon::ArrowUp => r#"<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>"#,
+            Icon::ArrowDown => r#"<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>"#,
             Icon::Bot => {
                 r#"<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>"#
             }

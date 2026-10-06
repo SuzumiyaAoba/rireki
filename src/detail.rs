@@ -340,7 +340,7 @@ mod tests {
             end: 2.0,
             kind: Kind::Tool,
             name: name.into(),
-            summary: String::new(),
+            summary: Default::default(),
             input: String::new(),
             output: String::new(),
             call_id: None,

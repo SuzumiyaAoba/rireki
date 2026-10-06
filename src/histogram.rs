@@ -77,7 +77,7 @@ mod tests {
                                     end: start + 500.0,
                                     kind: Kind::Tool,
                                     name: "".into(),
-                                    summary: String::new(),
+                                    summary: Default::default(),
                                     input: String::new(),
                                     output: String::new(),
                                     call_id: None,

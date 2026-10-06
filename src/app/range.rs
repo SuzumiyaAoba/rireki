@@ -293,6 +293,7 @@ impl Rireki {
         let f = ((f32::from(x - b.origin.x)) / w).clamp(0.0, 1.0) as f64;
         let span = self.spp * self.plot_width(window) as f64;
         self.t0 = a + (e - a) * f - span / 2.0;
+        self.clamp_timeline(window);
     }
 
     /// タイムラインの上に置く帯。期間全体のイベントの分布と、今見ている範囲を示す
@@ -326,39 +327,84 @@ impl Rireki {
         };
         let bounds_cell = self.minimap_bounds.clone();
         let max = counts.iter().copied().max().unwrap_or(0).max(1) as f32;
+        let measurements = self.profile.as_ref().and_then(|p| p.measurements.clone());
+        let unbatched = self.profile.as_ref().is_some_and(|p| p.unbatched_minimap);
         let map = canvas(
             move |b, _, _| bounds_cell.set(b),
             move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
-                let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-                window.paint_quad(fill(bounds, c(theme::PANEL)).corner_radii(px(4.0)));
-                let n = counts.len().max(1) as f32;
-                let bw = w / n;
-                for (i, &k) in counts.iter().enumerate() {
-                    if k == 0 {
-                        continue;
+                use std::hash::{DefaultHasher, Hash, Hasher};
+                let started = measurements.as_ref().map(|_| std::time::Instant::now());
+                let cpu_started = measurements.as_ref().and_then(|_| super::profile::thread_cpu_ns());
+                let mut hash = measurements.as_ref().map(|_| DefaultHasher::new());
+                let mut backgrounds = Vec::new();
+                let mut quads = 0usize;
+                let mut paint = |window: &mut Window, quad: gpui::PaintQuad| {
+                    if let Some(hash) = &mut hash {
+                        quad.bounds.hash(hash);
+                        [quad.corner_radii.top_left, quad.corner_radii.top_right,
+                            quad.corner_radii.bottom_right, quad.corner_radii.bottom_left].hash(hash);
+                        [quad.border_widths.top, quad.border_widths.right,
+                            quad.border_widths.bottom, quad.border_widths.left].hash(hash);
+                        quad.border_color.hash(hash);
+                        quad.border_style.hash(hash);
+                        let index = backgrounds.iter().position(|b| *b == quad.background).unwrap_or_else(|| {
+                            serde_json::to_vec(&quad.background).unwrap().hash(hash);
+                            backgrounds.push(quad.background);
+                            backgrounds.len() - 1
+                        });
+                        index.hash(hash);
                     }
-                    let bh = ((k as f32 / max).sqrt() * (h - 4.0)).max(2.0);
-                    let r = Bounds::new(
-                        bounds.origin + point(px(i as f32 * bw), px(h - 2.0 - bh)),
-                        size(px(bw.max(1.0)), px(bh)),
-                    );
-                    window.paint_quad(fill(r, c(theme::ACCENT).opacity(0.75)));
-                }
-                // 今見ている範囲
-                if let Some((a, e)) = span {
-                    let x0 = ((view.0 - a) / (e - a)) as f32 * w;
-                    let x1 = ((view.1 - a) / (e - a)) as f32 * w;
-                    let (x0, x1) = (x0.clamp(0.0, w), x1.clamp(0.0, w));
-                    if x1 > x0 || x0 > 0.0 && x0 < w {
-                        let x1 = x1.max(x0 + 2.0).min(w);
-                        let r = Bounds::new(bounds.origin + point(px(x0), px(0.0)), size(px(x1 - x0), px(h)));
-                        window.paint_quad(
-                            fill(r, gpui::white().opacity(0.08))
-                                .corner_radii(px(3.0))
-                                .border_widths(px(1.0))
-                                .border_color(gpui::white().opacity(0.7)),
+                    quads += 1;
+                    window.paint_quad(quad);
+                };
+                let mut draw = |window: &mut Window| {
+                    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                    paint(window, fill(bounds, c(theme::PANEL)).corner_radii(px(4.0)));
+                    let n = counts.len().max(1) as f32;
+                    let bw = w / n;
+                    for (i, &k) in counts.iter().enumerate() {
+                        if k == 0 {
+                            continue;
+                        }
+                        let bh = ((k as f32 / max).sqrt() * (h - 4.0)).max(2.0);
+                        let r = Bounds::new(
+                            bounds.origin + point(px(i as f32 * bw), px(h - 2.0 - bh)),
+                            size(px(bw.max(1.0)), px(bh)),
                         );
+                        paint(window, fill(r, c(theme::ACCENT).opacity(0.75)));
                     }
+                    // 今見ている範囲
+                    if let Some((a, e)) = span {
+                        let x0 = ((view.0 - a) / (e - a)) as f32 * w;
+                        let x1 = ((view.1 - a) / (e - a)) as f32 * w;
+                        let (x0, x1) = (x0.clamp(0.0, w), x1.clamp(0.0, w));
+                        if x1 > x0 || x0 > 0.0 && x0 < w {
+                            let x1 = x1.max(x0 + 2.0).min(w);
+                            let r = Bounds::new(bounds.origin + point(px(x0), px(0.0)), size(px(x1 - x0), px(h)));
+                            paint(window,
+                                fill(r, gpui::white().opacity(0.08))
+                                    .corner_radii(px(3.0))
+                                    .border_widths(px(1.0))
+                                    .border_color(gpui::white().opacity(0.7)),
+                            );
+                        }
+                    }
+                };
+                if unbatched {
+                    draw(window);
+                } else {
+                    // 背景・棒・選択範囲はすべてQuad。GPUIの安定ソートで挿入順を保ち、
+                    // 数百本の棒の境界木への登録を一つにまとめる。
+                    window.paint_layer(bounds, draw);
+                }
+                if let Some((measurements, started)) = measurements.as_ref().zip(started) {
+                    let mut value = measurements.get();
+                    value.minimap_ms += started.elapsed().as_secs_f64() * 1000.0;
+                    value.minimap_cpu_ms += super::profile::cpu_delta_ms(cpu_started).unwrap_or(0.0);
+                    value.minimap_calls += 1;
+                    value.minimap_quads += quads;
+                    value.minimap_hash = hash.map_or(0, |mut hash| { quads.hash(&mut hash); hash.finish() });
+                    measurements.set(value);
                 }
             },
         )

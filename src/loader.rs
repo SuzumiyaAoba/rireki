@@ -1,5 +1,6 @@
 //! Claude Code / Codex のセッションログ (JSONL) を読み込む
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::fmt::Write as _;
@@ -12,6 +13,10 @@ use rayon::prelude::*;
 use serde_json::Value;
 
 use crate::model::{Event, Kind, Lane, Loaded, Session, Source, Status, Usage, one_line, truncate};
+
+mod codex_row;
+mod live;
+pub use live::{LiveLog, LiveStats};
 
 const MAX_TEXT: usize = 6000;
 
@@ -133,9 +138,18 @@ fn read_dir(p: &Path) -> Vec<PathBuf> {
     fs::read_dir(p).map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default()
 }
 
-/// ファイル全体を一度に読む。行ごとの String 確保と UTF-8 検証を避け、行はバイト列のまま JSON パーサに渡す
+/// ファイル全体をバイト列で読み、行ごとの String 確保を避ける。
 fn read_all(p: &Path) -> Vec<u8> {
     fs::read(p).unwrap_or_default()
+}
+
+/// 行のUTF-8をまとめて検証し、JSON文字列ごとの再検証を省く。
+/// 不正な入力では従来のデシリアライザを使い、エラーの扱いも維持する。
+fn json_row(line: &[u8]) -> serde_json::Result<Value> {
+    match simdutf8::basic::from_utf8(line) {
+        Ok(text) => serde_json::from_str(text),
+        Err(_) => serde_json::from_slice(line),
+    }
 }
 
 #[cfg(test)]
@@ -156,17 +170,26 @@ struct BufferedLines<R> {
     reader: R,
     line: Vec<u8>,
     skip: fn(&[u8]) -> bool,
+    position: u64,
+    last_complete: u64,
 }
 
 impl<R: BufRead> BufferedLines<R> {
+    fn next_record(&mut self) -> Option<(&[u8], bool)> {
+        self.next_line()?;
+        Some((&self.line, self.last_complete == self.position))
+    }
+
     fn next_line(&mut self) -> Option<&[u8]> {
         'line: loop {
             self.line.clear();
+            let mut chunks = Vec::new();
             let mut decided = false;
             let mut skipping = false;
             loop {
                 let buf = self.reader.fill_buf().ok()?;
                 if buf.is_empty() {
+                    finish_line(&mut self.line, chunks);
                     return (!skipping && !self.line.is_empty() && !(self.skip)(&self.line))
                         .then_some(self.line.as_slice());
                 }
@@ -183,11 +206,15 @@ impl<R: BufRead> BufferedLines<R> {
                         }
                     }
                     if !skipping {
-                        self.line.extend_from_slice(&buf[copied..end]);
+                        append_line(&mut self.line, &mut chunks, &buf[copied..end]);
                     }
                 }
-                self.reader.consume(end + usize::from(complete));
+                let consumed = end + usize::from(complete);
+                self.reader.consume(consumed);
+                self.position += consumed as u64;
+                if complete { self.last_complete = self.position; }
                 if complete {
+                    finish_line(&mut self.line, chunks);
                     if skipping || self.line.is_empty() {
                         continue 'line;
                     }
@@ -196,6 +223,24 @@ impl<R: BufRead> BufferedLines<R> {
             }
         }
     }
+}
+
+/// 巨大な行の再確保では古い領域と新しい領域が同時に残る。
+/// 容量を超えて2 MiBより大きくなる行だけ分割し、長さが分かってから一度確保する。
+fn append_line(line: &mut Vec<u8>, chunks: &mut Vec<Vec<u8>>, bytes: &[u8]) {
+    if chunks.is_empty() && (line.len() + bytes.len() <= line.capacity() || line.len() + bytes.len() <= 2 * 1024 * 1024) {
+        line.extend_from_slice(bytes);
+    } else {
+        if chunks.is_empty() { chunks.push(std::mem::take(line)); }
+        chunks.push(bytes.to_vec());
+    }
+}
+
+fn finish_line(line: &mut Vec<u8>, chunks: Vec<Vec<u8>>) {
+    if chunks.is_empty() { return; }
+    let len = chunks.iter().map(Vec::len).sum();
+    line.reserve_exact(len);
+    for chunk in chunks { line.extend_from_slice(&chunk); }
 }
 
 enum LogLines {
@@ -211,7 +256,7 @@ impl LogLines {
             Self::Buffered(BufferedLines {
                 reader: BufReader::with_capacity(256 * 1024, file),
                 line: Vec::new(),
-                skip,
+                skip, position: 0, last_complete: 0,
             })
         } else {
             Self::Memory {
@@ -366,21 +411,23 @@ fn scalar(v: &Value) -> String {
 }
 
 /// 結果が JSON なら整形する
-fn pretty_output(s: &str) -> String {
+fn pretty_output(s: &str) -> Cow<'_, str> {
     let t = s.trim();
     if (t.starts_with('{') || t.starts_with('['))
         && let Ok(v) = serde_json::from_str::<Value>(t)
     {
-        return bounded_yaml(&v, MAX_TEXT);
+        return Cow::Owned(bounded_yaml(&v, MAX_TEXT));
     }
     // Codex の "[exit 0 · 0.1s]" 見出しの後ろが JSON の場合
     if let Some((head, body)) = s.split_once('\n').filter(|(h, _)| h.starts_with('[') && h.ends_with(']')) {
         let b = pretty_output(body);
-        if b != body {
-            return format!("{head}\n{b}");
+        if let Cow::Owned(b) = b
+            && b != body
+        {
+            return Cow::Owned(format!("{head}\n{b}"));
         }
     }
-    s.to_string()
+    Cow::Borrowed(s)
 }
 
 /// ツール入力から一行の要約を作る
@@ -424,13 +471,18 @@ fn summarize_input(name: &str, input: &Value) -> String {
     String::new()
 }
 
-fn text_of(content: &Value) -> String {
+fn text_of(content: &Value) -> Cow<'_, str> {
     match content {
-        Value::String(s) => s.clone(),
+        Value::String(s) => Cow::Borrowed(s),
         Value::Array(items) => {
-            items.iter().filter_map(|i| i.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join("\n")
+            let mut parts = items.iter().filter_map(|i| i.get("text").and_then(|t| t.as_str()));
+            let Some(first) = parts.next() else { return Cow::Borrowed("") };
+            match parts.next() {
+                None => Cow::Borrowed(first),
+                Some(second) => Cow::Owned([first, second].into_iter().chain(parts).collect::<Vec<_>>().join("\n")),
+            }
         }
-        _ => String::new(),
+        _ => Cow::Borrowed(""),
     }
 }
 
@@ -444,7 +496,7 @@ fn message_event(t: f64, kind: Kind, name: Arc<str>, text: &str) -> Event {
         end: t,
         kind,
         name,
-        summary: one_line(text, 160),
+        summary: one_line(text, 160).into(),
         input: truncate(text, MAX_TEXT),
         output: String::new(),
         call_id: None,
@@ -459,7 +511,7 @@ fn message_event(t: f64, kind: Kind, name: Arc<str>, text: &str) -> Event {
 fn tool_event(
     t: f64,
     name: Arc<str>,
-    call_id: Option<String>,
+    call_id: Option<&str>,
     summary: String,
     input: String,
 ) -> Event {
@@ -468,10 +520,10 @@ fn tool_event(
         end: t,
         kind: if is_agent_tool(&name) { Kind::Agent } else { Kind::Tool },
         name,
-        summary,
+        summary: summary.into(),
         input,
         output: String::new(),
-        call_id,
+        call_id: call_id.map(Arc::from),
         text_ref: Default::default(),
         usage: Usage::default(),
         model: None,
@@ -480,16 +532,33 @@ fn tool_event(
 }
 
 /// tool_result を対応する呼び出しに反映する
-struct Pending(HashMap<String, usize>);
+#[derive(Clone)]
+struct Pending(HashMap<String, usize>, Option<TextChanges>);
+
+/// ライブ解析だけで、未圧縮の新規イベントと更新された古い本文を追跡する。
+#[derive(Clone, Default)]
+struct TextChanges {
+    first: usize,
+    edited: Vec<usize>,
+}
 
 impl Pending {
     /// 結果を反映し、呼び出しのイベントの位置を返す
-    fn finish(&mut self, events: &mut [Event], id: &str, t: f64, output: String, status: Status) -> Option<usize> {
+    fn finish(&mut self, events: &mut [Event], id: &str, t: f64, output: &str, status: Status) -> Option<usize> {
         let i = self.0.remove(id)?;
         let e = &mut events[i];
+        if let crate::model::EventText::Pending(input, _) = e.text() {
+            e.input = input;
+            e.text_ref = Default::default();
+        }
         e.end = t.max(e.start);
-        e.output = truncate(&pretty_output(&output), MAX_TEXT);
+        e.output = truncate(&pretty_output(output), MAX_TEXT);
         e.status = status;
+        if let Some(changes) = &mut self.1
+            && i < changes.first
+        {
+            changes.edited.push(i);
+        }
         Some(i)
     }
 }
@@ -697,7 +766,7 @@ fn claude_status(item: &Value, result: Option<&Value>, out: &str) -> Status {
 // ---------------------------------------------------------------- Claude
 
 /// モデル名やイベント名の共有（イベントごとに文字列を複製しない）
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Interner(HashMap<String, Arc<str>>);
 
 impl Interner {
@@ -772,49 +841,58 @@ struct ClaudeParse {
     version: String,
 }
 
-fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
-    let mut lane = Lane::new(lane_name);
-    let mut pending = Pending(HashMap::new());
-    let mut names = Interner::default();
-    let mut cwd = String::new();
-    let mut title = String::new();
-    let mut session_id = String::new();
-    let mut headless = false;
-    let mut branch = String::new();
-    let mut version = String::new();
-    // message.id → (使用量を付けるイベント, 使用量)。同じメッセージが内容ブロックごとに複数行に分かれ、
-    // 各行に同じ usage が載るので、メッセージごとに最後の行の値を 1 回だけ数える
-    let mut usages: Vec<(usize, Usage, Option<Arc<str>>)> = Vec::new();
-    let mut models = Interner::default();
-    let mut usage_ix: HashMap<String, usize> = HashMap::new();
+#[derive(Clone)]
+struct ClaudeParser {
+    lane: Lane,
+    pending: Pending,
+    names: Interner,
+    cwd: String,
+    title: String,
+    session_id: String,
+    headless: bool,
+    branch: String,
+    version: String,
+    usages: Vec<(usize, Usage, Option<Arc<str>>)>,
+    models: Interner,
+    usage_ix: HashMap<String, usize>,
+}
 
-    let mut lines = LogLines::open(p, |_| false);
-    while let Some(line) = lines.next_line() {
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
+impl ClaudeParser {
+    fn new(name: &str) -> Self {
+        Self {
+            lane: Lane::new(name), pending: Pending(HashMap::new(), None), names: Interner::default(),
+            cwd: String::new(), title: String::new(), session_id: String::new(), headless: false,
+            branch: String::new(), version: String::new(), usages: Vec::new(),
+            models: Interner::default(), usage_ix: HashMap::new(),
+        }
+    }
+
+    fn push(&mut self, line: &[u8]) {
+        let Ok(v) = json_row(line) else {
+            return;
         };
-        if cwd.is_empty()
+        if self.cwd.is_empty()
             && let Some(c) = v.get("cwd").and_then(|c| c.as_str())
         {
-            cwd = c.into();
+            self.cwd = c.into();
         }
         if let Some(e) = v.get("entrypoint").and_then(|e| e.as_str()) {
-            headless |= e.starts_with("sdk");
+            self.headless |= e.starts_with("sdk");
         }
-        if session_id.is_empty()
+        if self.session_id.is_empty()
             && let Some(c) = v.get("sessionId").and_then(|c| c.as_str())
         {
-            session_id = c.into();
+            self.session_id = c.into();
         }
         if let Some(b) = v.get("gitBranch").and_then(|b| b.as_str()).filter(|b| !b.is_empty() && *b != "HEAD")
-            && branch != b
+            && self.branch != b
         {
-            branch = b.into();
+            self.branch = b.into();
         }
         if let Some(x) = v.get("version").and_then(|x| x.as_str())
-            && version != x
+            && self.version != x
         {
-            version = x.into();
+            self.version = x.into();
         }
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
         if (ty == "ai-title" || ty == "summary")
@@ -823,28 +901,28 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                 .or(v.get("summary"))
                 .and_then(|s| s.as_str())
         {
-            title = s.into();
+            self.title = s.into();
         }
         if ty == "assistant" {
-            if lane.model.is_empty()
+            if self.lane.model.is_empty()
                 && let Some(m) = v.pointer("/message/model").and_then(|m| m.as_str()).filter(|m| !m.starts_with('<'))
             {
-                lane.model = m.to_string();
+                self.lane.model = m.to_string();
             }
-            if lane.effort.is_empty()
+            if self.lane.effort.is_empty()
                 && let Some(e) = v.get("effort").and_then(|e| e.as_str())
             {
-                lane.effort = e.to_string();
+                self.lane.effort = e.to_string();
             }
         }
-        let Some(t) = ts(&v) else { continue };
+        let Some(t) = ts(&v) else { return };
         let Some(content) = v.pointer("/message/content") else {
-            continue;
+            return;
         };
         match ty {
             "user" => {
                 if v.get("isMeta").and_then(|m| m.as_bool()) == Some(true) {
-                    continue;
+                    return;
                 }
                 if let Value::Array(items) = content {
                     let results: Vec<&Value> = items
@@ -855,56 +933,54 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                     let detail = v.get("toolUseResult").filter(|_| results.len() == 1);
                     for it in results {
                         let id = it.get("tool_use_id").and_then(|x| x.as_str()).unwrap_or("");
-                        let out = text_of(it.get("content").unwrap_or(&Value::Null));
-                        let status = claude_status(it, detail, &out);
-                        let out = match out.strip_prefix("<tool_use_error>") {
-                            Some(e) => e.strip_suffix("</tool_use_error>").unwrap_or(e).to_string(),
-                            None => out,
-                        };
-                        let Some(i) = pending.finish(&mut lane.events, id, t, out, status) else { continue };
+                        let raw = text_of(it.get("content").unwrap_or(&Value::Null));
+                        let status = claude_status(it, detail, &raw);
+                        let out = raw.strip_prefix("<tool_use_error>")
+                            .map(|e| e.strip_suffix("</tool_use_error>").unwrap_or(e)).unwrap_or(&raw);
+                        let Some(i) = self.pending.finish(&mut self.lane.events, id, t, out, status) else { continue };
                         if let Some(d) = detail.and_then(claude_patch) {
-                            lane.events[i].input = d;
+                            self.lane.events[i].input = d;
                         }
                     }
                 }
                 let text = text_of(content);
                 let text = text.trim();
                 if !text.is_empty() && !text.starts_with('<') {
-                    if title.is_empty() {
-                        title = one_line(text, 80);
+                    if self.title.is_empty() {
+                        self.title = one_line(text, 80);
                     }
-                    lane.events.push(message_event(t, Kind::User, names.get("User"), text));
+                    self.lane.events.push(message_event(t, Kind::User, self.names.get("User"), text));
                 }
             }
             "assistant" => {
                 let Value::Array(items) = content else {
-                    continue;
+                    return;
                 };
-                let first = lane.events.len();
+                let first = self.lane.events.len();
                 for it in items {
                     match it.get("type").and_then(|x| x.as_str()) {
                         Some("text") => {
                             let text = it.get("text").and_then(|x| x.as_str()).unwrap_or("");
                             if !text.trim().is_empty() {
-                                lane.events.push(message_event(t, Kind::Assistant, names.get("Assistant"), text));
+                                self.lane.events.push(message_event(t, Kind::Assistant, self.names.get("Assistant"), text));
                             }
                         }
                         Some("thinking") => {
                             let text = it.get("thinking").and_then(|x| x.as_str()).unwrap_or("");
                             if !text.trim().is_empty() {
-                                lane.events.push(message_event(t, Kind::Thinking, names.get("Thinking"), text));
+                                self.lane.events.push(message_event(t, Kind::Thinking, self.names.get("Thinking"), text));
                             }
                         }
                         Some("tool_use") => {
                             let name = it.get("name").and_then(|x| x.as_str()).unwrap_or("?");
-                            let id = it.get("id").and_then(|x| x.as_str()).map(String::from);
+                            let id = it.get("id").and_then(|x| x.as_str());
                             let input = it.get("input").unwrap_or(&Value::Null);
-                            if let Some(id) = &id {
-                                pending.0.insert(id.clone(), lane.events.len());
+                            if let Some(id) = id {
+                                self.pending.0.insert(id.to_owned(), self.lane.events.len());
                             }
-                            lane.events.push(tool_event(
+                            self.lane.events.push(tool_event(
                                 t,
-                                names.get(name),
+                                self.names.get(name),
                                 id,
                                 summarize_input(name, input),
                                 claude_input(name, input),
@@ -918,17 +994,17 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
                 {
                     let id = v.pointer("/message/id").and_then(|x| x.as_str()).unwrap_or_default();
                     // そのメッセージの最初のイベント。イベントを生まない行なら直前のイベント
-                    let at = first.min(lane.events.len().saturating_sub(1));
+                    let at = first.min(self.lane.events.len().saturating_sub(1));
                     let model = v
                         .pointer("/message/model")
                         .and_then(|m| m.as_str())
                         .filter(|m| !m.starts_with('<'))
-                        .map(|m| models.get(m));
-                    match usage_ix.get(id) {
-                        Some(&k) if !id.is_empty() => (usages[k].1, usages[k].2) = (u, model),
+                        .map(|m| self.models.get(m));
+                    match self.usage_ix.get(id) {
+                        Some(&k) if !id.is_empty() => (self.usages[k].1, self.usages[k].2) = (u, model),
                         _ => {
-                            usage_ix.insert(id.to_string(), usages.len());
-                            usages.push((at, u, model));
+                            self.usage_ix.insert(id.to_string(), self.usages.len());
+                            self.usages.push((at, u, model));
                         }
                     }
                 }
@@ -936,14 +1012,27 @@ fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
             _ => {}
         }
     }
-    for (i, u, m) in usages {
-        if let Some(e) = lane.events.get_mut(i) {
-            e.usage = add_usage(e.usage, u);
-            e.model = m.or(e.model.take());
+
+    fn finish(mut self) -> ClaudeParse {
+        // 同じ message.id の使用量は最後の値を一度だけ計上する。
+        // 生のイベント列には加算せず、公開する版にだけ反映する。
+        for (i, u, m) in self.usages {
+            if let Some(e) = self.lane.events.get_mut(i) {
+                e.usage = add_usage(e.usage, u);
+                e.model = m.or(e.model.take());
+            }
         }
+        self.lane.finish();
+        ClaudeParse { lane: self.lane, cwd: self.cwd, title: self.title,
+            session_id: self.session_id, headless: self.headless, branch: self.branch, version: self.version }
     }
-    lane.finish();
-    ClaudeParse { lane, cwd, title, session_id, headless, branch, version }
+}
+
+fn parse_claude_file(p: &Path, lane_name: &str) -> ClaudeParse {
+    let mut parser = ClaudeParser::new(lane_name);
+    let mut lines = LogLines::open(p, |_| false);
+    while let Some(line) = lines.next_line() { parser.push(line); }
+    parser.finish()
 }
 
 fn load_claude(p: &Path) -> Vec<Loaded> {
@@ -1021,125 +1110,142 @@ fn skip_codex_line(line: &[u8]) -> bool {
 }
 
 /// ツール出力の本文。新しい形式では `[{type: input_text, text}, ...]` に分かれている
-fn codex_output_text(o: Option<&Value>) -> String {
+fn codex_output_text(o: Option<&Value>) -> Cow<'_, str> {
     match o {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(items)) => items.iter().filter_map(|i| i.get("text").and_then(|t| t.as_str())).collect(),
-        Some(o) => o.get("content").map(text_of).unwrap_or_else(|| o.to_string()),
-        None => String::new(),
+        Some(Value::String(s)) => Cow::Borrowed(s),
+        Some(Value::Array(items)) => {
+            let mut parts = items.iter().filter_map(|i| i.get("text").and_then(|t| t.as_str()));
+            let Some(first) = parts.next() else { return Cow::Borrowed("") };
+            match parts.next() {
+                None => Cow::Borrowed(first),
+                Some(second) => Cow::Owned([first, second].into_iter().chain(parts).collect()),
+            }
+        }
+        Some(o) => o.get("content").map(text_of).unwrap_or_else(|| Cow::Owned(o.to_string())),
+        None => Cow::Borrowed(""),
     }
 }
 
-fn load_codex(p: &Path) -> Option<Loaded> {
-    let mut lane = Lane::new("main");
-    let mut pending = Pending(HashMap::new());
-    let mut names = Interner::default();
-    let mut id = String::new();
-    let mut cwd = String::new();
-    let mut title = String::new();
-    let mut parent: Option<String> = None;
-    let mut headless = false;
-    let mut branch = String::new();
-    let mut version = String::new();
-    let mut goal = String::new();
-    // token_count は累計なので、前回との差をその時点の最後のイベントに付ける
-    let mut total = Usage::default();
-    let mut unassigned = Usage::default();
-    // 直近の turn_context のモデル（ターンごとに変わりうる）
-    let mut model: Option<Arc<str>> = None;
-    let token_count = memchr::memmem::Finder::new("\"type\":\"token_count\"");
+#[derive(Clone)]
+struct CodexParser {
+    lane: Lane,
+    pending: Pending,
+    names: Interner,
+    id: String,
+    cwd: String,
+    title: String,
+    parent: Option<String>,
+    headless: bool,
+    branch: String,
+    version: String,
+    goal: String,
+    total: Usage,
+    unassigned: Usage,
+    model: Option<Arc<str>>,
+    hidden: bool,
+}
 
-    let mut lines = LogLines::open(p, skip_codex_line);
-    while let Some(line) = lines.next_line() {
+impl CodexParser {
+    fn new() -> Self {
+        Self {
+            lane: Lane::new("main"), pending: Pending(HashMap::new(), None), names: Interner::default(),
+            id: String::new(), cwd: String::new(), title: String::new(), parent: None, headless: false,
+            branch: String::new(), version: String::new(), goal: String::new(), total: Usage::default(),
+            unassigned: Usage::default(), model: None, hidden: false,
+        }
+    }
+
+    fn push(&mut self, line: &[u8]) {
+        if self.hidden { return; }
         // 巨大で不要な行は JSON パース前に捨てる
         let head = &line[..line.len().min(160)];
-        let tc = token_count.find(head).is_some();
+        let tc = memchr::memmem::find(head, b"\"type\":\"token_count\"").is_some();
         if skip_codex_line(line) {
-            continue;
+            return;
         }
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
+        let Ok(v) = codex_row::parse(line) else {
+            return;
         };
         let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        let Some(pl) = v.get("payload") else { continue };
+        let Some(pl) = v.get("payload") else { return };
 
         if tc {
             if let Some(info) = pl.get("info").filter(|i| !i.is_null()) {
                 let now = info.get("total_token_usage").map(codex_usage).unwrap_or_default();
                 // 累計が減ったら（圧縮などで数え直し）直近の分だけを使う
-                let d = if now.total() >= total.total() {
-                    sub_usage(now, total)
+                let d = if now.total() >= self.total.total() {
+                    sub_usage(now, self.total)
                 } else {
                     info.get("last_token_usage").map(codex_usage).unwrap_or_default()
                 };
-                total = now;
-                unassigned = add_usage(unassigned, d);
-                if let Some(e) = lane.events.last_mut() {
-                    e.usage = add_usage(e.usage, std::mem::take(&mut unassigned));
-                    e.model = model.clone();
+                self.total = now;
+                self.unassigned = add_usage(self.unassigned, d);
+                if let Some(e) = self.lane.events.last_mut() {
+                    e.usage = add_usage(e.usage, std::mem::take(&mut self.unassigned));
+                    e.model = self.model.clone();
                 }
             }
-            continue;
+            return;
         }
         if ty == "turn_context" {
             let str_at = |k: &str| pl.pointer(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
             let m = str_at("/model");
-            if !m.is_empty() && model.as_deref() != Some(m.as_str()) {
-                model = Some(Arc::from(m.as_str()));
+            if !m.is_empty() && self.model.as_deref() != Some(m.as_str()) {
+                self.model = Some(Arc::from(m.as_str()));
             }
-            if !lane.model.is_empty() {
-                continue;
+            if !self.lane.model.is_empty() {
+                return;
             }
-            lane.model = m;
-            lane.effort = str_at("/effort");
-            if lane.effort.is_empty() {
-                lane.effort = str_at("/collaboration_mode/settings/reasoning_effort");
+            self.lane.model = m;
+            self.lane.effort = str_at("/effort");
+            if self.lane.effort.is_empty() {
+                self.lane.effort = str_at("/collaboration_mode/settings/reasoning_effort");
             }
-            continue;
+            return;
         }
         if ty == "event_msg" {
             match pl.get("type").and_then(|x| x.as_str()).unwrap_or("") {
                 "thread_goal_updated" => {
                     // ゴール（/goal）で始めたセッションは、ゴールをユーザーの発話として扱う
                     let obj = pl.pointer("/goal/objective").and_then(|x| x.as_str()).unwrap_or("").trim();
-                    if let Some(t) = ts(&v).filter(|_| !obj.is_empty() && obj != goal) {
-                        goal = obj.to_string();
-                        if title.is_empty() {
-                            title = one_line(obj, 80);
+                    if let Some(t) = ts(&v).filter(|_| !obj.is_empty() && obj != self.goal) {
+                        self.goal = obj.to_string();
+                        if self.title.is_empty() {
+                            self.title = one_line(obj, 80);
                         }
-                        lane.events.push(message_event(t, Kind::User, names.get("User"), obj));
+                        self.lane.events.push(message_event(t, Kind::User, self.names.get("User"), obj));
                     }
                 }
                 "turn_aborted" => {
-                    for &i in pending.0.values() {
-                        lane.events[i].status = Status::Interrupted;
+                    for &i in self.pending.0.values() {
+                        self.lane.events[i].status = Status::Interrupted;
                     }
                 }
                 _ => {}
             }
-            continue;
+            return;
         }
         if ty == "session_meta" {
-            id = pl.get("id").and_then(|x| x.as_str()).unwrap_or_default().into();
-            cwd = pl.get("cwd").and_then(|x| x.as_str()).unwrap_or_default().into();
-            headless = pl.get("source").and_then(|x| x.as_str()) == Some("exec");
-            version = pl.get("cli_version").and_then(|x| x.as_str()).unwrap_or_default().into();
-            branch = pl.pointer("/git/branch").and_then(|x| x.as_str()).unwrap_or_default().into();
+            self.id = pl.get("id").and_then(|x| x.as_str()).unwrap_or_default().into();
+            self.cwd = pl.get("cwd").and_then(|x| x.as_str()).unwrap_or_default().into();
+            self.headless = pl.get("source").and_then(|x| x.as_str()) == Some("exec");
+            self.version = pl.get("cli_version").and_then(|x| x.as_str()).unwrap_or_default().into();
+            self.branch = pl.pointer("/git/branch").and_then(|x| x.as_str()).unwrap_or_default().into();
             if let Some(sub) = pl.pointer("/source/subagent") {
                 let Some(spawn) = sub.get("thread_spawn") else {
-                    return None; // guardian などの内部サブエージェントは表示しない
+                    self.hidden = true; return; // guardian などの内部サブエージェントは表示しない
                 };
-                parent = spawn.get("parent_thread_id").and_then(|x| x.as_str()).map(String::from);
+                self.parent = spawn.get("parent_thread_id").and_then(|x| x.as_str()).map(String::from);
                 let nick = spawn.get("agent_nickname").and_then(|x| x.as_str()).unwrap_or("agent");
                 let path = spawn.get("agent_path").and_then(|x| x.as_str()).unwrap_or("");
-                lane.name = format!("{nick}: {}", path.rsplit('/').next().unwrap_or(path));
+                self.lane.name = format!("{nick}: {}", path.rsplit('/').next().unwrap_or(path));
             }
-            continue;
+            return;
         }
         if ty != "response_item" {
-            continue;
+            return;
         }
-        let Some(t) = ts(&v) else { continue };
+        let Some(t) = ts(&v) else { return };
         let pty = pl.get("type").and_then(|x| x.as_str()).unwrap_or("");
         match pty {
             "message" => {
@@ -1147,16 +1253,16 @@ fn load_codex(p: &Path) -> Option<Loaded> {
                 let text = text_of(pl.get("content").unwrap_or(&Value::Null));
                 let text = text.trim();
                 if text.is_empty() || text.starts_with('<') || text.starts_with("# AGENTS.md") {
-                    continue;
+                    return;
                 }
                 match role {
                     "user" => {
-                        if title.is_empty() {
-                            title = one_line(text, 80);
+                        if self.title.is_empty() {
+                            self.title = one_line(text, 80);
                         }
-                        lane.events.push(message_event(t, Kind::User, names.get("User"), text));
+                        self.lane.events.push(message_event(t, Kind::User, self.names.get("User"), text));
                     }
-                    "assistant" => lane.events.push(message_event(t, Kind::Assistant, names.get("Assistant"), text)),
+                    "assistant" => self.lane.events.push(message_event(t, Kind::Assistant, self.names.get("Assistant"), text)),
                     _ => {}
                 }
             }
@@ -1173,49 +1279,73 @@ fn load_codex(p: &Path) -> Option<Loaded> {
                     .and_then(|s| serde_json::from_str::<Value>(s).ok())
                     .filter(Value::is_object);
                 let input = decoded.as_ref().unwrap_or(raw);
-                let call_id = pl.get("call_id").and_then(|x| x.as_str()).map(String::from);
-                if let Some(c) = &call_id {
-                    pending.0.insert(c.clone(), lane.events.len());
+                let call_id = pl.get("call_id").and_then(|x| x.as_str());
+                if let Some(c) = call_id {
+                    self.pending.0.insert(c.to_owned(), self.lane.events.len());
                 }
                 let (display_name, summary, formatted) = codex_tool(name, input);
-                let mut ev = tool_event(t, names.get(&display_name), call_id, summary, formatted);
+                let mut ev = tool_event(t, self.names.get(&display_name), call_id, summary, formatted);
                 // exec の中の名前が Agent でも、元の呼び出しが exec ならツールのままにする。
                 ev.kind = if is_agent_tool(name) { Kind::Agent } else { Kind::Tool };
-                lane.events.push(ev);
+                self.lane.events.push(ev);
             }
             "function_call_output" | "custom_tool_call_output" => {
                 let c = pl.get("call_id").and_then(|x| x.as_str()).unwrap_or("");
-                let (out, status) = codex_output(&codex_output_text(pl.get("output")));
-                pending.finish(&mut lane.events, c, t, out, status);
+                let (out, status) = {
+                    let raw = codex_output_text(pl.get("output"));
+                    let (out, status) = codex_output(&raw);
+                    // 整形結果が独立していれば、次のJSON整形より前に巨大な結合本文を解放する。
+                    let out = match out {
+                        Cow::Owned(text) => Cow::Owned(text),
+                        Cow::Borrowed(_) => raw,
+                    };
+                    (out, status)
+                };
+                self.pending.finish(&mut self.lane.events, c, t, &out, status);
             }
             _ => {}
         }
     }
-    lane.finish();
-    if lane.events.is_empty() {
+
+    fn finish(mut self) -> Option<Loaded> {
+        if self.hidden { return None; }
+    self.lane.finish();
+    if self.lane.events.is_empty() {
         return None;
     }
-    if !unassigned.is_empty() {
-        lane.events[0].usage = add_usage(lane.events[0].usage, unassigned);
-        lane.events[0].model = model;
+    if !self.unassigned.is_empty() {
+        self.lane.events[0].usage = add_usage(self.lane.events[0].usage, self.unassigned);
+        self.lane.events[0].model = self.model;
     }
-    if let Some(parent) = parent {
-        return Some(Loaded::Child(parent, lane));
+    if let Some(parent) = self.parent {
+        return Some(Loaded::Child(parent, self.lane));
     }
     Some(Loaded::Session(Session {
-        id,
+        id: self.id,
         source: Source::Codex,
-        cwd,
-        headless,
-        title,
-        branch,
-        version,
-        lanes: vec![lane],
+        cwd: self.cwd,
+        headless: self.headless,
+        title: self.title,
+        branch: self.branch,
+        version: self.version,
+        lanes: vec![self.lane],
         start: 0.0,
         end: 0.0,
         parents: Vec::new(),
         tree: Vec::new(),
     }))
+
+    }
+}
+
+fn load_codex(p: &Path) -> Option<Loaded> {
+    let mut parser = CodexParser::new();
+    let mut lines = LogLines::open(p, skip_codex_line);
+    while let Some(line) = lines.next_line() {
+        parser.push(line);
+        if parser.hidden { break; }
+    }
+    parser.finish()
 }
 
 /// exec の入力として保存する JS の目印。詳細表示時に `exec_detail` で整形する
@@ -1705,7 +1835,7 @@ fn codex_failure(s: &str) -> Option<Status> {
 
 /// Codex のツール出力から定型ヘッダ (Wall time など) を取り除き、終了コードと所要時間を 1 行にまとめる。
 /// あわせて、終了コードや定型文から呼び出しの成否を判定する
-fn codex_output(s: &str) -> (String, Status) {
+fn codex_output(s: &str) -> (Cow<'_, str>, Status) {
     let mut status = codex_failure(s).unwrap_or(Status::Ok);
     let fail = |status: &mut Status| {
         if *status == Status::Ok {
@@ -1728,10 +1858,10 @@ fn codex_output(s: &str) -> (String, Status) {
             meta.push(format!("{d:.1}s"));
         }
         let text = if meta.is_empty() { out.to_string() } else { format!("[{}]\n{out}", meta.join(" · ")) };
-        return (text, status);
+        return (Cow::Owned(text), status);
     }
     let Some(i) = s.find("Output:\n").filter(|&i| i < 400) else {
-        return (s.to_string(), status);
+        return (Cow::Borrowed(s), status);
     };
     let (mut exit, mut wall) = (None, None);
     for l in s[..i].lines() {
@@ -1746,7 +1876,7 @@ fn codex_output(s: &str) -> (String, Status) {
             || l.starts_with("Script ")
             || l.starts_with("Process running"))
         {
-            return (s.to_string(), status);
+            return (Cow::Borrowed(s), status);
         }
     }
     if exit.as_deref().is_some_and(|c| c.trim() != "0") {
@@ -1768,12 +1898,44 @@ fn codex_output(s: &str) -> (String, Status) {
     let body = &lines.join("\n");
     let meta: Vec<String> = exit.map(|c| format!("exit {c}")).into_iter().chain(wall).collect();
     let text = if meta.is_empty() { body.to_string() } else { format!("[{}]\n{body}", meta.join(" · ")) };
-    (text, status)
+    (Cow::Owned(text), status)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_rows_keep_values_key_order_and_errors_at_utf8_boundaries() {
+        fn same(input: &[u8]) {
+            match (serde_json::from_slice::<Value>(input), json_row(input)) {
+                (Ok(old), Ok(new)) => {
+                    assert_eq!(old, new);
+                    assert_eq!(serde_json::to_vec(&old).unwrap(), serde_json::to_vec(&new).unwrap());
+                }
+                (Err(old), Err(new)) => {
+                    assert_eq!(old.classify(), new.classify());
+                    assert_eq!((old.line(), old.column()), (new.line(), new.column()));
+                    assert_eq!(old.to_string(), new.to_string());
+                }
+                _ => panic!("JSON row result differs"),
+            }
+        }
+        for prefix in [0, 1, 59, 60, 61, 62, 63, 64, 65, 66, 123, 124, 125, 126, 127, 128, 129, 130] {
+            let row = format!(r#"{{"prefix":"{}","text":"日本語😀é\n\uD83D\uDE00","duplicate":1,"duplicate":2,"number":-0.0}}"#, " ".repeat(prefix));
+            for end in 0..=row.len() { same(&row.as_bytes()[..end]); }
+            let at = row.find("日本語").unwrap();
+            for invalid in [&b"\xff"[..], &b"\xc0\xaf"[..], &b"\xed\xa0\x80"[..], &b"\xf4\x90\x80\x80"[..]] {
+                let mut bytes = row.as_bytes().to_vec();
+                bytes.splice(at..at + 3, invalid.iter().copied());
+                same(&bytes);
+            }
+        }
+        for row in [r#""\uD800""#, r#"{"\uDC00":0}"#, "1e400", "[true,]", "{} trailing", "\"control\x01\""] {
+            same(row.as_bytes());
+        }
+        same(format!("{}0{}", "[".repeat(130), "]".repeat(130)).as_bytes());
+    }
 
     struct DiscoveryFixture(PathBuf);
 
@@ -1928,6 +2090,7 @@ mod tests {
                 reader: BufReader::with_capacity(cap, input.as_slice()),
                 line: Vec::new(),
                 skip: skip_codex_line,
+                position: 0, last_complete: 0,
             };
             let mut actual = Vec::new();
             while let Some(line) = reader.next_line() {
@@ -1942,6 +2105,24 @@ mod tests {
     }
 
     #[test]
+    fn buffered_lines_keep_large_rows_without_extra_capacity() {
+        let first = "日本語".repeat(300_000);
+        let last = "最後の行".repeat(400_000);
+        let input = format!("{first}\n\n{{\"type\":\"world_state\",\"ignored\":\"{}\"}}\n{last}", "x".repeat(3 * 1024 * 1024));
+        for cap in [64 * 1024, 256 * 1024, 4 * 1024 * 1024] {
+            let mut reader = BufferedLines {
+                reader: BufReader::with_capacity(cap, input.as_bytes()),
+                line: Vec::new(), skip: skip_codex_line,
+                position: 0, last_complete: 0,
+            };
+            assert_eq!(reader.next_line(), Some(first.as_bytes()));
+            assert_eq!(reader.next_line(), Some(last.as_bytes()));
+            assert_eq!(reader.next_line(), None);
+            assert_eq!(reader.line.capacity(), last.len());
+        }
+    }
+
+    #[test]
     fn buffered_lines_keep_long_required_rows_and_final_skipped_row() {
         let input = format!(
             "{}\n\n{}",
@@ -1952,6 +2133,7 @@ mod tests {
             reader: BufReader::with_capacity(17, input.as_bytes()),
             line: Vec::new(),
             skip: skip_codex_line,
+                position: 0, last_complete: 0,
         };
         assert_eq!(reader.next_line(), Some("日本語".repeat(1000).as_bytes()));
         assert_eq!(reader.next_line(), None);
@@ -2061,8 +2243,8 @@ mod tests {
             "a: 1\nb:\n  x\n  y\nc: [1, 2]\nd:\n  e: null\nf:\n  - g: true\n    h: i"
         );
         assert_eq!(pretty_output("[exit 0]\n{\"ok\":true}"), "[exit 0]\nok: true");
-        let ok = |s: &str| (s.to_string(), Status::Ok);
-        let err = |s: &str| (s.to_string(), Status::Error);
+        let ok = |s: &str| (Cow::<str>::Owned(s.to_string()), Status::Ok);
+        let err = |s: &str| (Cow::<str>::Owned(s.to_string()), Status::Error);
         assert_eq!(codex_output("Script completed\nWall time 0.2 seconds\nOutput:\nhello"), ok("[0.2s]\nhello"));
         assert_eq!(
             codex_output("Chunk ID: x\nWall time: 0.1 seconds\nProcess exited with code 1\nOriginal token count: 3\nOutput:\nerr"),
@@ -2147,7 +2329,7 @@ mod tests {
         assert_eq!((n.as_str(), s.as_str()), ("apply_patch", "Update b.rs"));
         assert_eq!(
             codex_output("Script completed\nWall time 0.2 seconds\nOutput:\n{\"i\":0,\"status\":\"fulfilled\",\"value\":{\"exit_code\":0,\"wall_time_seconds\":0.01,\"output\":\"hi\\n\"}}"),
-            ("[0.2s]\n── #0 [exit 0 · 0.0s]\nhi".to_string(), Status::Ok)
+            (Cow::Borrowed("[0.2s]\n── #0 [exit 0 · 0.0s]\nhi"), Status::Ok)
         );
     }
 }

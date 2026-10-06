@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{Event, Kind, Lane};
 
+pub mod directory;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Granularity {
@@ -54,22 +56,88 @@ pub struct Block {
 #[derive(Default)]
 pub struct Cache {
     lanes: HashMap<(usize, usize), CachedLane>,
+    full_history: bool,
+    exact_scales: bool,
 }
 
 #[derive(Default)]
 struct CachedLane {
     grouping: Option<Grouping>,
+    /// サブエージェント呼び出しを除いた、元のイベント列の連続範囲
+    main_ranges: Option<Vec<std::ops::Range<usize>>>,
+    main_grouping: Option<Grouping>,
     names: Option<NameIndex>,
 }
 
 struct Grouping {
     spp: f64,
     gran: Granularity,
+    view: (f64, f64),
     blocks: Vec<Block>,
     /// ブロックの終了時刻の累積最大（二分探索用）
     ends: Vec<f64>,
     /// 各イベントまでの、所属ブロック内での終了時刻の最大
     prefix_end: Vec<f64>,
+    prefix_start: usize,
+}
+
+impl Grouping {
+    fn new(lane: &Lane, blocks: Vec<Block>, spp: f64, gran: Granularity, view: (f64, f64)) -> Self {
+        let mut ends = Vec::with_capacity(blocks.len());
+        let prefix_start = blocks.first().map_or(0, |b| b.first);
+        let count = blocks.last().map_or(0, |b| b.last + 1 - prefix_start);
+        let mut prefix_end = vec![0.0; count];
+        let mut end = f64::NEG_INFINITY;
+        for b in &blocks {
+            end = end.max(b.end);
+            ends.push(end);
+            let mut max = f64::NEG_INFINITY;
+            for (e, value) in lane.events[b.first..=b.last]
+                .iter()
+                .zip(&mut prefix_end[b.first - prefix_start..=b.last - prefix_start])
+            {
+                max = max.max(e.end);
+                *value = max;
+            }
+        }
+        Self { spp, gran, view, blocks, ends, prefix_end, prefix_start }
+    }
+
+    fn covers(&self, view: (f64, f64)) -> bool {
+        self.view.0 <= view.0 && view.1 <= self.view.1
+    }
+
+    fn matches_scale(&self, spp: f64, exact: bool) -> bool {
+        match self.gran {
+            Granularity::Call | Granularity::Turn => true,
+            Granularity::SameTool if !exact => 120.0f64.max(30.0 * self.spp) == 120.0f64.max(30.0 * spp),
+            _ => self.spp == spp,
+        }
+    }
+
+    fn range(view: (f64, f64)) -> (f64, f64) {
+        let width = view.1 - view.0;
+        if view.0.is_finite() && view.1.is_finite() && width.is_finite() && width >= 0.0 {
+            // 横移動の前後一画面分も保持し、小さな移動では集約を作り直さない。
+            (view.0 - width, view.1 + width)
+        } else {
+            view
+        }
+    }
+
+    fn visible(&self, lane: &Lane, view: (f64, f64)) -> Vec<Block> {
+        let hi = self.blocks.partition_point(|b| b.start <= view.1);
+        let lo = self.ends.partition_point(|&end| end < view.0).min(hi);
+        let event_hi = lane.events.partition_point(|e| e.start <= view.1);
+        self.blocks[lo..hi]
+            .iter()
+            .filter_map(|b| {
+                let last = b.last.min(event_hi - 1);
+                let end = self.prefix_end[last - self.prefix_start];
+                (end >= view.0).then_some(Block { start: b.start, end, first: b.first, last })
+            })
+            .collect()
+    }
 }
 
 struct NameIndex {
@@ -119,6 +187,16 @@ impl NameIndex {
 }
 
 impl Cache {
+    /// 比較計測用。通常は Default で表示範囲の近傍だけを保持する。
+    pub fn with_full_history() -> Self {
+        Self { full_history: true, exact_scales: true, ..Self::default() }
+    }
+
+    /// 比較計測用。近傍の保持を維持し、同一ツールでも縮尺が変わるたびに集約を作り直す。
+    pub fn with_exact_scales() -> Self {
+        Self { exact_scales: true, ..Self::default() }
+    }
+
     /// セッションが差し替えられたら、集約と名前の索引を一緒に捨てる
     pub fn invalidate(&mut self, touched: &[usize]) {
         let touched: HashSet<_> = touched.iter().copied().collect();
@@ -144,49 +222,67 @@ impl Cache {
         if cached
             .grouping
             .as_ref()
-            .is_none_or(|g| g.spp != spp || g.gran != gran)
+            .is_none_or(|g| g.gran != gran || !g.matches_scale(spp, self.exact_scales) || !g.covers(view))
         {
-            let blocks = aggregate(lane, (f64::NEG_INFINITY, f64::INFINITY), spp, gran);
-            let mut ends = Vec::with_capacity(blocks.len());
-            let mut prefix_end = vec![0.0; lane.events.len()];
-            let mut end = f64::NEG_INFINITY;
-            for b in &blocks {
-                end = end.max(b.end);
-                ends.push(end);
-                let mut max = f64::NEG_INFINITY;
-                for (e, value) in lane.events[b.first..=b.last]
-                    .iter()
-                    .zip(&mut prefix_end[b.first..=b.last])
+            let range = if self.full_history { (f64::NEG_INFINITY, f64::INFINITY) } else { Grouping::range(view) };
+            let blocks = aggregate(lane, range, spp, gran);
+            cached.grouping = Some(Grouping::new(lane, blocks, spp, gran, range));
+        }
+        cached.grouping.as_ref().unwrap().visible(lane, view)
+    }
+
+    /// ディレクトリ表示用。Agent を集約前に除外し、選択範囲は元のイベント位置を保つ。
+    pub fn aggregate_main(
+        &mut self,
+        session: usize,
+        lane: &Lane,
+        view: (f64, f64),
+        spp: f64,
+        gran: Granularity,
+    ) -> Vec<Block> {
+        let cached = self.lanes.entry((session, 0)).or_default();
+        let ranges = cached.main_ranges.get_or_insert_with(|| {
+            let mut ranges = Vec::new();
+            let mut first = 0;
+            for (i, e) in lane.events.iter().enumerate() {
+                // コードモードの exec 経由では、表示名が spawn_agent でも Kind::Tool になる。
+                if e.kind == Kind::Agent
+                    || (e.kind == Kind::Tool && matches!(e.name.as_ref(), "Agent" | "Task" | "spawn_agent"))
                 {
-                    max = max.max(e.end);
-                    *value = max;
+                    if first < i {
+                        ranges.push(first..i);
+                    }
+                    first = i + 1;
                 }
             }
-            cached.grouping = Some(Grouping {
-                spp,
-                gran,
-                blocks,
-                ends,
-                prefix_end,
-            });
+            if first < lane.events.len() {
+                ranges.push(first..lane.events.len());
+            }
+            ranges
+        });
+        if cached.main_grouping.as_ref().is_none_or(|g| {
+            g.gran != gran || !g.matches_scale(spp, self.exact_scales)
+                || !g.covers(view)
+        }) {
+            let range_view = if self.full_history { (f64::NEG_INFINITY, f64::INFINITY) } else { Grouping::range(view) };
+            let mut blocks = Vec::new();
+            for range in ranges {
+                let grouped = aggregate_events(
+                    &lane.events[range.clone()],
+                    &lane.cum_end[range.clone()],
+                    range_view,
+                    spp,
+                    gran,
+                );
+                blocks.extend(grouped.into_iter().map(|mut b| {
+                    b.first += range.start;
+                    b.last += range.start;
+                    b
+                }));
+            }
+            cached.main_grouping = Some(Grouping::new(lane, blocks, spp, gran, range_view));
         }
-        let g = cached.grouping.as_ref().unwrap();
-        let hi = g.blocks.partition_point(|b| b.start <= view.1);
-        let lo = g.ends.partition_point(|&end| end < view.0).min(hi);
-        let event_hi = lane.events.partition_point(|e| e.start <= view.1);
-        g.blocks[lo..hi]
-            .iter()
-            .filter_map(|b| {
-                let last = b.last.min(event_hi - 1);
-                let end = g.prefix_end[last];
-                (end >= view.0).then_some(Block {
-                    start: b.start,
-                    end,
-                    first: b.first,
-                    last,
-                })
-            })
-            .collect()
+        cached.main_grouping.as_ref().unwrap().visible(lane, view)
     }
 
     pub fn describe(
@@ -210,16 +306,22 @@ impl Cache {
 
 /// `spp` は 1px あたりの秒数
 pub fn aggregate(lane: &Lane, view: (f64, f64), spp: f64, g: Granularity) -> Vec<Block> {
-    let events = &lane.events;
+    aggregate_events(&lane.events, &lane.cum_end, view, spp, g)
+}
+
+fn aggregate_events(events: &[Event], cum_end: &[f64], view: (f64, f64), spp: f64, g: Granularity) -> Vec<Block> {
     let hi = events.partition_point(|e| e.start <= view.1);
     // 表示範囲にかかる最初のイベントから、どのまとめ方でも結合されない切れ目まで遡る。
     // 先頭から走査しなくても、ブロックの区切りは全体を走査した場合と変わらない
-    let mut lo = lane.cum_end.partition_point(|&t| t < view.0).min(hi);
-    let thr = (40.0 * spp).max(120.0);
+    let mut lo = cum_end.partition_point(|&t| t < view.0).min(hi);
     let joins = |i: usize| match g {
         Granularity::Call => false,
         Granularity::Turn => events[i].kind != Kind::User,
-        _ => events[i].start - lane.cum_end[i - 1] < thr,
+        Granularity::SameTool => events[i].kind == Kind::Tool
+            && events[i].name == events[i - 1].name
+            && events[i].start - cum_end[i - 1] < 120.0f64.max(30.0 * spp),
+        Granularity::Auto => events[i].start - cum_end[i - 1]
+            < spp * if events[i].name == events[i - 1].name { 40.0 } else { 8.0 },
     };
     while lo > 0 && lo < events.len() && joins(lo) {
         lo -= 1;
@@ -328,6 +430,33 @@ fn name_counts(evs: &[Event]) -> Vec<(&str, usize)> {
 mod tests {
     use super::*;
 
+    // 全履歴の区切りから、表示上端より前に始まるブロックと右端の途中切り取りを求める。
+    fn full_reference(lane: &Lane, view: (f64, f64), spp: f64, gran: Granularity) -> Vec<Block> {
+        let hi = lane.events.partition_point(|e| e.start <= view.1);
+        aggregate(lane, (f64::NEG_INFINITY, f64::INFINITY), spp, gran).into_iter().filter_map(|mut block| {
+            if block.first >= hi { return None; }
+            block.last = block.last.min(hi - 1);
+            block.end = lane.events[block.first..=block.last].iter().map(|e| e.end).fold(f64::NEG_INFINITY, f64::max);
+            (block.end >= view.0).then_some(block)
+        }).collect()
+    }
+
+    fn sparse_lane(count: usize) -> Lane {
+        let mut result = Lane::new("main");
+        let prototype = lane().events[1].clone();
+        let names: [std::sync::Arc<str>; 2] = ["even".into(), "odd".into()];
+        result.events = (0..count).map(|i| {
+            let mut event = prototype.clone();
+            event.start = i as f64;
+            event.end = event.start + 0.1;
+            event.kind = Kind::Tool;
+            event.name = names[i % 2].clone();
+            event
+        }).collect();
+        result.cum_end = result.events.iter().map(|e| e.end).collect();
+        result
+    }
+
     fn lane() -> Lane {
         let mut lane = Lane::new("main");
         let mut t = 0.0;
@@ -375,9 +504,113 @@ mod tests {
                         let view = (lo, lo + width);
                         assert_eq!(
                             cache.aggregate((0, 0), &lane, view, spp, gran),
-                            aggregate(&lane, view, spp, gran),
+                            full_reference(&lane, view, spp, gran),
                             "{gran:?}, spp={spp}, view={view:?}"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_small_view_retains_nearby_events_and_reuses_small_pans() {
+        let lane = sparse_lane(20000);
+        let mut cache = Cache::default();
+        let key = (0, 0);
+        let view = (10000.0, 10010.0);
+        assert_eq!(cache.aggregate(key, &lane, view, 0.01, Granularity::Auto), full_reference(&lane, view, 0.01, Granularity::Auto));
+        let first = cache.lanes[&key].grouping.as_ref().unwrap();
+        assert!(first.prefix_start >= 9990 && first.prefix_end.len() <= 32);
+        let storage = first.prefix_end.as_ptr();
+        let pan = (10003.0, 10013.0);
+        assert_eq!(cache.aggregate(key, &lane, pan, 0.01, Granularity::Auto), full_reference(&lane, pan, 0.01, Granularity::Auto));
+        assert_eq!(storage, cache.lanes[&key].grouping.as_ref().unwrap().prefix_end.as_ptr());
+        let far = (15000.0, 15010.0);
+        assert_eq!(cache.aggregate(key, &lane, far, 0.01, Granularity::Auto), full_reference(&lane, far, 0.01, Granularity::Auto));
+        let moved = cache.lanes[&key].grouping.as_ref().unwrap();
+        assert!(moved.prefix_start >= 14990 && moved.prefix_end.len() <= 32);
+        let all = (f64::NEG_INFINITY, f64::INFINITY);
+        assert_eq!(cache.aggregate(key, &lane, all, 0.01, Granularity::Auto), full_reference(&lane, all, 0.01, Granularity::Auto));
+        assert_eq!(cache.lanes[&key].grouping.as_ref().unwrap().prefix_end.len(), lane.events.len());
+    }
+
+    #[test]
+    fn same_tool_zoom_reuses_a_constant_threshold_and_rebuilds_above_its_boundary() {
+        let mut lane = sparse_lane(4);
+        for (event, time) in lane.events.iter_mut().zip([0.0, 120.0, 241.0, 242.0]) {
+            event.start = time; event.end = time; event.name = "tool".into();
+        }
+        lane.events[3].kind = Kind::User;
+        lane.cum_end = lane.events.iter().map(|e| e.end).collect();
+        let view = (-10.0, 400.0);
+        let gran = Granularity::SameTool;
+        for main in [false, true] {
+            let mut cache = Cache::default();
+            let aggregate = |cache: &mut Cache, spp| if main {
+                cache.aggregate_main(0, &lane, view, spp, gran)
+            } else { cache.aggregate((0, 0), &lane, view, spp, gran) };
+            let storage = |cache: &Cache| {
+                let lane = &cache.lanes[&(0, 0)];
+                let group = if main { &lane.main_grouping } else { &lane.grouping };
+                group.as_ref().unwrap().prefix_end.as_ptr()
+            };
+            assert_eq!(aggregate(&mut cache, 1.0), full_reference(&lane, view, 1.0, gran));
+            let first = storage(&cache);
+            for spp in [0.1, 2.0, 4.0] {
+                assert_eq!(aggregate(&mut cache, spp), full_reference(&lane, view, spp, gran));
+                assert_eq!(storage(&cache), first);
+            }
+            let above = f64::from_bits(4.0f64.to_bits() + 1);
+            let changed = aggregate(&mut cache, above);
+            assert_eq!(changed, full_reference(&lane, view, above, gran));
+            assert_eq!((changed[0].first, changed[0].last), (0, 1));
+            assert_ne!(storage(&cache), first);
+            assert_eq!(aggregate(&mut cache, 4.0), full_reference(&lane, view, 4.0, gran));
+        }
+    }
+
+    #[test]
+    fn exact_scale_control_rebuilds_while_preserving_the_same_blocks() {
+        let lane = sparse_lane(1000);
+        let view = (100.0, 110.0);
+        let mut cache = Cache::with_exact_scales();
+        for gran in [Granularity::Auto, Granularity::SameTool] {
+            let first = cache.aggregate((0, 0), &lane, view, 0.01, gran);
+            let storage = cache.lanes[&(0, 0)].grouping.as_ref().unwrap().prefix_end.as_ptr();
+            let next = cache.aggregate((0, 0), &lane, view, 0.02, gran);
+            assert_eq!(next, first);
+            assert_ne!(storage, cache.lanes[&(0, 0)].grouping.as_ref().unwrap().prefix_end.as_ptr());
+        }
+    }
+
+    #[test]
+    fn main_groups_match_full_history_with_agent_gaps_pan_and_zoom() {
+        let mut lane = lane();
+        for (i, event) in lane.events.iter_mut().enumerate() {
+            if i.is_multiple_of(23) { event.kind = Kind::Agent; }
+            if i.is_multiple_of(27) { event.kind = Kind::Tool; event.name = "spawn_agent".into(); }
+        }
+        let keep = |event: &Event| event.kind != Kind::Agent
+            && !(event.kind == Kind::Tool && matches!(event.name.as_ref(), "Agent" | "Task" | "spawn_agent"));
+        let mut cache = Cache::default();
+        for gran in Granularity::ALL {
+            for spp in [0.01, 0.1, 1.0, 20.0, 1000.0] {
+                for lo in [-100.0, 0.0, 2000.0, 2020.0, 2050.0, 16000.0, 100000.0] {
+                    for width in [0.0, 1.0, 20.0, 2000.0] {
+                        let view = (lo, lo + width);
+                        let mut expected = Vec::new();
+                        let mut first = 0;
+                        while first < lane.events.len() {
+                            if !keep(&lane.events[first]) { first += 1; continue; }
+                            let last = first + lane.events[first..].iter().take_while(|e| keep(e)).count();
+                            let part = Lane { events: lane.events[first..last].to_vec(), cum_end: lane.cum_end[first..last].to_vec(), ..Lane::new("main") };
+                            expected.extend(full_reference(&part, view, spp, gran).into_iter().map(|mut block| {
+                                block.first += first; block.last += first; block
+                            }));
+                            first = last;
+                        }
+                        assert_eq!(cache.aggregate_main(0, &lane, view, spp, gran), expected, "{gran:?}, {spp}, {view:?}");
                     }
                 }
             }

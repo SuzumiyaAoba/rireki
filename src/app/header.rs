@@ -201,7 +201,7 @@ impl Rireki {
             div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD).child(self.title(window, w < 900.0)),
         );
         if timeline {
-            if w >= 600.0 {
+            if w >= 650.0 {
                 // 狭いときは「6時間」「1ヶ月」を省く
                 let items: Vec<(usize, &'static str)> = PRESETS
                     .iter()
@@ -259,6 +259,33 @@ impl Rireki {
                 cx.notify();
             }));
         let on = self.in_view_only;
+        let directory = self.directory_timeline;
+        let directory_view = div()
+            .id("directory-timeline")
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .h(px(26.0))
+            .rounded_md()
+            .border_1()
+            .border_color(c(if directory { theme::ACCENT } else { theme::BORDER }))
+            .when(directory, |d| d.bg(c(theme::ACCENT_BG)))
+            .text_xs()
+            .cursor_pointer()
+            .hover(|s| s.bg(c(theme::HOVER)))
+            .child(icons::icon(Icon::Folder, if directory { theme::ACCENT } else { theme::MUTED }))
+            .when(w >= 900.0, |d| d.child("ディレクトリ単位"))
+            .tooltip(tip(
+                if directory {
+                    "セッションごとの表示に戻す"
+                } else {
+                    "ディレクトリ単位でメインイベントを詰めて表示（サブエージェントは省略、重なる枠だけ別の行に配置）"
+                },
+                None,
+            ))
+            .on_click(cx.listener(|t, _: &ClickEvent, window, cx| t.toggle_directory_timeline(window, cx)));
         let in_view = div()
             .id("in-view-only")
             .flex()
@@ -285,7 +312,10 @@ impl Rireki {
                 Some("V"),
             ))
             .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.toggle_in_view_only(cx)));
-        row.child(self.range_button(cx)).when(w >= 700.0, |d| d.child(zoom)).when(timeline, |d| d.child(in_view)).child(gran)
+        row.child(self.range_button(cx))
+            .when(w >= 700.0, |d| d.child(zoom))
+            .when(timeline, |d| d.child(directory_view).child(in_view))
+            .child(gran)
     }
 
     /// 下端の帯。表示中の件数と目盛りの間隔、ブロックの色の凡例
