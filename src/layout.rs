@@ -1,6 +1,7 @@
 //! 表示スケールに応じてイベントをブロックにまとめる
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -55,9 +56,30 @@ pub struct Block {
 
 #[derive(Default)]
 pub struct Cache {
-    lanes: HashMap<(usize, usize), CachedLane>,
+    lanes: HashMap<(usize, usize), CachedLane, std::hash::BuildHasherDefault<LaneHash>>,
     full_history: bool,
     exact_scales: bool,
+}
+
+/// Storeとレーンの内部添字だけに使う。衝突時は元の二つの添字で照合する。
+#[derive(Default)]
+struct LaneHash(u64);
+
+impl std::hash::Hasher for LaneHash {
+    fn finish(&self) -> u64 {
+        let mut hash = self.0;
+        hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        hash ^ (hash >> 31)
+    }
+
+    fn write_usize(&mut self, index: usize) {
+        self.0 = (self.0 ^ index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("lane keys write two usize indices");
+    }
 }
 
 #[derive(Default)]
@@ -158,32 +180,52 @@ impl NameIndex {
         Self { names }
     }
 
-    fn describe(&self, b: &Block, show_label: bool) -> (usize, Option<String>) {
-        let mut counts: Vec<_> = self
-            .names
-            .iter()
-            .filter_map(|(name, indices)| {
+    fn describe(&self, b: &Block, show_label: bool, events: usize) -> (usize, Option<String>) {
+        // 索引が短い場合や末尾側では、名前ごとの分岐を加えず従来の探索を使う。
+        if b.first <= b.last && b.last < events / self.names.len().max(1) {
+            let last = b.last + 1;
+            let counts = self.names.iter().filter_map(|(name, indices)| {
+                // k番目の元の添字はk以上なので、境界以降の索引位置を省ける。
+                let lo = indices[..indices.len().min(b.first)].partition_point(|&i| i < b.first);
+                let hi = indices[..indices.len().min(last)].partition_point(|&i| i <= b.last);
+                (hi > lo).then(|| (name.as_str(), hi - lo, indices[lo]))
+            });
+            describe_counts(b, show_label, counts)
+        } else {
+            let counts = self.names.iter().filter_map(|(name, indices)| {
                 let lo = indices.partition_point(|&i| i < b.first);
                 let hi = indices.partition_point(|&i| i <= b.last);
                 (hi > lo).then(|| (name.as_str(), hi - lo, indices[lo]))
-            })
-            .collect();
-        // 同数の名前はブロック内で初めて現れた順に並べる
-        counts.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
-        let text = show_label.then(|| {
-            if counts.len() == 1 {
-                format!("{} ×{}", counts[0].0, counts[0].1)
-            } else {
-                let parts: Vec<_> = counts
-                    .iter()
-                    .take(4)
-                    .map(|(n, c, _)| format!("{n}×{c}"))
-                    .collect();
-                format!("{}件 · {}", b.last - b.first + 1, parts.join(" "))
-            }
-        });
-        (counts[0].2, text)
+            });
+            describe_counts(b, show_label, counts)
+        }
     }
+}
+
+fn describe_counts<'a>(b: &Block, show_label: bool, counts: impl Iterator<Item = (&'a str, usize, usize)>) -> (usize, Option<String>) {
+        if !show_label {
+            // 色だけなら最多の名前を一度の走査で選び、一覧の確保と並べ替えを省く。
+            let (_, _, dominant) = counts
+                .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.2.cmp(&a.2)))
+                .unwrap();
+            return (dominant, None);
+        }
+        // 表示する上位4名だけを、件数の多い順・同数なら最初の位置順で残す。
+        let mut top = [("", 0, 0); 4];
+        let mut len = 0;
+        for candidate in counts {
+            let at = top[..len].partition_point(|&(_, count, first)| {
+                count > candidate.1 || (count == candidate.1 && first < candidate.2)
+            });
+            if at == top.len() { continue; }
+            let end = len.min(top.len() - 1);
+            top.copy_within(at..end, at + 1);
+            top[at] = candidate;
+            len = (len + 1).min(top.len());
+        }
+        let top = &top[..len];
+        let text = Some(grouped_label(b.last - b.first + 1, top.iter().map(|&(n, c, _)| (n, c))));
+        (top[0].2, text)
 }
 
 impl Cache {
@@ -266,6 +308,19 @@ impl Cache {
         }) {
             let range_view = if self.full_history { (f64::NEG_INFINITY, f64::INFINITY) } else { Grouping::range(view) };
             let mut blocks = Vec::new();
+            // 区間は元のイベント位置順。表示近傍より後の開始と、近傍より前に
+            // 終わった区間を省く。累積終了はAgentの長い呼び出しも含むため、
+            // 重なる可能性のある区間は従来どおり集約へ渡す。
+            let ranges = if lane.events.first().is_some_and(|e| e.start.is_nan())
+                || lane.events.last().is_some_and(|e| e.start.is_nan())
+            {
+                // NaNを含む開始時刻は比較述語が単調でない。従来の探索を保つ。
+                ranges.as_slice()
+            } else {
+                let hi = ranges.partition_point(|r| lane.events[r.start].start <= range_view.1);
+                let lo = ranges[..hi].partition_point(|r| lane.cum_end[r.end - 1] < range_view.0);
+                &ranges[lo..hi]
+            };
             for range in ranges {
                 let grouped = aggregate_events(
                     &lane.events[range.clone()],
@@ -300,7 +355,7 @@ impl Cache {
             .or_default()
             .names
             .get_or_insert_with(|| NameIndex::new(lane))
-            .describe(b, show_label)
+            .describe(b, show_label, lane.events.len())
     }
 }
 
@@ -370,11 +425,7 @@ pub fn label(events: &[Event], b: &Block) -> String {
         return if e.summary.is_empty() { e.name.to_string() } else { format!("{}: {}", e.name, e.summary) };
     }
     let counts = name_counts(evs);
-    if counts.len() == 1 {
-        return format!("{} ×{}", counts[0].0, counts[0].1);
-    }
-    let parts: Vec<String> = counts.iter().take(4).map(|(n, c)| format!("{n}×{c}")).collect();
-    format!("{}件 · {}", evs.len(), parts.join(" "))
+    grouped_label(evs.len(), counts.iter().copied())
 }
 
 /// 最も多いイベント（色決めに使う）
@@ -396,19 +447,34 @@ pub fn describe(events: &[Event], b: &Block, show_label: bool) -> (usize, Option
     let evs = &events[b.first..=b.last];
     let counts = name_counts(evs);
     let dominant = b.first + evs.iter().position(|e| e.name.as_ref() == counts[0].0).unwrap_or(0);
-    let text = show_label.then(|| {
-        if counts.len() == 1 {
-            format!("{} ×{}", counts[0].0, counts[0].1)
-        } else {
-            let parts: Vec<_> = counts
-                .iter()
-                .take(4)
-                .map(|(n, c)| format!("{n}×{c}"))
-                .collect();
-            format!("{}件 · {}", evs.len(), parts.join(" "))
-        }
-    });
+    let text = show_label.then(|| grouped_label(evs.len(), counts.iter().copied()));
     (dominant, text)
+}
+
+fn grouped_label<'a>(events: usize, counts: impl ExactSizeIterator<Item = (&'a str, usize)> + Clone) -> String {
+    let single = counts.len() == 1;
+    let displayed = counts.take(4);
+    let digits = |n: usize| n.ilog10() as usize + 1;
+    let capacity = if single {
+        let (name, count) = displayed.clone().next().unwrap();
+        name.len() + " ×".len() + digits(count)
+    } else {
+        digits(events) + "件 · ".len()
+            + displayed.clone().map(|(name, count)| name.len() + "×".len() + digits(count)).sum::<usize>()
+            + displayed.len().saturating_sub(1)
+    };
+    let mut text = String::with_capacity(capacity);
+    if single {
+        let (name, count) = displayed.clone().next().unwrap();
+        write!(&mut text, "{name} ×{count}").unwrap();
+    } else {
+        write!(&mut text, "{events}件 · ").unwrap();
+        for (i, (name, count)) in displayed.enumerate() {
+            if i > 0 { text.push(' '); }
+            write!(&mut text, "{name}×{count}").unwrap();
+        }
+    }
+    text
 }
 
 fn name_counts(evs: &[Event]) -> Vec<(&str, usize)> {
@@ -618,6 +684,41 @@ mod tests {
     }
 
     #[test]
+    fn main_ranges_keep_long_overlaps_and_exact_edges_across_many_agent_gaps() {
+        let mut lane = sparse_lane(4000);
+        for (i, event) in lane.events.iter_mut().enumerate() {
+            if i % 4 == 3 { event.kind = Kind::Agent; }
+            if i % 29 == 28 { event.name = "spawn_agent".into(); }
+        }
+        lane.events[2].end = 2000.0;
+        lane.events[7].end = 10000.0;
+        lane.events[2000].name = "tool".into();
+        let mut end = f64::NEG_INFINITY;
+        lane.cum_end = lane.events.iter().map(|event| {
+            end = end.max(event.end);
+            end
+        }).collect();
+        let mut cache = Cache::default();
+        let blocks = cache.aggregate_main(0, &lane, (2000.0, 2000.0), 0.01, Granularity::Call);
+        assert_eq!(blocks.iter().map(|b| b.first).collect::<Vec<_>>(), [2, 2000]);
+        let blocks = cache.aggregate_main(0, &lane, (2000.1, 2000.1), 0.01, Granularity::Call);
+        assert_eq!(blocks.iter().map(|b| b.first).collect::<Vec<_>>(), [2000]);
+        let mut full = Cache::with_full_history();
+        for gran in Granularity::ALL {
+            for spp in [0.01, 1.0, 30.0] {
+                for view in [(-10.0, -1.0), (2000.0, 2000.0), (1999.0, 2020.0), (3999.0, 5000.0)] {
+                    assert_eq!(cache.aggregate_main(0, &lane, view, spp, gran),
+                        full.aggregate_main(0, &lane, view, spp, gran));
+                }
+            }
+        }
+        lane.events[2].kind = Kind::Agent;
+        cache.invalidate(&[0]);
+        let blocks = cache.aggregate_main(0, &lane, (2000.0, 2000.0), 0.01, Granularity::Call);
+        assert_eq!(blocks.iter().map(|b| b.first).collect::<Vec<_>>(), [2000]);
+    }
+
+    #[test]
     fn cached_descriptions_keep_dominant_and_tie_order() {
         let lane = lane();
         let mut cache = Cache::default();
@@ -636,6 +737,67 @@ mod tests {
                     );
                     assert_eq!(describe(&lane.events, &b, label_visible), expected);
                     assert_eq!(cache.describe((0, 0), &lane, &b, label_visible), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn grouped_descriptions_keep_unicode_top_four_and_ties_within_the_block() {
+        let mut lane = lane();
+        for (event, name) in lane.events.iter_mut().zip(["日本語🙂", "β tool", "same", "空 白", "fifth", "sixth", "日本語🙂"]) {
+            event.name = name.into();
+        }
+        let mut cache = Cache::default();
+        for (first, expected) in [
+            (0, "7件 · 日本語🙂×2 β tool×1 same×1 空 白×1"),
+            (1, "6件 · β tool×1 same×1 空 白×1 fifth×1"),
+        ] {
+            let block = Block { start: 0.0, end: 0.0, first, last: 6 };
+            assert_eq!(label(&lane.events, &block), expected);
+            assert_eq!(describe(&lane.events, &block, true), (first, Some(expected.into())));
+            assert_eq!(cache.describe((0, 0), &lane, &block, true), (first, Some(expected.into())));
+            assert_eq!(cache.describe((0, 0), &lane, &block, false), (first, None));
+        }
+        for event in &mut lane.events { event.name = "日本語🙂".into(); }
+        cache.invalidate(&[0]);
+        let block = Block { start: 0.0, end: 0.0, first: 0, last: 999 };
+        assert_eq!(cache.describe((0, 0), &lane, &block, true), (0, Some("日本語🙂 ×1000".into())));
+    }
+
+    #[test]
+    fn cached_labels_replace_all_four_slots_and_rank_ties_inside_each_range() {
+        let mut lane = lane();
+        let names = [
+            "A", "Z", "B", "C", "D", "E", "F",
+            "A", "B", "C", "D", "E", "F", "G", "H",
+            "E", "E", "E", "E", "F", "F", "F", "G", "G", "G", "H", "H",
+        ];
+        for (event, name) in lane.events.iter_mut().zip(names) { event.name = name.into(); }
+        let mut cache = Cache::default();
+        for (first, dominant, expected) in [
+            (7, 11, "20件 · E×5 F×4 G×4 H×3"),
+            (12, 12, "15件 · F×4 G×4 E×4 H×3"),
+        ] {
+            let block = Block { start: 0.0, end: 0.0, first, last: 26 };
+            assert_eq!(cache.describe((0, 0), &lane, &block, true), (dominant, Some(expected.into())));
+            assert_eq!(cache.describe((0, 0), &lane, &block, false), (dominant, None));
+        }
+    }
+
+    #[test]
+    fn cached_counts_match_direct_descriptions_across_sparse_late_ranges() {
+        let mut lane = sparse_lane(4096);
+        let names: [std::sync::Arc<str>; 6] = ["A".into(), "B".into(), "C".into(), "D".into(), "E".into(), "F".into()];
+        for (i, event) in lane.events.iter_mut().enumerate() {
+            event.name = if i % 89 == 0 { "少数🙂".into() } else { names[(i / 100) % names.len()].clone() };
+        }
+        let mut cache = Cache::default();
+        for first in [0, 1, 89, 99, 743, 2047, 4080, 4094] {
+            for length in [2, 3, 7, 53, 512] {
+                let block = Block { start: 0.0, end: 0.0, first, last: (first + length - 1).min(lane.events.len() - 1) };
+                for show_label in [false, true] {
+                    assert_eq!(cache.describe((0, 0), &lane, &block, show_label), describe(&lane.events, &block, show_label));
                 }
             }
         }

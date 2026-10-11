@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build (e.g. v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.version.outputs.commit }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+          persist-credentials: false
+
+      - name: Validate the release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+        run: |
+          tag=$(scripts/release-version.sh "$RELEASE_TAG")
+          if [[ "$RELEASE_TAG" != "$tag" ]]; then
+            echo "::error::Release tags must use the v<version> format."
+            exit 1
+          fi
+          version=${tag#v}
+          version=${version%%+*}
+          prerelease=false
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+          printf 'tag=%s\ncommit=%s\nprerelease=%s\n' \
+            "$tag" "$(git rev-parse HEAD)" "$prerelease" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: metadata
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            arch: arm64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            arch: x86_64
+    env:
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      RELEASE_TARGET: ${{ matrix.target }}
+      RELEASE_ARCH: ${{ matrix.arch }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out the release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+
+      - name: Set up stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Test the core library
+        run: cargo test --release --locked --lib --no-default-features
+
+      - name: Build the app bundle
+        run: scripts/bundle.sh
+
+      - name: Package the executable and app bundle
+        run: |
+          actual_arch=$(lipo -archs target/release/rireki)
+          if [[ "$actual_arch" != "$RELEASE_ARCH" ]]; then
+            echo "::error::Expected $RELEASE_ARCH, got $actual_arch."
+            exit 1
+          fi
+          codesign --force --sign - target/release/rireki.app
+          codesign --verify --strict target/release/rireki.app
+          mkdir -p dist
+          archive="rireki-$RELEASE_TAG-$RELEASE_TARGET"
+          tar -czf "dist/$archive.tar.gz" -C target/release rireki
+          ditto -c -k --sequesterRsrc --keepParent \
+            target/release/rireki.app "dist/$archive.zip"
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    needs: [metadata, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+      RELEASE_PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz *.zip > SHA256SUMS
+
+      - name: Publish the release assets
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "$RELEASE_TAG" \
+              --prerelease="$RELEASE_PRERELEASE"
+          fi

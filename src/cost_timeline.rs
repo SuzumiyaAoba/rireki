@@ -103,6 +103,41 @@ pub struct Cache {
     pub rebuilt: usize,
 }
 
+enum Seen {
+    Dense(Vec<u64>),
+    Sparse(HashSet<usize>),
+}
+
+impl Seen {
+    fn new(sessions: usize, order: &[usize]) -> Self {
+        if sessions <= order.len().saturating_mul(16) && order.iter().all(|&i| i < sessions) {
+            Self::Dense(vec![0; sessions.div_ceil(64)])
+        } else {
+            Self::Sparse(HashSet::new())
+        }
+    }
+
+    fn insert(&mut self, i: usize) -> bool {
+        match self {
+            Self::Dense(words) => {
+                let word = &mut words[i / 64];
+                let mask = 1 << (i % 64);
+                let fresh = *word & mask == 0;
+                *word |= mask;
+                fresh
+            }
+            Self::Sparse(set) => set.insert(i),
+        }
+    }
+
+    fn contains(&self, i: usize) -> bool {
+        match self {
+            Self::Dense(words) => words.get(i / 64).is_some_and(|word| word & (1 << (i % 64)) != 0),
+            Self::Sparse(set) => set.contains(&i),
+        }
+    }
+}
+
 impl Cache {
     pub fn build_while(
         &mut self,
@@ -123,7 +158,7 @@ impl Cache {
         let edges = view.edges();
         let mut out =
             Summary { view, edges, directories: Vec::new(), usage: UsageSum::default(), sessions: 0 };
-        let mut seen = HashSet::new();
+        let mut seen = Seen::new(store.sessions.len(), order);
         let mut directories: HashMap<&str, usize> = HashMap::new();
         let mut prices = crate::pricing::Cache::default();
         for &si in order {
@@ -136,12 +171,11 @@ impl Cache {
             let Some(session) = store.sessions.get(si) else {
                 continue;
             };
-            let version = Arc::downgrade(session);
-            let costs = if let Some(entry) = self.sessions.get(&si).filter(|e| e.version.ptr_eq(&version)) {
+            let costs = if let Some(entry) = self.sessions.get(&si).filter(|e| e.version.as_ptr() == Arc::as_ptr(session)) {
                 entry.costs.clone()
             } else {
                 let costs = Arc::new(session_costs(si, session, &out.edges, &mut prices, &keep_going)?);
-                self.sessions.insert(si, Entry { version, costs: costs.clone() });
+                self.sessions.insert(si, Entry { version: Arc::downgrade(session), costs: costs.clone() });
                 self.rebuilt += 1;
                 costs
             };
@@ -164,14 +198,23 @@ impl Cache {
             directory.usage.merge(&costs.usage);
             directory.sessions.push(costs);
         }
-        self.sessions.retain(|si, _| seen.contains(si));
-        let mut positions = [u16::MAX; MAX_BINS];
+        self.sessions.retain(|si, _| seen.contains(*si));
+        let mut positions = [u16::MAX; MAX_BINS + 1];
         for directory in &mut out.directories {
             if !keep_going() {
                 return None;
             }
+            if directory.sessions.len() == 1 {
+                directory.buckets = directory.sessions[0].buckets.clone();
+                continue;
+            }
             if view.bins <= MAX_BINS {
-                for session in &directory.sessions {
+                let (first, rest) = directory.sessions.split_first().unwrap();
+                directory.buckets = first.buckets.clone();
+                for (position, bucket) in directory.buckets.iter().enumerate() {
+                    positions[bucket.index] = position as u16;
+                }
+                for session in rest {
                     for bucket in &session.buckets {
                         let position = &mut positions[bucket.index];
                         if *position == u16::MAX {
@@ -392,6 +435,29 @@ mod tests {
     }
 
     #[test]
+    fn seen_matches_hash_set_across_word_boundaries_subsets_and_invalid_indices() {
+        for sessions in [0, 1, 63, 64, 65, 127, 128, 129, 513, 2049] {
+            for order in [
+                (0..sessions).chain((0..sessions).rev()).collect::<Vec<_>>(),
+                vec![],
+                vec![0],
+                vec![sessions, usize::MAX, 0, sessions, usize::MAX],
+            ] {
+                let mut actual = Seen::new(sessions, &order);
+                let mut expected = HashSet::new();
+                for &i in &order {
+                    assert_eq!(actual.contains(i), expected.contains(&i));
+                    assert_eq!(actual.insert(i), expected.insert(i));
+                    assert!(actual.contains(i));
+                }
+                for i in (0..=sessions).chain([usize::MAX]) {
+                    assert_eq!(actual.contains(i), expected.contains(&i));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn directory_bucket_positions_preserve_order_ties_and_reset_between_directories() {
         let store = Snapshot {
             sessions: vec![
@@ -419,7 +485,6 @@ mod tests {
                             }
                         }
                         assert_eq!(directory.buckets.len(), expected.len());
-                        assert_eq!(directory.buckets.capacity(), directory.buckets.len());
                         for (actual, expected) in directory.buckets.iter().zip(expected.into_values()) {
                             assert_eq!(actual.index, expected.index);
                             assert_eq!(actual.usage, expected.usage);

@@ -1082,7 +1082,7 @@ impl Rireki {
         let raw = cache.and_then(|d| d.raws.first()).and_then(|r| r.as_deref());
         let mut col = div().flex().flex_col().gap_3().min_w_0();
 
-        // 時刻・所要時間・トークン数（位置は見出しに出す）
+        // 時刻・所要時間（位置は見出しに出す）
         let when = if e.end > e.start {
             format!("{} → {}", local(e.start).format("%m/%d %H:%M:%S"), local(e.end).format("%H:%M:%S"))
         } else {
@@ -1114,9 +1114,13 @@ impl Rireki {
                             .child(icons::icon(Icon::Hourglass, theme::SUBTLE).size_3())
                             .child(fmt_dur(e.end - e.start)),
                     )
-                })
-                .when(!e.usage.is_empty(), |d| d.child(usage_chip("usage-ev", &e.usage, e.model.as_deref()))),
+                }),
         );
+        if !e.usage.is_empty() {
+            col = col.child(usage_meter("usage-ev", &e.usage, e.model.as_deref(), UsageScale {
+                input: usage_input(&e.usage), output: e.usage.output as u64,
+            }));
+        }
 
         // きっかけになったユーザーの指示
         let turns = &self.cache(sel).unwrap().session_summary.turns[sel.lane];
@@ -1373,7 +1377,7 @@ impl Rireki {
 
     // ------------------------------------------------------------ 複数
 
-    /// 選択範囲のトークン使用量と、イベントの絞り込み（名前・失敗）
+    /// イベントの絞り込み（名前・失敗）
     fn selection_summary(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         let s = self.detail_session(sel);
         let evs = &s.lanes[sel.lane].events[sel.first..=sel.last];
@@ -1425,10 +1429,7 @@ impl Rireki {
             chips = chips.child(chip("chip-failed".into(), format!("失敗等 {}", st.failures()),
                 None, filter == Some(RowFilter::Failed), Some(RowFilter::Failed)));
         }
-        div().flex().flex_col().gap_2()
-            .when(summary.total.usage.calls > 0, |d| d.child(usage_view(&summary.total.usage)))
-            .child(chips)
-            .pb_2().border_b_1().border_color(c(theme::BORDER))
+        chips.pb_2().border_b_1().border_color(c(theme::BORDER))
     }
 
     /// 選択の中で編集したファイル。押すとその場で開き、編集の時系列と、編集ごとの差分を出す
@@ -1459,13 +1460,14 @@ impl Rireki {
         let Some(row) = self.file_list.row(index) else { return div().into_any_element(); };
         let Some(cache) = self.cache(sel) else { return div().into_any_element(); };
         let cwd = &self.detail_session(sel).cwd;
-        match row {
+        // List は各行を独立して計測するため、編集履歴も表示領域の幅で配置する。
+        div().w_full().min_w_0().child(match row {
             FileRow::Summary | FileRow::File(_) | FileRow::More => self.file_row_view(cache, cwd, row, cx),
             FileRow::History(file) | FileRow::Edit { file, .. } | FileRow::Empty(file) | FileRow::Expand(file) => {
                 let Some(file) = cache.files.get(file) else { return div().into_any_element(); };
                 self.file_history(sel, cache, file, cwd, row, cx)
             }
-        }.into_any_element()
+        }).into_any_element()
     }
 
     fn file_row_view(&self, d: &DetailCache, cwd: &str, row: FileRow, cx: &mut Context<Self>) -> Div {
@@ -1794,7 +1796,7 @@ impl Rireki {
         }).w_full().min_w_0().flex_1().min_h_0().into_any_element()
     }
 
-    /// 集計の下、イベント行の直前に見出し・並び順・再生操作をまとめる
+    /// イベント行の直前に見出し・並び順・再生操作をまとめる
     fn event_list_header(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         div()
             .flex_none()
@@ -1924,7 +1926,10 @@ impl Rireki {
                     .child(div().flex_none().text_color(c(theme::SUBTLE)).child(facts.join(" · "))),
             )
             .child(rich::markdown(text, theme::TEXT).text_size(px(13.0)))
-            ;
+            .when(!e.usage.is_empty(), |d| d.child(usage_meter(
+                ElementId::NamedInteger("usage".into(), idx as u64), &e.usage,
+                e.model.as_deref(), self.detail_list.usage_scale(),
+            )));
         self.rail_row(sel, idx, e, true, content.into_any_element(), cx)
     }
 
@@ -2078,6 +2083,18 @@ pub(super) fn fmt_tokens(n: u64) -> String {
 /// 使用量の内訳の色: 入力・キャッシュ読込・キャッシュ書込・出力
 const USAGE_COLORS: [u32; 4] = [0x5b9cf5, 0x3f6a9e, 0xd29a4a, 0x7fd18b];
 
+const CACHE_HIT_TOOLTIP: &str = "入力全体（キャッシュなし・キャッシュ読込・キャッシュ書込の合計）のうち、キャッシュから読んだ割合。入力トークンの記録がない場合は —";
+
+fn fmt_cache_hit_rate(rate: Option<f64>) -> String {
+    rate.map_or_else(|| "—".into(), |r| format!("{:.1}%", r * 100.0))
+}
+
+fn cache_hit_stat(id: &'static str, usage: &UsageSum) -> Stateful<Div> {
+    stat("キャッシュヒット率", fmt_cache_hit_rate(usage.cache_hit_rate()), None)
+        .id(id)
+        .tooltip(tip(CACHE_HIT_TOOLTIP, None))
+}
+
 /// 使用量の合計・内訳の帯・凡例
 pub(super) fn usage_view(u: &UsageSum) -> Div {
     let total = u.total().max(1) as f32;
@@ -2178,6 +2195,7 @@ pub(super) fn usage_view(u: &UsageSum) -> Div {
         .when(u.reasoning > 0, |d| {
             d.child(div().text_color(c(theme::SUBTLE)).child(format!("出力のうち推論 {}", fmt_tokens(u.reasoning))))
         })
+        .child(cache_hit_stat("usage-cache-hit", u))
 }
 
 /// 追加・削除の割合を 5 マスで表す（GitHub の差分の表示と同じ）
@@ -2243,6 +2261,7 @@ fn usage_tooltip(u: &Usage, model: Option<&str>) -> String {
     if u.reasoning > 0 {
         detail.push_str(&format!("（うち推論 {}）", fmt_n(u.reasoning as usize)));
     }
+    detail.push_str(&format!("\nキャッシュヒット率 {}\n{CACHE_HIT_TOOLTIP}", fmt_cache_hit_rate(u.cache_hit_rate())));
     if let Some(m) = model {
         detail.push_str(&format!("\n{m}"));
         if let Some(p) = crate::pricing::price(m) {
@@ -2252,18 +2271,7 @@ fn usage_tooltip(u: &Usage, model: Option<&str>) -> String {
     detail
 }
 
-/// イベントに添える使用量（入力はキャッシュ込み）。内訳・モデル・料金はツールチップに出す
-fn usage_chip(id: impl Into<ElementId>, u: &Usage, model: Option<&str>) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .text_xs()
-        .text_color(c(theme::SUBTLE))
-        .child(format!("↑{} ↓{}", fmt_tokens(usage_input(u)), fmt_tokens(u.output as u64)))
-        .tooltip(tip(usage_tooltip(u, model), None))
-}
-
-/// 入力と出力を別々の列で比較する。出力が入力より少なくてもイベント間の差を読める。
+/// 1 イベントの入力と出力を別々の列で比較する。入力はキャッシュ込み。
 fn usage_meter(id: impl Into<ElementId>, u: &Usage, model: Option<&str>, scale: UsageScale) -> Stateful<Div> {
     let parts = [
         ("入力", usage_input(u), scale.input, USAGE_COLORS[0]),
@@ -2275,9 +2283,10 @@ fn usage_meter(id: impl Into<ElementId>, u: &Usage, model: Option<&str>, scale: 
         .min_w_0()
         .mt_1()
         .flex()
-        .gap_3()
+        .flex_col()
+        .gap_1()
         .text_xs()
-        .children(parts.into_iter().map(|(label, value, max, color)| {
+        .child(div().flex().gap_3().children(parts.into_iter().map(|(label, value, max, color)| {
             div()
                 .flex_1()
                 .min_w_0()
@@ -2309,7 +2318,9 @@ fn usage_meter(id: impl Into<ElementId>, u: &Usage, model: Option<&str>, scale: 
                                 .bg(c(color)),
                         )),
                 )
-        }))
+        })))
+        .child(div().text_color(c(theme::MUTED))
+            .child(format!("キャッシュヒット率 {}", fmt_cache_hit_rate(u.cache_hit_rate()))))
         .tooltip(tip(usage_tooltip(u, model), None))
 }
 

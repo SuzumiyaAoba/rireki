@@ -2,12 +2,13 @@
 //!
 //! - 見出し: 期間（7 日・30 日・90 日・全期間）とプロジェクトの絞り込み
 //! - 指標のタイル: 値・前の期間との差・読み込み元の割合。押すと推移・時間帯・プロジェクトの指標が変わる
-//! - 推移と時間帯 (`charts.rs`): 読み込み元ごとに積んだ列（押すとその期間をタイムラインで開く）と、曜日 × 時刻の濃淡
+//! - 推移と時間帯 (`charts.rs` / `radial.rs`): 読み込み元ごとに積んだ列と、曜日 × 時刻の円形・表形式の濃淡
 //! - 一覧 (`lists.rs`): ツール・プロジェクト・モデル（キャッシュ読込率）と、読み込み元の比較表
 
 mod charts;
 mod lists;
 mod profile;
+mod radial;
 use crate::statistics::{Amount, Cache, Period, Summary, Totals};
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +21,7 @@ use gpui::{
 };
 
 use super::detail::{fmt_tokens, fmt_usd};
+use super::header::Choice;
 use super::widgets::tip;
 use super::{HEADER_H, Rireki, fmt_n, tilde};
 use crate::icons::{self, Icon};
@@ -143,9 +145,17 @@ enum Hover {
     HourOfDay(usize),
 }
 
+/// 時間帯の濃淡の表示形式
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HoursView {
+    Radial,
+    Grid,
+}
+
 pub(super) struct State {
     period: Period,
     metric: Metric,
+    hours_view: HoursView,
     scroll: ScrollHandle,
     /// 要求中の集計の条件
     key: Option<Key>,
@@ -163,13 +173,16 @@ pub(super) struct State {
     /// 推移と時間帯を描いた位置（当たり判定用）
     trend_area: charts::Area,
     hours_area: charts::Area,
+    /// 円形の描画を初めて使うときだけ確保し、閉じたら解放する。
+    radial_cache: std::cell::RefCell<Option<std::rc::Rc<std::cell::RefCell<radial::Cache>>>>,
 }
 
 impl State {
     pub(super) fn new() -> Self {
         Self {
             period: Period::Month,
-            metric: Metric::Tokens,
+            metric: Metric::Cost,
+            hours_view: HoursView::Radial,
             scroll: ScrollHandle::new(),
             key: None,
             shown: None,
@@ -182,6 +195,7 @@ impl State {
             all_projects: false,
             trend_area: Default::default(),
             hours_area: Default::default(),
+            radial_cache: Default::default(),
         }
     }
 
@@ -203,6 +217,12 @@ impl Drop for State {
 }
 
 impl Rireki {
+    pub(super) fn clear_statistics_paths_if_unused(&mut self) {
+        if !self.statistics_open || self.statistics_state.hours_view != HoursView::Radial {
+            self.statistics_state.radial_cache.get_mut().take();
+        }
+    }
+
     pub(super) fn show_statistics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.detail_fullscreen = false;
         self.statistics_open = true;
@@ -322,10 +342,17 @@ impl Rireki {
                 )
             })
             .unwrap_or_default();
-        let periods = self.segmented(
+        // タイムライン・カレンダーのツールバーと同じ切り替えを使う
+        let choice = |value, label| Choice { value, label, tip: "", key: None };
+        let periods = self.tool_segmented(
             "statistics-period",
-            &[(Period::Week, "7日間"), (Period::Month, "30日間"), (Period::Quarter, "90日間"), (Period::All, "全期間")],
-            Some(self.statistics_state.period),
+            &[
+                choice(Period::Week, "7日間"),
+                choice(Period::Month, "30日間"),
+                choice(Period::Quarter, "90日間"),
+                choice(Period::All, "全期間"),
+            ],
+            self.statistics_state.period,
             cx,
             |t, period, _, cx| t.set_statistics_period(period, cx),
         );
@@ -357,16 +384,19 @@ impl Rireki {
     fn statistics_body(&self, s: &Summary, inner: f32, cx: &mut Context<Self>) -> Div {
         let wide = inner >= WIDE;
         let stale = self.statistics_state.dimmed(self.source, self.focus.as_deref());
+        let half = if wide { (inner - GAP) / 2.0 } else { inner };
         let pair = |a: Div, b: Div| {
+            // グラフに使う幅をカードにも渡し、内容から幅を測り直す処理を省く。
             div()
                 .flex()
                 .gap(px(GAP))
                 .when(!wide, |d| d.flex_col())
-                .child(a.flex_1().flex_basis(relative(0.0)))
-                .child(b.flex_1().flex_basis(relative(0.0)))
+                .child(a.flex_none().w(px(half)))
+                .child(b.flex_none().w(px(half)))
         };
-        let half = if wide { (inner - GAP) / 2.0 } else { inner };
         let mut body = div()
+            // 表示領域の幅を渡し、内容から幅を測り直すレイアウトを省く。
+            .w(px(inner + PAD * 2.0))
             .flex()
             .flex_col()
             .gap(px(GAP))

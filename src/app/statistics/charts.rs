@@ -10,8 +10,8 @@ use gpui::{
     prelude::*, px, relative, size,
 };
 
-use super::{Hover, Metric, Rireki, card, card_title, percent, series, swatch};
-use crate::app::header::weekday_ja;
+use super::{HoursView, Hover, Metric, Rireki, card, card_title, percent, series, swatch};
+use crate::app::header::{Choice, weekday_ja};
 use crate::prefs::SourceFilter;
 use crate::statistics::{Summary, Unit};
 use crate::theme::{self, c};
@@ -32,13 +32,13 @@ const DAY_W: f32 = 16.0;
 const TOTAL_W: f32 = 48.0;
 const MARGIN_H: f32 = 24.0;
 const GRID_GAP: f32 = 3.0;
-const WEEKDAYS: [&str; 7] = ["月", "火", "水", "木", "金", "土", "日"];
+pub(super) const WEEKDAYS: [&str; 7] = ["月", "火", "水", "木", "金", "土", "日"];
 
 /// canvas に描いた位置（ウィンドウ座標）。描画時に覚え、ポインタの当たり判定に使う
 pub(super) type Area = Rc<Cell<Bounds<Pixels>>>;
 
 impl Rireki {
-    fn set_statistics_hover(&mut self, hover: Option<Hover>, cx: &mut Context<Self>) {
+    pub(super) fn set_statistics_hover(&mut self, hover: Option<Hover>, cx: &mut Context<Self>) {
         if self.statistics_state.hover != hover {
             self.statistics_state.hover = hover;
             cx.notify();
@@ -46,7 +46,7 @@ impl Rireki {
     }
 
     /// ポインタがグラフから出たら、そのグラフのホバーだけを消す（隣のグラフに入った後で届いても消さない）
-    fn leave_statistics_chart(&mut self, owns: fn(&Hover) -> bool, cx: &mut Context<Self>) {
+    pub(super) fn leave_statistics_chart(&mut self, owns: fn(&Hover) -> bool, cx: &mut Context<Self>) {
         if self.statistics_state.hover.as_ref().is_some_and(owns) {
             self.set_statistics_hover(None, cx);
         }
@@ -204,8 +204,11 @@ impl Rireki {
             .child(div().flex().child(gutter).child(plot_area))
     }
 
-    /// 曜日 × 時刻の濃淡。期間内の日をローカル時間で重ね、上に時ごと・右に曜日ごとの合計を添える
+    /// 曜日 × 時刻の濃淡を円形・表形式で表示。期間内の日をローカル時間で重ねる
     pub(super) fn hours_card(&self, s: &Summary, width: f32, cx: &mut Context<Self>) -> Div {
+        if self.statistics_state.hours_view == HoursView::Radial {
+            return self.radial_hours_card(s, width, cx);
+        }
         let metric = self.statistics_state.metric;
         let cell_w = (width - 34.0 - DAY_W - TOTAL_W - 25.0 * GRID_GAP) / 24.0;
         let cell_h = (cell_w * 1.2).clamp(CELL_H.0, CELL_H.1);
@@ -295,8 +298,10 @@ impl Rireki {
         card()
             .child(
                 card_title("時間帯", format!("{} · 曜日 × 時刻（ローカル時間）", metric.label()))
-                    .child(div().flex_none().text_xs().child(readout)),
+                    .flex_wrap()
+                    .child(self.hours_view_switch(cx)),
             )
+            .child(div().text_xs().child(readout))
             .child(
                 div()
                     .flex()
@@ -306,6 +311,22 @@ impl Rireki {
                     .child(axis),
             )
             .child(scale)
+    }
+
+    pub(super) fn hours_view_switch(&self, cx: &mut Context<Self>) -> Div {
+        self.tool_segmented(
+            "statistics-hours-view",
+            &[
+                Choice { value: HoursView::Radial, label: "円形", tip: "時計のように時間帯を表示", key: None },
+                Choice { value: HoursView::Grid, label: "表", tip: "曜日 × 時刻の表で表示", key: None },
+            ],
+            self.statistics_state.hours_view,
+            cx,
+            |t, view, _, _| {
+                t.statistics_state.hours_view = view;
+                t.statistics_state.hover = None;
+            },
+        )
     }
 }
 

@@ -5,7 +5,7 @@
 //! - サイドバー (`sidebar.rs`): 検索欄と、進行中・プロジェクト・セッションの一覧、または検索結果
 //! - メイン: タイムライン (`timeline.rs`) / カレンダー (`calendar.rs`) と見出し・凡例、または統計 (`statistics.rs`)
 //! - 詳細パネル (`detail.rs`): 選択したブロックの内容。選択している間だけ開く
-//! - 重ねて出すもの (`overlay.rs`): ホバーカード、まとめ方のメニュー、ショートカット一覧
+//! - 重ねて出すもの (`overlay.rs`): ホバーカード、表示オプションのメニュー、ショートカット一覧
 
 mod calendar;
 mod cost;
@@ -20,6 +20,8 @@ mod rich;
 mod sidebar;
 mod statistics;
 mod timeline;
+mod track_index;
+mod lane_flags;
 mod widgets;
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
@@ -53,10 +55,11 @@ pub use keymap::init;
 use keymap::{
     Back, CancelAnalysisSearch, CloseWindow, DetailAnalysis, DetailEvents, DetailFiles, DetailSession,
     Dismiss, FocusSearch, Forward, GoNext, GoPrev, ToggleDetailFullscreen,
-    GoToday, NextEvent, PrevEvent, SearchCancel, SearchConfirm, SearchDown, SearchUp, ShowDay, ShowHelp, ShowTimeline,
-    ShowWeek, ShowStatistics, ToggleInViewOnly, ToggleSidebar, ZoomIn, ZoomOut,
+    GoToday, NextEvent, PickPeriod, PrevEvent, SearchCancel, SearchConfirm, SearchDown, SearchUp, ShowDay, ShowHelp,
+    ShowTimeline, ShowWeek, ShowMonth, ShowStatistics, ToggleInViewOnly, ToggleSidebar, ZoomIn, ZoomOut,
 };
 use sidebar::SidebarView;
+use track_index::TrackIndex;
 
 /// 上端の帯（macOS のタイトルバー領域）の高さ
 pub const STRIP_H: f32 = 34.0;
@@ -161,11 +164,11 @@ enum Resize {
 /// 重ねて出しているもの
 #[derive(Clone, Copy, PartialEq)]
 enum Popover {
-    /// まとめ方のメニュー
-    Granularity,
+    /// 表示オプション（表示する値・行とブロックのまとめ方・範囲内のみ）
+    Display,
     /// キーボードショートカット一覧
     Help,
-    /// 表示期間を選ぶカレンダー
+    /// 表示期間（カレンダーでは移動先の日付）を選ぶカレンダー
     Range,
 }
 
@@ -190,10 +193,14 @@ pub struct Rireki {
     scope: Vec<usize>,
     /// scope をさらにプロジェクトで絞り込んだ、表示するセッション（開始順）
     order: Vec<usize>,
+    /// 表示中の全期間。表示順の更新で無効にし、最初の問い合わせで求める。
+    order_extent: Cell<Option<(f64, f64)>>,
     /// scope のプロジェクト（最近作業した順）
     projects: Vec<Project>,
     /// `codex exec` などで起動された子セッション → 起動元 (セッション, レーン, 時刻)
     exec_parent: HashMap<usize, (usize, usize, f64)>,
+    /// 表示順と起動元の更新時だけ作る、トラック抽出用の親子関係。
+    track_index: TrackIndex,
     loading: Option<(usize, usize)>,
     profile: Option<profile::State>,
     detail_loader: Arc<Mutex<DetailLoader>>,
@@ -311,15 +318,15 @@ pub struct Rireki {
     /// サイドバーのセッション一覧に並べる件数
     session_limit: usize,
     popover: Option<Popover>,
-    /// まとめ方ボタンの位置（メニューを出す基準）
-    gran_anchor: Rc<Cell<Bounds<Pixels>>>,
+    /// 表示オプションのボタンの位置（メニューを出す基準）
+    display_anchor: Rc<Cell<Bounds<Pixels>>>,
     /// カレンダーで選んだ表示期間。ミニマップはこの期間全体を表す
     pick: Option<(f64, f64)>,
     /// 期間を選ぶカレンダーで表示している月（1 日）
     picker_month: NaiveDate,
     /// 期間を選ぶカレンダーで、先に選んだ開始日
     picker_from: Option<NaiveDate>,
-    /// 期間を選ぶボタンの位置
+    /// ツールバーの期間の表記の位置（期間を選ぶカレンダーを出す基準）
     picker_anchor: Rc<Cell<Bounds<Pixels>>>,
     /// ミニマップの位置（ウィンドウ座標）
     minimap_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -328,7 +335,7 @@ pub struct Rireki {
     lane_map_bounds: Rc<Cell<Bounds<Pixels>>>,
     lane_map_drag: bool,
     /// ミニマップの棒の高さ。キーは (期間の始め, 終わり, 本数, data_gen)
-    minimap_cache: Option<(MinimapKey, Vec<u32>)>,
+    minimap_cache: Option<(MinimapKey, Rc<Vec<u32>>, f32)>,
     /// 表示するセッションが変わるたびに増やす
     data_gen: u64,
     /// 表示中のタイムラインの行。縦スクロールや選択では作り直さない。
@@ -577,8 +584,10 @@ impl Rireki {
             calendar_cache: calendar::Cache::default(),
             scope: Vec::new(),
             order: Vec::new(),
+            order_extent: Cell::new(None),
             projects: Vec::new(),
             exec_parent: Default::default(),
+            track_index: Default::default(),
             loading: Some((0, 0)),
             profile: profile_ui.then(profile::State::new),
             detail_loader: Arc::new(Mutex::new(DetailLoader::default())),
@@ -632,7 +641,7 @@ impl Rireki {
             mode: p.mode,
             statistics_open: p.statistics,
             statistics_state: statistics::State::new(),
-            calendar: if p.calendar == Mode::Day { Mode::Day } else { Mode::Week },
+            calendar: if p.calendar == Mode::Timeline { Mode::Week } else { p.calendar },
             t0: now(),
             spp: 60.0,
             row_scroll: 0.0,
@@ -663,7 +672,7 @@ impl Rireki {
             folded: p.folded.iter().cloned().collect(),
             session_limit: 50,
             popover: None,
-            gran_anchor: Rc::new(Cell::new(Bounds::default())),
+            display_anchor: Rc::new(Cell::new(Bounds::default())),
             pick: None,
             picker_month: today,
             picker_from: None,
@@ -680,6 +689,10 @@ impl Rireki {
         };
         // 現在時刻が右寄りに見えるように始める
         this.go_today(window);
+        // SHOT-HOOK: 一時的なスクリーンショット用
+        if let Ok(d) = std::env::var("RIREKI_SHOT_DAY") { this.day0 = d.parse().unwrap(); }
+        if let Ok(v) = std::env::var("RIREKI_SHOT_SCROLL") { this.cal_scroll = v.parse().unwrap(); }
+        if let Ok(v) = std::env::var("RIREKI_SHOT_PPH") { this.px_per_hour = v.parse().unwrap(); }
         if std::env::args().any(|a| a == "--profile-ui") {
             this.start_profile(window, cx);
         }
@@ -733,8 +746,6 @@ impl Rireki {
             return false;
         }
         let old = std::mem::replace(&mut self.store, snapshot);
-        // 旧版の大きい本文の解放も UI スレッドで行わない
-        cx.background_executor().spawn(async move { drop(old); }).detach();
         self.layout_cache.get_mut().invalidate(&touched);
         self.rebuild_order();
         if !self.query.is_empty() {
@@ -767,9 +778,18 @@ impl Rireki {
             }
         }
         self.sidebar_changed(cx);
+        // 触れた番号を背景へ渡し、旧版の本文と検索索引の解放も UI スレッドで行わない。
+        let touched_count = touched.len();
+        let search = self.search.clone();
+        cx.background_executor().spawn(async move {
+            search.lock().unwrap().invalidate_versions(
+                touched.into_iter().filter_map(|si| old.sessions.get(si).map(|s| (si, s))),
+            );
+            drop(old);
+        }).detach();
         if let Some(started) = started {
             println!("{}", serde_json::json!({"ui_profile":"apply", "ms":started.elapsed().as_secs_f64()*1000.0,
-                "touched":touched.len(), "sessions":self.store.sessions.len()}));
+                "touched":touched_count, "sessions":self.store.sessions.len()}));
         }
         true
     }
@@ -835,7 +855,9 @@ impl Rireki {
         self.projects = self.projects_of(&scope);
         self.scope = scope;
         self.order = order;
+        self.order_extent.set(None);
         self.exec_parent = self.find_exec_parents();
+        self.track_index = TrackIndex::new(&self.order, &self.exec_parent);
         self.live_sources = self.find_live_sources();
         self.data_gen += 1;
         if let Some(started) = started {
@@ -900,17 +922,20 @@ impl Rireki {
     /// 期間内にイベントを持つレーンを、セッション → レーンの順で並べる。
     /// 別セッションとして起動された子は起動元セッションの直下に並べる
     fn tracks_in(&self, v0: f64, v1: f64) -> Vec<Track> {
-        let mut children: HashMap<usize, Vec<usize>> = Default::default();
-        for &si in &self.order {
-            if let Some(&(p, _, _)) = self.exec_parent.get(&si) {
-                children.entry(p).or_default().push(si);
-            }
-        }
+        self.tracks_for(v0, v1, !self.in_view_only)
+    }
+
+    /// `all` なら期間外のセッションも並べる（タイムラインでグレーアウトして出す）
+    fn tracks_for(&self, v0: f64, v1: f64, all: bool) -> Vec<Track> {
         let mut out = Vec::new();
-        for &si in &self.order {
-            if !self.exec_parent.contains_key(&si) {
-                self.session_tracks(si, 0, None, &children, (v0, v1), &mut out);
+        for &si in self.track_index.roots(&self.order) {
+            if !all {
+                let session = &self.store.sessions[si];
+                if (session.end < v0 || session.start > v1) && self.track_index.children.children(si).is_empty() {
+                    continue;
+                }
             }
+            self.session_tracks(si, 0, None, &self.track_index.children, (v0, v1), all, &mut out);
         }
         // 最初に現れた順を保ったままディレクトリごとにまとめる
         let mut first_seen: HashMap<&str, usize> = Default::default();
@@ -924,57 +949,62 @@ impl Rireki {
     }
 
     /// セッション si のレーン（と子セッション）を out に積む。何か積んだら true
+    #[allow(clippy::too_many_arguments)]
     fn session_tracks(
         &self,
         si: usize,
         base: usize,
         link: Option<(usize, usize, f64)>,
-        children: &HashMap<usize, Vec<usize>>,
+        children: &track_index::Children,
         (v0, v1): (f64, f64),
+        all: bool,
         out: &mut Vec<Track>,
     ) -> bool {
         let s = &self.store.sessions[si];
         let at = out.len();
         let mut kids = Vec::new();
-        for &ci in children.get(&si).map(Vec::as_slice).unwrap_or(&[]) {
-            self.session_tracks(ci, base + 1, self.exec_parent.get(&ci).copied(), children, (v0, v1), &mut kids);
+        for &ci in children.children(si) {
+            self.session_tracks(ci, base + 1, self.exec_parent.get(&ci).copied(), children, (v0, v1), all, &mut kids);
         }
         let in_range = !(s.end < v0 || s.start > v1);
-        let all = !self.in_view_only;
         if !in_range && kids.is_empty() && !all {
             return false;
         }
-        let visible = |li: usize| {
-            let l = &s.lanes[li];
-            let i = l.events.partition_point(|e| e.start < v0);
-            l.events.get(i).is_some_and(|e| e.start <= v1) || (i > 0 && l.cum_end[i - 1] >= v0)
-        };
-        // 子レーンが見えていれば、親から main までの祖先も並べて紐づきを示す
-        let mut show = vec![false; s.lanes.len()];
-        if !kids.is_empty() && !show.is_empty() {
-            show[0] = true;
-        }
-        let mut active = vec![false; s.lanes.len()];
-        for &(li, _) in &s.tree {
-            if in_range && visible(li) {
-                active[li] = true;
-                let mut cur = Some(li);
-                while let Some(c) = cur {
-                    if std::mem::replace(&mut show[c], true) && c != li {
-                        break;
-                    }
-                    cur = s.parents.get(c).copied().flatten();
+        if !in_range {
+            for &(li, depth) in &s.tree {
+                // 従来の状態配列と同じ添字の検証を保つ。
+                let _ = &s.lanes[li];
+                if all || (li == 0 && !kids.is_empty()) {
+                    out.push(Track {session: si, lane: li, depth: base + depth, link: if li == 0 {link} else {None}, active: false});
                 }
             }
+            out.extend(kids);
+            return out.len() > at;
         }
+        if let Some(state) = lane_flags::single(s, (v0, v1), in_range, !kids.is_empty()) {
+            if state & lane_flags::SHOW != 0 || all {
+                out.push(Track {session: si, lane: 0, depth: base, link, active: state & lane_flags::ACTIVE != 0});
+            }
+            out.extend(kids);
+            return out.len() > at;
+        }
+        let mut inline = [0u8; 32];
+        let mut heap;
+        let states: &mut [u8] = if s.lanes.len() <= inline.len() {
+            &mut inline[..s.lanes.len()]
+        } else {
+            heap = vec![0; s.lanes.len()];
+            &mut heap
+        };
+        lane_flags::mark(s, (v0, v1), in_range, !kids.is_empty(), states);
         for &(li, depth) in &s.tree {
-            if show[li] || all {
+            if states[li] & lane_flags::SHOW != 0 || all {
                 out.push(Track {
                     session: si,
                     lane: li,
                     depth: base + depth,
                     link: if li == 0 { link } else { None },
-                    active: active[li],
+                    active: states[li] & lane_flags::ACTIVE != 0,
                 });
             }
         }
@@ -1111,7 +1141,8 @@ impl Rireki {
     }
 
     fn plot_height(&self, window: &Window) -> f32 {
-        (self.body_height(window) - AXIS_H).max(100.0)
+        let head = if self.mode == Mode::Timeline { AXIS_H } else { calendar::DAY_HEAD_H };
+        (self.body_height(window) - head).max(100.0)
     }
 
     /// タイムラインの右端を現在時刻から 1 時間先までに制限する
@@ -1264,11 +1295,15 @@ impl Rireki {
                 self.clamp_timeline(window);
                 self.scroll_to_selection(sel, window);
             }
-            Mode::Day | Mode::Week => {
+            Mode::Day | Mode::Week | Mode::Month => {
                 let day = local(a).date_naive();
-                let first = if self.mode == Mode::Day { self.day0 } else { self.week_start() };
-                let days = if self.mode == Mode::Day { 1 } else { 7 };
-                if day < first || day >= first + Duration::days(days) {
+                let (first, days) = match self.mode {
+                    Mode::Day => (self.day0, 1),
+                    Mode::Week => (self.week_start(), 7),
+                    _ => (calendar::month_grid_start(self.day0), 42),
+                };
+                let other_month = self.mode == Mode::Month && day.month() != self.day0.month();
+                if other_month || day < first || day >= first + Duration::days(days) {
                     self.day0 = day;
                 }
                 let ph = self.plot_height(window);
@@ -1542,6 +1577,10 @@ impl Rireki {
         match self.mode {
             Mode::Day => self.day0 += Duration::days(dir as i64),
             Mode::Week => self.day0 += Duration::days(7 * dir as i64),
+            Mode::Month => {
+                let d = self.day0.with_day(1).unwrap_or(self.day0);
+                self.day0 = if dir < 0.0 { d - chrono::Months::new(1) } else { d + chrono::Months::new(1) };
+            }
             Mode::Timeline => self.t0 += dir * self.spp * self.plot_width(window) as f64,
         }
         self.clamp_timeline(window);
@@ -1554,7 +1593,7 @@ impl Rireki {
                 let width = self.spp * self.plot_width(window) as f64;
                 self.t0 = now() - width * 0.85;
             }
-            Mode::Day | Mode::Week => self.scroll_calendar_to(now(), 0.6, window),
+            Mode::Day | Mode::Week | Mode::Month => self.scroll_calendar_to(now(), 0.6, window),
         }
         self.clamp_timeline(window);
     }
@@ -1569,7 +1608,7 @@ impl Rireki {
                 let span = (self.spp * self.plot_width(window) as f64).min(86400.0);
                 self.set_range(end - span * 0.85, end + span * 0.15, window);
             }
-            Mode::Day | Mode::Week => {
+            Mode::Day | Mode::Week | Mode::Month => {
                 self.day0 = local(end).date_naive();
                 self.scroll_calendar_to(end, 0.6, window);
             }
@@ -1577,7 +1616,7 @@ impl Rireki {
     }
 
     fn zoom(&mut self, f: f64, window: &Window) {
-        if self.statistics_open { return; }
+        if self.statistics_open || self.mode == Mode::Month { return; }
         match self.mode {
             Mode::Timeline => {
                 let w = self.plot_width(window) as f64;
@@ -1602,6 +1641,7 @@ impl Rireki {
     // ------------------------------------------------------------ 入力
 
     fn on_wheel(&mut self, e: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let before = (self.t0, self.spp, self.row_scroll, self.cal_scroll, self.px_per_hour, self.hovered);
         let d = e.delta.pixel_delta(px(16.0));
         let (dx, dy): (f32, f32) = (d.x.into(), d.y.into());
         let zoom = e.modifiers.platform || e.modifiers.control || e.modifiers.alt;
@@ -1616,6 +1656,7 @@ impl Rireki {
                     self.row_scroll = (self.row_scroll - dy).max(0.0);
                 }
             }
+            Mode::Month => {}
             Mode::Day | Mode::Week => {
                 if zoom {
                     self.zoom_at(e.position, (-(dy as f64) * 0.01).exp(), window);
@@ -1628,18 +1669,23 @@ impl Rireki {
         }
         self.clamp_timeline(window);
         self.hovered = None;
-        cx.notify();
+        if (self.t0, self.spp, self.row_scroll, self.cal_scroll, self.px_per_hour, self.hovered) != before {
+            cx.notify();
+        }
     }
 
     /// トラックパッドのピンチ。`m` は拡大率の差分（正で拡大）
     fn on_pinch(&mut self, m: f64, window: &mut Window, cx: &mut Context<Self>) {
-        if self.statistics_open { return; }
+        if self.statistics_open || self.mode == Mode::Month { return; }
+        let before = (self.t0, self.spp, self.row_scroll, self.cal_scroll, self.px_per_hour, self.hovered);
         let pos = window.mouse_position();
         match self.mode {
             Mode::Timeline => self.zoom_at(pos, 1.0 / (1.0 + m).max(0.1), window),
-            Mode::Day | Mode::Week => self.zoom_at(pos, (1.0 + m).max(0.1), window),
+            _ => self.zoom_at(pos, (1.0 + m).max(0.1), window),
         }
-        cx.notify();
+        if (self.t0, self.spp, self.row_scroll, self.cal_scroll, self.px_per_hour, self.hovered) != before {
+            cx.notify();
+        }
     }
 
     /// `pos` を基準に拡大・縮小する。`f` はタイムラインでは spp、カレンダーでは px_per_hour に掛ける倍率
@@ -1654,7 +1700,7 @@ impl Rireki {
                 self.spp = (self.spp * f).clamp(0.005, 86400.0 * 3.0);
                 self.t0 = anchor - x * self.spp;
             }
-            Mode::Day | Mode::Week => {
+            _ => {
                 let anchor_h = (my + self.cal_scroll) / self.px_per_hour;
                 self.px_per_hour = (self.px_per_hour * f as f32).clamp(20.0, 20000.0);
                 self.cal_scroll = calendar::clamp_scroll(
@@ -1692,6 +1738,7 @@ impl Rireki {
             }
             return;
         }
+        let before = (self.t0, self.spp, self.row_scroll, self.cal_scroll, self.px_per_hour, self.hovered);
         let ph = self.plot_height(window);
         let Some(d) = self.drag.as_mut() else { return };
         let dx: f32 = (e.position.x - d.origin.x).into();
@@ -1721,7 +1768,9 @@ impl Rireki {
                 d.origin.x = e.position.x;
             }
         }
-        cx.notify();
+        if (self.t0, self.spp, self.row_scroll, self.cal_scroll, self.px_per_hour, self.hovered) != before {
+            cx.notify();
+        }
     }
 
     fn on_up(&mut self, e: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1739,6 +1788,12 @@ impl Rireki {
             let w = self.plot_width(window) as f64;
             self.spp = ((b - a + 2.0 * pad) / w).clamp(0.005, 86400.0 * 3.0);
             self.t0 = a - pad;
+        } else if e.click_count >= 2 {
+            // カレンダーではダブルクリックでその範囲をタイムラインで開く
+            let (a, b) = self.sel_range(sel);
+            let pad = ((b - a) * 0.1).max(60.0);
+            self.set_mode(Mode::Timeline, window);
+            self.set_range(a - pad, b + pad, window);
         }
         self.navigate(sel, window, cx);
     }
@@ -1761,6 +1816,7 @@ impl Rireki {
         // メイン列が残るようにする
         let room = |others: f32| win - RAIL_W - GAP - 2.0 - others - MAIN_MIN_W;
         let (side, detail) = self.pane_widths(window);
+        let widths = (self.sidebar_w, self.label_w, self.detail_w);
         match r {
             Resize::Sidebar { x: x0, w } => {
                 let max = room(detail).clamp(MIN_SIDEBAR_W, MAX_SIDEBAR_W);
@@ -1773,6 +1829,11 @@ impl Rireki {
             Resize::Detail { x: x0, w } => {
                 self.detail_w = (w - (x - x0)).clamp(MIN_DETAIL_W, room(side).max(MIN_DETAIL_W));
             }
+        }
+        // 上下だけの移動や、幅の上限・下限を越えた移動では画面を作り直さない。
+        if widths == (self.sidebar_w, self.label_w, self.detail_w) {
+            cx.stop_propagation();
+            return;
         }
         self.detail_changed(cx);
         self.sidebar_changed(cx);
@@ -1859,6 +1920,7 @@ impl Render for Rireki {
         self.profile_frame(window, cx);
         self.step_panes(window);
         self.clamp_timeline(window);
+        self.clear_statistics_paths_if_unused();
         let fullscreen = self.detail_fullscreen && self.selected.is_some_and(|s| self.valid(s)) && !self.statistics_open;
         let main_col = if fullscreen {
             div().into_any_element()
@@ -1986,6 +2048,10 @@ impl Render for Rireki {
                 t.set_mode(Mode::Week, window);
                 cx.notify();
             }))
+            .on_action(cx.listener(|t, _: &ShowMonth, window, cx| {
+                t.set_mode(Mode::Month, window);
+                cx.notify();
+            }))
             .on_action(cx.listener(|t, _: &ShowStatistics, window, cx| t.show_statistics(window, cx)))
             .on_action(cx.listener(|t, _: &GoToday, window, cx| {
                 t.go_today(window);
@@ -1998,6 +2064,12 @@ impl Render for Rireki {
             .on_action(cx.listener(|t, _: &GoNext, window, cx| {
                 t.step(1.0, window);
                 cx.notify();
+            }))
+            .on_action(cx.listener(|t, _: &PickPeriod, _, cx| {
+                if !t.statistics_open && !t.detail_fullscreen {
+                    t.toggle_picker();
+                    cx.notify();
+                }
             }))
             .on_action(cx.listener(|t, _: &ZoomIn, window, cx| {
                 t.zoom(0.5, window);

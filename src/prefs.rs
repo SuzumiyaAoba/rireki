@@ -11,6 +11,8 @@ use crate::layout::Granularity;
 pub enum Mode {
     Day,
     Week,
+    /// 月（日ごとのセッション一覧）
+    Month,
     Timeline,
 }
 
@@ -44,7 +46,7 @@ pub struct Prefs {
     pub mode: Mode,
     /// 統計画面を開いているか（履歴の表示モードは別に保持する）
     pub statistics: bool,
-    /// カレンダーで最後に使った表示（日 / 週）
+    /// カレンダーで最後に使った表示（日 / 週 / 月）
     pub calendar: Mode,
     pub sidebar: bool,
     pub sidebar_w: f32,

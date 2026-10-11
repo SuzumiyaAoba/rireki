@@ -8,6 +8,7 @@ use crate::model::Event;
 use crate::model::{Snapshot, Source, UsageSum};
 use crate::time::local;
 use chrono::{Datelike, Duration, NaiveDate};
+#[cfg(test)]
 use std::collections::HashMap;
 
 /// 集計する期間。全期間以外は今日までの直近の日数
@@ -200,11 +201,13 @@ impl Summary {
             weekdays |= 1 << (cell / 24);
             hours |= 1 << (cell % 24);
         }
-        for (d, a) in self.by_weekday.iter_mut().enumerate() {
-            a.sessions += u64::from(weekdays >> d & 1);
+        while weekdays != 0 {
+            self.by_weekday[weekdays.trailing_zeros() as usize].sessions += 1;
+            weekdays &= weekdays - 1;
         }
-        for (h, a) in self.by_hour.iter_mut().enumerate() {
-            a.sessions += u64::from(hours >> h & 1);
+        while hours != 0 {
+            self.by_hour[hours.trailing_zeros() as usize].sessions += 1;
+            hours &= hours - 1;
         }
     }
 
@@ -221,11 +224,11 @@ impl Summary {
     }
 
     /// 集計した表を、件数の多い順・名前順の決まった並びにする
-    fn finish(
+    fn finish<'a>(
         &mut self,
-        models: HashMap<&str, [UsageSum; 2]>,
-        projects: HashMap<&str, [Totals; 2]>,
-        tools: HashMap<(&str, bool), [Calls; 2]>,
+        models: impl IntoIterator<Item = (&'a str, [UsageSum; 2])>,
+        projects: impl IntoIterator<Item = (&'a str, [Totals; 2])>,
+        tools: impl IntoIterator<Item = ((&'a str, bool), [Calls; 2])>,
     ) {
         let tokens = |u: &[UsageSum; 2]| u[0].total() + u[1].total();
         self.models = models.into_iter().map(|(m, u)| (m.to_owned(), u)).collect();
@@ -641,6 +644,71 @@ mod tests {
     }
 
     const PERIODS: [Period; 4] = [Period::Week, Period::Month, Period::Quarter, Period::All];
+
+    #[test]
+    fn shared_cached_names_release_removed_sessions_and_labels() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+        let name: Arc<str> = "共有ツール".into();
+        let model: Arc<str> = "gpt-6-sol".into();
+        let name_weak = Arc::downgrade(&name);
+        let model_weak = Arc::downgrade(&model);
+        let mut e = event(midnight(today), Kind::Tool, Usage { input: 123, ..Default::default() });
+        e.name = name;
+        e.model = Some(model);
+        let mut store = Snapshot { sessions: vec![
+            session(Source::Claude, "/shared-a", vec![vec![e.clone()]]),
+            session(Source::Codex, "/shared-b", vec![vec![e]]),
+        ] };
+        let old = Arc::downgrade(&store.sessions[0]);
+        let mut cache = Cache::default();
+        let result = cache.build(&store, &[0, 1], Period::Month, today);
+        assert_summary(&result, &Summary::reference(&store, &[0, 1], Period::Month, today));
+        store.sessions.clear();
+        assert!(old.upgrade().is_none(), "キャッシュが削除済みのセッションを保持しています");
+        assert_summary(&cache.build(&store, &[], Period::Month, today),
+            &Summary::reference(&store, &[], Period::Month, today));
+        assert!(name_weak.upgrade().is_none(), "削除済みのツール名がキャッシュに残っています");
+        assert!(model_weak.upgrade().is_none(), "削除済みのモデル名がキャッシュに残っています");
+        assert_eq!(result.tools[0].name, "共有ツール");
+        assert_eq!(result.models[0].0, "gpt-6-sol");
+    }
+
+    #[test]
+    fn shared_and_distinct_names_keep_models_and_agent_calls_separate() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+        let start = midnight(today - Duration::days(14));
+        let name: Arc<str> = "共有ツール".into();
+        let model: Arc<str> = "gpt-6-sol".into();
+        let events: Vec<_> = (0..300).map(|i| {
+            let mut e = event(start + i as f64 * 4320.0, if i % 4 == 3 { Kind::Agent } else { Kind::Tool },
+                Usage { input: 100 + i, output: 10, ..Default::default() });
+            e.name = if i % 4 == 2 { name.as_ref().into() } else { name.clone() };
+            e.model = match i % 6 {
+                0 | 1 => Some(model.clone()),
+                2 => Some(model.as_ref().into()),
+                3 => None,
+                4 => Some("statistics-test-unknown-model".into()),
+                _ => Some("claude-haiku-4-5-20251001".into()),
+            };
+            if i % 7 == 0 { e.status = Status::Rejected; }
+            e
+        }).collect();
+        assert!(Arc::ptr_eq(&events[0].name, &events[1].name));
+        assert!(!Arc::ptr_eq(&events[0].name, &events[2].name));
+        assert!(Arc::ptr_eq(events[0].model.as_ref().unwrap(), events[1].model.as_ref().unwrap()));
+        assert!(!Arc::ptr_eq(events[0].model.as_ref().unwrap(), events[2].model.as_ref().unwrap()));
+        let store = Snapshot { sessions: vec![
+            session(Source::Claude, "/shared", vec![events.clone()]),
+            session(Source::Codex, "/distinct", vec![events]),
+        ] };
+        let mut cache = Cache::default();
+        for period in PERIODS {
+            let expected = Summary::reference(&store, &[0, 1], period, today);
+            assert_summary(&cache.build(&store, &[0, 1], period, today), &expected);
+            assert_summary(&cache.build(&store, &[0, 1], period, today), &expected);
+            assert_eq!(cache.rebuilt, 0);
+        }
+    }
 
     fn mixed_history(today: NaiveDate) -> Snapshot {
         let start = midnight(today - Duration::days(200));

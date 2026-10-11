@@ -44,11 +44,13 @@ impl<'a> Cache<'a> {
 
     #[inline]
     fn get_ref(&mut self, model: Option<&'a str>) -> Option<&'static Price> {
-        model?;
-        if let Some((last, price)) = self.last && last == model {
+        let model = model?;
+        if let Some((Some(last), price)) = self.last
+            && (std::ptr::eq(last, model) || last == model)
+        {
             return price;
         }
-        self.get_changed(model)
+        self.get_changed(Some(model))
     }
 
     #[inline(never)]

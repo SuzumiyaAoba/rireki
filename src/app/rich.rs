@@ -16,6 +16,7 @@ use crate::theme::{self, c};
 pub use crate::patch::{FilePatch, is_patch, parse_patch};
 
 mod syntax;
+mod diff_rows;
 
 /// 等幅フォント
 pub const MONO: &str = "Menlo";
@@ -402,7 +403,7 @@ pub fn rel_path<'a>(path: &'a str, cwd: &str) -> &'a str {
 
 /// 差分の表示。`limit` 行を超える分は省き、省いた行数を返す
 pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, limit: usize) -> (Div, usize) {
-    let mut col = div().flex().flex_col().gap_2().min_w_0();
+    let mut col = div().w_full().min_w_0().flex().flex_col().gap_2();
     let mut budget = limit;
     let mut hidden = 0;
     for (i, f) in files.into_iter().enumerate() {
@@ -449,41 +450,10 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
         hidden += f.rows.len() - shown;
         budget -= shown;
         let spans = syntax::cached_diff_spans(f, shown);
-        let rows = f.rows[..shown].iter().zip(spans.iter()).map(|(r, spans)| {
-            let (bg, fg, mark) = match r.kind {
-                '+' => (Some(c(ADD).opacity(0.10)), ADD, "+"),
-                '-' => (Some(c(DEL).opacity(0.10)), DEL, "−"),
-                '@' => (Some(c(HUNK).opacity(0.08)), HUNK, ""),
-                _ => (None, CODE_TEXT, ""),
-            };
-            let num = |n: Option<u32>| {
-                div()
-                    .w(px(gutter))
-                    .flex_none()
-                    .pr_1p5()
-                    .flex()
-                    .justify_end()
-                    .text_color(c(theme::SUBTLE))
-                    .child(n.map(|n| n.to_string()).unwrap_or_default())
-            };
-            div()
-                .flex()
-                .min_w_0()
-                .when_some(bg, |d, bg| d.bg(bg))
-                .when(numbers, |d| d.child(num(r.old)).child(num(r.new)))
-                .child(div().w(px(14.0)).flex_none().flex().justify_center().text_color(c(fg)).child(mark))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .pr_2()
-                        .text_color(c(CODE_TEXT))
-                        .when(r.kind == '@', |d| d.text_color(c(theme::SUBTLE)))
-                        .child(styled(if r.text.is_empty() { " ".to_string() } else { r.text.clone() }, spans.clone())),
-                )
-        });
+        let rows = diff_rows::rows(&f.rows[..shown], spans, gutter, numbers);
         col = col.child(
             div()
+                .w_full()
                 .min_w_0()
                 .rounded_md()
                 .overflow_hidden()
@@ -491,8 +461,8 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
                 .border_color(c(theme::BORDER))
                 .bg(c(CODE_BG))
                 .child(head)
-                .child(horizontal_scroll(ElementId::NamedInteger("diff".into(), i as u64)).child(
-                    div().flex_none().min_w_full().py_0p5().flex().flex_col().text_xs().font_family(MONO).children(rows),
+                .child(horizontal_scroll(ElementId::NamedInteger("diff".into(), i as u64)).w_full().child(
+                    rows,
                 )),
         );
     }
@@ -880,6 +850,60 @@ pub fn markdown(s: &str, color: u32) -> Div {
         });
     }
     col
+}
+
+
+fn diff_row(r: &crate::patch::DiffRow, spans: &Spans, gutter: f32, numbers: bool) -> (Div, gpui::TextLayout) {
+    let (bg, fg, mark) = match r.kind {
+        '+' => (Some(c(ADD).opacity(0.10)), ADD, "+"),
+        '-' => (Some(c(DEL).opacity(0.10)), DEL, "−"),
+        '@' => (Some(c(HUNK).opacity(0.08)), HUNK, ""),
+        _ => (None, CODE_TEXT, ""),
+    };
+    let num = |n: Option<u32>| {
+        div()
+            .w(px(gutter))
+            .flex_none()
+            .pr_1p5()
+            .flex()
+            .justify_end()
+            .text_color(c(theme::SUBTLE))
+            .child(n.map(|n| n.to_string()).unwrap_or_default())
+    };
+    let text = styled(
+        if r.text.is_empty() {
+            " ".to_string()
+        } else {
+            r.text.clone()
+        },
+        spans.clone(),
+    );
+    let layout = text.layout().clone();
+    let row = div()
+        .flex()
+        .flex_none()
+        .min_w_0()
+        .when_some(bg, |d, bg| d.bg(bg))
+        .when(numbers, |d| d.child(num(r.old)).child(num(r.new)))
+        .child(
+            div()
+                .w(px(14.0))
+                .flex_none()
+                .flex()
+                .justify_center()
+                .text_color(c(fg))
+                .child(mark),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .pr_2()
+                .text_color(c(CODE_TEXT))
+                .when(r.kind == '@', |d| d.text_color(c(theme::SUBTLE)))
+                .child(text),
+        );
+    (row, layout)
 }
 
 #[cfg(test)]

@@ -1,4 +1,7 @@
-//! 表示期間の選択（カレンダーで日付の範囲を選ぶポップオーバー）と、期間全体のどこにイベントがあるかを示すミニマップ
+//! 期間の表記から開くポップオーバー（直近の期間の一覧と、日付の範囲を選ぶカレンダー。カレンダーの表示では日付へ移動）と、
+//! 期間全体のどこにイベントがあるかを示すミニマップ
+
+use std::rc::Rc;
 
 use chrono::{Datelike, Duration, Local, NaiveDate};
 use gpui::{
@@ -6,7 +9,7 @@ use gpui::{
     Window, anchored, canvas, deferred, div, fill, point, prelude::*, px, size,
 };
 
-use super::header::weekday_ja;
+use super::header::{PRESETS, weekday_ja};
 use super::widgets::tip;
 use super::{MINIMAP_H, Popover, Rireki, local, midnight};
 use crate::icons::{self, Icon};
@@ -26,14 +29,12 @@ impl Rireki {
 
     /// ミニマップが表す期間。選んだ期間があればそれ、なければ表示中のセッション全体
     fn minimap_span(&self) -> Option<(f64, f64)> {
-        self.pick.or_else(|| {
-            let ss = self.order.iter().map(|&si| &self.store.sessions[si]);
-            let (a, b) = ss.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), s| (a.min(s.start), b.max(s.end)));
-            (a.is_finite() && b > a).then(|| {
+        self.pick.or_else(|| self.order_bounds().and_then(|(a, b)| {
+            (b > a).then(|| {
                 let pad = (b - a) * 0.02;
                 (a - pad, b + pad)
             })
-        })
+        }))
     }
 
     /// 日付の範囲を表示期間にする（`a`〜`b` の両日を含む）
@@ -46,58 +47,23 @@ impl Rireki {
         self.persist();
     }
 
+    /// 期間を選ぶポップオーバーを開く。今見ている月から始める
     pub(super) fn open_picker(&mut self) {
-        let base = self.pick.map(|(a, _)| local(a).date_naive()).unwrap_or_else(|| Local::now().date_naive());
+        let base = if self.mode == Mode::Timeline {
+            self.pick.map_or_else(|| local(self.t0).date_naive(), |(a, _)| local(a).date_naive())
+        } else {
+            self.day0
+        };
         self.picker_month = base.with_day(1).unwrap_or(base);
         self.picker_from = None;
         self.popover = Some(Popover::Range);
     }
 
-    /// 見出しに置く、期間を選ぶボタン
-    pub(super) fn range_button(&self, cx: &mut gpui::Context<Self>) -> gpui::Stateful<Div> {
-        let anchor = self.picker_anchor.clone();
-        let open = self.popover == Some(Popover::Range);
-        div()
-            .id("range")
-            .relative()
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .size(px(26.0))
-            .rounded_md()
-            .border_1()
-            .border_color(c(if open || self.pick.is_some() {
-                theme::ACCENT
-            } else {
-                theme::BORDER
-            }))
-            .when(open, |d| d.bg(c(theme::ACCENT_BG)))
-            .cursor_pointer()
-            .hover(|s| s.bg(c(theme::HOVER)))
-            .child(icons::icon(
-                Icon::Calendar,
-                if self.pick.is_some() {
-                    theme::ACCENT
-                } else {
-                    theme::MUTED
-                },
-            ))
-            .child(canvas(move |b, _, _| anchor.set(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
-            .tooltip(tip("カレンダーで期間を選ぶ", None))
-            .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
-                if t.popover == Some(Popover::Range) {
-                    t.popover = None;
-                } else {
-                    t.open_picker();
-                }
-                cx.notify();
-            }))
-    }
-
-    /// 期間を選ぶカレンダー。1 回目のクリックで開始日、2 回目で終了日を決める
-    pub(super) fn range_menu(&self, cx: &mut gpui::Context<Self>) -> AnyElement {
+    /// 期間の表記から開くポップオーバー。タイムラインでは直近の期間の一覧と、日付の範囲を選ぶカレンダーを並べる。
+    /// カレンダーの表示では、押した日を含む日・週・月へ移動する
+    pub(super) fn range_menu(&self, window: &Window, cx: &mut gpui::Context<Self>) -> AnyElement {
         let b = self.picker_anchor.get();
+        let timeline = self.mode == Mode::Timeline;
         let month = self.picker_month;
         let first = month - Duration::days(month.weekday().num_days_from_monday() as i64);
         let days: Vec<NaiveDate> = (0..42).map(|i| first + Duration::days(i)).collect();
@@ -105,8 +71,14 @@ impl Rireki {
         let counts = self.count_bins(&edges);
         let max = counts.iter().copied().max().unwrap_or(0).max(1) as f32;
         let today = Local::now().date_naive();
-        let picked = self.pick.map(|(a, b)| (local(a).date_naive(), local(b - 1.0).date_naive()));
-        let from = self.picker_from;
+        // 強調する範囲。タイムラインでは選んだ期間、カレンダーでは表示中の日・週（月は表全体なので強調しない）
+        let picked = match self.mode {
+            Mode::Timeline => self.pick.map(|(a, b)| (local(a).date_naive(), local(b - 1.0).date_naive())),
+            Mode::Day => Some((self.day0, self.day0)),
+            Mode::Week => Some((self.week_start(), self.week_start() + Duration::days(6))),
+            Mode::Month => None,
+        };
+        let from = self.picker_from.filter(|_| timeline);
 
         let shift = |months: i32| {
             move |t: &mut Self, _: &ClickEvent, _: &mut Window, cx: &mut gpui::Context<Self>| {
@@ -179,7 +151,8 @@ impl Rireki {
                 .gap(px(2.0))
                 .rounded_md()
                 .cursor_pointer()
-                .when(inside && !ends, |s| s.bg(c(theme::ACCENT_BG)))
+                // 範囲の内側は角を丸めず、続いた帯に見せる
+                .when(inside && !ends, |s| s.rounded_none().bg(c(theme::ACCENT_BG)))
                 .when(ends, |s| s.bg(c(theme::SELECT)))
                 .hover(|s| s.border_1().border_color(c(theme::ACCENT)))
                 .text_xs()
@@ -199,12 +172,17 @@ impl Rireki {
                         .bg(c(theme::ACCENT).opacity(if in_month { 0.9 } else { 0.4 })),
                 )
                 .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
-                    match t.picker_from.take() {
-                        Some(a) => {
-                            t.pick_days(a, d, w);
-                            t.popover = None;
+                    if t.mode != Mode::Timeline {
+                        t.day0 = d;
+                        t.popover = None;
+                    } else {
+                        match t.picker_from.take() {
+                            Some(a) => {
+                                t.pick_days(a, d, w);
+                                t.popover = None;
+                            }
+                            None => t.picker_from = Some(d),
                         }
-                        None => t.picker_from = Some(d),
                     }
                     cx.notify();
                 }))
@@ -213,16 +191,20 @@ impl Rireki {
             .flex()
             .flex_col()
             .children((0..6).map(|r| div().flex().children((0..7).map(|k| cell(r * 7 + k, days[r * 7 + k])))));
-        let hint = match (from, picked) {
-            (Some(a), _) => format!("{} から（終了日を選ぶ）", a.format("%Y/%-m/%-d")),
-            (None, Some((a, b))) => {
+        let hint = match (self.mode, from, picked) {
+            (Mode::Day, ..) => "日付を選ぶと、その日へ移動".to_string(),
+            (Mode::Week, ..) => "日付を選ぶと、その週へ移動".to_string(),
+            (Mode::Month, ..) => "日付を選ぶと、その月へ移動".to_string(),
+            (Mode::Timeline, Some(a), _) => format!("{} から（終了日を選ぶ）", a.format("%Y/%-m/%-d")),
+            (Mode::Timeline, None, Some((a, b))) => {
                 format!("{} – {}", a.format("%Y/%-m/%-d"), b.format("%Y/%-m/%-d"))
             }
-            (None, None) => "開始日と終了日を選ぶ".to_string(),
+            (Mode::Timeline, None, None) => "開始日と終了日を選ぶ".to_string(),
         };
-        let quick = |id: &'static str, label: &'static str, back: i64| {
+        let clear = (timeline && self.pick.is_some()).then(|| {
             div()
-                .id(id)
+                .id("pick-clear-menu")
+                .flex_none()
                 .px_2()
                 .py(px(2.0))
                 .rounded_md()
@@ -230,51 +212,94 @@ impl Rireki {
                 .border_color(c(theme::BORDER))
                 .cursor_pointer()
                 .hover(|s| s.bg(c(theme::HOVER)))
-                .child(label)
-                .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
-                    let today = Local::now().date_naive();
-                    t.pick_days(today - Duration::days(back), today, w);
-                    t.popover = None;
+                .child("解除")
+                .tooltip(tip("選んだ期間の指定を解除（ミニマップを全期間に戻す）", None))
+                .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
+                    t.pick = None;
+                    t.picker_from = None;
                     cx.notify();
                 }))
-        };
+        });
         let foot = div()
             .flex()
-            .flex_col()
-            .gap_1p5()
+            .items_center()
+            .gap_2()
             .pt_1p5()
             .mt_1()
             .border_t_1()
             .border_color(c(theme::BORDER))
             .text_xs()
-            .child(div().text_color(c(theme::MUTED)).child(hint))
-            .child(
-                div()
-                    .flex()
-                    .gap_1()
-                    .child(quick("pick-7", "直近 7 日", 6))
-                    .child(quick("pick-30", "直近 30 日", 29))
-                    .child(quick("pick-90", "直近 90 日", 89)),
-            );
+            .child(div().flex_1().text_color(c(theme::MUTED)).child(hint))
+            .children(clear);
+        let calendar = div().flex().flex_col().child(head).child(week_head).child(grid).child(foot);
+        // 直近の期間。押すと現在時刻までのその長さを表示する
+        let presets = timeline.then(|| {
+            let active = self.active_preset(window);
+            div()
+                .w(px(132.0))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .pr_2()
+                .mr_2()
+                .border_r_1()
+                .border_color(c(theme::BORDER))
+                .child(
+                    div()
+                        .px_2()
+                        .pt_1()
+                        .pb_1p5()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(c(theme::MUTED))
+                        .child("表示する期間"),
+                )
+                .children(PRESETS.iter().enumerate().map(|(i, &(label, _))| {
+                    let on = active == Some(i);
+                    div()
+                        .id(("preset", i))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .h(px(28.0))
+                        .px_2()
+                        .rounded_md()
+                        .text_xs()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(c(theme::HOVER)))
+                        // 全期間は直近の期間と分けて置く
+                        .when(i + 1 == PRESETS.len(), |d| d.mt_1())
+                        .when(on, |d| d.bg(c(theme::ACCENT_BG)).font_weight(FontWeight::SEMIBOLD))
+                        .child(div().flex_1().child(label))
+                        .when(on, |d| d.child(icons::icon(Icon::Check, theme::ACCENT)))
+                        .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
+                            t.apply_preset(i, w);
+                            t.popover = None;
+                            cx.notify();
+                        }))
+                }))
+        });
         deferred(
-            anchored().position(point(b.right(), b.bottom() + px(4.0))).anchor(Corner::TopRight).child(
-                div()
-                    .id("range-menu")
-                    .occlude()
-                    .p_2()
-                    .flex()
-                    .flex_col()
-                    .rounded_lg()
-                    .bg(c(theme::ELEVATED))
-                    .border_1()
-                    .border_color(c(theme::BORDER))
-                    .shadow_lg()
-                    .text_color(c(theme::TEXT))
-                    .child(head)
-                    .child(week_head)
-                    .child(grid)
-                    .child(foot),
-            ),
+            anchored()
+                .position(point(b.left(), b.bottom() + px(4.0)))
+                .anchor(Corner::TopLeft)
+                .snap_to_window_with_margin(px(8.0))
+                .child(
+                    div()
+                        .id("range-menu")
+                        .occlude()
+                        .p_2()
+                        .flex()
+                        .rounded_lg()
+                        .bg(c(theme::ELEVATED))
+                        .border_1()
+                        .border_color(c(theme::BORDER))
+                        .shadow_lg()
+                        .text_color(c(theme::TEXT))
+                        .children(presets)
+                        .child(calendar),
+                ),
         )
         .with_priority(2)
         .into_any_element()
@@ -301,20 +326,21 @@ impl Rireki {
         let span = self.minimap_span();
         let plot_w = self.plot_width(window);
         let bins = ((plot_w - 16.0) / BIN_W).max(1.0) as usize;
-        let counts = match span {
+        let (counts, max) = match span {
             Some((a, e)) => {
                 let key = (a.to_bits(), e.to_bits(), bins, self.data_gen);
                 match &self.minimap_cache {
-                    Some((k, v)) if *k == key => v.clone(),
+                    Some((k, v, max)) if *k == key => (Some(v.clone()), *max),
                     _ => {
                         let edges: Vec<f64> = (0..=bins).map(|i| a + (e - a) * i as f64 / bins as f64).collect();
-                        let v = self.count_bins(&edges);
-                        self.minimap_cache = Some((key, v.clone()));
-                        v
+                        let v = Rc::new(self.count_bins(&edges));
+                        let max = v.iter().copied().max().unwrap_or(0).max(1) as f32;
+                        self.minimap_cache = Some((key, v.clone(), max));
+                        (Some(v), max)
                     }
                 }
             }
-            None => Vec::new(),
+            None => (None, 1.0),
         };
         let view = (self.t0, self.t0 + self.spp * plot_w as f64);
         let label = match (self.pick, span) {
@@ -326,13 +352,13 @@ impl Rireki {
             (None, None) => String::new(),
         };
         let bounds_cell = self.minimap_bounds.clone();
-        let max = counts.iter().copied().max().unwrap_or(0).max(1) as f32;
         let measurements = self.profile.as_ref().and_then(|p| p.measurements.clone());
         let unbatched = self.profile.as_ref().is_some_and(|p| p.unbatched_minimap);
         let map = canvas(
             move |b, _, _| bounds_cell.set(b),
             move |bounds: Bounds<Pixels>, _, window: &mut Window, _| {
                 use std::hash::{DefaultHasher, Hash, Hasher};
+                let counts = counts.as_ref().map_or(&[][..], |v| v.as_slice());
                 let started = measurements.as_ref().map(|_| std::time::Instant::now());
                 let cpu_started = measurements.as_ref().and_then(|_| super::profile::thread_cpu_ns());
                 let mut hash = measurements.as_ref().map(|_| DefaultHasher::new());
@@ -459,9 +485,10 @@ impl Rireki {
                         MouseButton::Left,
                         cx.listener(|t, e: &MouseDownEvent, w, cx| {
                             t.minimap_drag = true;
+                            let before = t.t0;
                             t.minimap_seek(e.position.x, w);
                             cx.stop_propagation();
-                            cx.notify();
+                            if t.t0 != before { cx.notify(); }
                         }),
                     )
                     .on_mouse_move(cx.listener(|t, e: &MouseMoveEvent, w, cx| {
@@ -472,8 +499,9 @@ impl Rireki {
                             t.minimap_drag = false;
                             return;
                         }
+                        let before = t.t0;
                         t.minimap_seek(e.position.x, w);
-                        cx.notify();
+                        if t.t0 != before { cx.notify(); }
                     }))
                     .on_mouse_up(MouseButton::Left, cx.listener(|t, _, _, _| t.minimap_drag = false)),
             )

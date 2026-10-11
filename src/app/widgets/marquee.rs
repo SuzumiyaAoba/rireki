@@ -34,14 +34,9 @@ impl Marquee {
         }
     }
 
-    /// ホバーカードやツールチップは、表示された時点をホバーの開始とする。
+    /// ホバーカードは、表示された時点をホバーの開始とする。
     pub(in crate::app) fn on_show(mut self) -> Self {
         self.on_show = Some(Instant::now());
-        self
-    }
-
-    pub(in crate::app) fn on_show_since(mut self, since: Instant) -> Self {
-        self.on_show = Some(since);
         self
     }
 

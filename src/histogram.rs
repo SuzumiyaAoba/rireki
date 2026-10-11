@@ -15,14 +15,31 @@ pub fn count_bins(store: &Snapshot, order: &[usize], edges: &[f64]) -> Vec<u32> 
         }
         for lane in &s.lanes {
             let evs = &lane.events;
-            let first = evs.partition_point(|e| e.start < a);
-            let last = evs.partition_point(|e| e.start < b);
+            // レーン全体が期間内なら、開始と終了の二分探索は不要。
+            let first = if evs.first().is_some_and(|e| a <= e.start) {
+                0
+            } else {
+                evs.partition_point(|e| e.start < a)
+            };
+            // 先頭がNaNだと比較述語が単調でないため、従来の探索を使う。
+            let last = if evs.last().is_some_and(|e| e.start < b)
+                && evs.first().is_some_and(|e| !e.start.is_nan())
+            {
+                evs.len()
+            } else {
+                evs.partition_point(|e| e.start < b)
+            };
             if first == last {
                 continue;
             }
             let events = &evs[first..last];
             // 履歴のない区間は探索しない。短いレーンは全期間でも数列だけに収まる。
             let from = edges.partition_point(|&t| t <= events[0].start) - 1;
+            // 全イベントが同じ列に収まる場合は、列の終わりも探索しない。
+            if events[events.len() - 1].start < edges[from + 1] {
+                out[from] += events.len() as u32;
+                continue;
+            }
             let to = edges.partition_point(|&t| t <= events[events.len() - 1].start);
             if events.len() < to - from {
                 // 点在する少数のイベントでは、空の区間を走査せずイベントから列を求める。
@@ -31,11 +48,21 @@ pub fn count_bins(store: &Snapshot, order: &[usize], edges: &[f64]) -> Vec<u32> 
                     out[bin] += 1;
                 }
             } else {
-                let mut prev = 0;
-                for i in from..to {
-                    let next = events.partition_point(|e| e.start < edges[i + 1]);
-                    out[i] += (next - prev) as u32;
-                    prev = next;
+                if events[0].start.is_finite() && events[events.len() - 1].start.is_finite() {
+                    let mut prev = 0;
+                    for i in from..to - 1 {
+                        let next = events.partition_point(|e| e.start < edges[i + 1]);
+                        out[i] += (next - prev) as u32;
+                        prev = next;
+                    }
+                    out[to - 1] += (events.len() - prev) as u32;
+                } else {
+                    let mut prev = 0;
+                    for i in from..to {
+                        let next = events.partition_point(|e| e.start < edges[i + 1]);
+                        out[i] += (next - prev) as u32;
+                        prev = next;
+                    }
                 }
             }
         }
@@ -186,4 +213,35 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn whole_lanes_and_single_bins_match_full_scan_at_repeated_boundaries() {
+        let store = snapshot(vec![
+            vec![-0.0; 4096],
+            vec![0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0],
+            vec![],
+            vec![-2.0, -1.0, 2.0, 3.0],
+        ]);
+        for edges in [
+            vec![-10.0, 10.0],
+            vec![-10.0, 0.0, 0.0, 1.0, 1.0, 10.0],
+            vec![0.0, 1.0],
+            vec![0.25, 0.5, 0.75],
+            vec![0.0, 0.0],
+            vec![-10.0, -5.0],
+        ] {
+            for order in [vec![0, 1], vec![1], vec![0], vec![]] {
+                assert_eq!(count_bins(&store, &order, &edges), full_scan(&store, &order, &edges));
+            }
+        }
+    }
+
+
+    #[test]
+    fn nan_prefix_in_one_lane_keeps_other_lane_counts_with_overflow_checks() {
+        let store = snapshot(vec![vec![-f64::NAN, -f64::NAN, 0.0], vec![-1.0]]);
+        assert_eq!(count_bins(&store, &[0], &[-2.0, 2.0]), vec![1]);
+        assert_eq!(count_bins(&store, &[0], &[-2.0, -1.0, 0.0, 2.0]), vec![0, 1, 0]);
+    }
+
 }

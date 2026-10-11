@@ -10,7 +10,7 @@ use gpui::{
     Window, div, list, prelude::*, px,
 };
 
-use super::{badge, fmt_tokens, label, stat, usage_view};
+use super::{badge, cache_hit_stat, fmt_tokens, label, stat, usage_view};
 use crate::app::widgets::{event_icon, tip};
 use crate::app::{Rireki, fmt_dur, fmt_n, local};
 use crate::detail::{
@@ -672,6 +672,7 @@ impl Rireki {
                         .child(stat("失敗・拒否・中断", fmt_n(analysis.failures),
                             (analysis.failures > 0).then_some(theme::ERR)))
                         .child(stat("API換算料金", super::usage_cost_label(&analysis.usage), None))
+                        .child(cache_hit_stat("analysis-cache-hit", &analysis.usage))
                         .child(
                             stat(
                                 "ツール失敗率",

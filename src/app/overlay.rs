@@ -1,11 +1,12 @@
-//! 重ねて出すもの: ブロックのホバーカード、まとめ方のメニュー、キーボードショートカット一覧
+//! 重ねて出すもの: ブロックのホバーカード、表示オプションのメニュー、キーボードショートカット一覧
 
 use gpui::{
     AnyElement, ClickEvent, Context, Corner, Div, FontWeight, MouseButton, MouseDownEvent, SharedString, Window, anchored, deferred,
     div, point, prelude::*, px,
 };
 
-use super::widgets::{Marquee, event_icon};
+use super::header::Choice;
+use super::widgets::{Marquee, event_icon, kbd};
 use super::{Popover, Rireki, fmt_dur, local};
 use crate::icons::{self, Icon};
 use crate::layout::{self, Block, Granularity};
@@ -13,16 +14,16 @@ use crate::model::one_line;
 use crate::theme::{self, c};
 
 impl Rireki {
-    pub(super) fn overlays(&self, _: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    pub(super) fn overlays(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = Vec::new();
         match self.popover {
-            Some(Popover::Granularity) => {
+            Some(Popover::Display) => {
                 out.push(self.backdrop(cx).into_any_element());
-                out.push(self.gran_menu(cx));
+                out.push(self.display_menu(cx));
             }
             Some(Popover::Range) => {
                 out.push(self.backdrop(cx).into_any_element());
-                out.push(self.range_menu(cx));
+                out.push(self.range_menu(window, cx));
             }
             Some(Popover::Help) => out.push(self.help_sheet(cx)),
             None => out.extend(self.hover_card()),
@@ -133,68 +134,187 @@ impl Rireki {
         )
     }
 
-    fn gran_menu(&self, cx: &mut Context<Self>) -> AnyElement {
-        let b = self.gran_anchor.get();
-        let items = Granularity::ALL.into_iter().map(|g| {
-            let on = self.gran == g;
+    /// 表示オプション。表示する値・行のまとめ方・ブロックのまとめ方・範囲内のみをまとめて切り替える。
+    /// 結果を見ながら続けて変えられるよう、選んでも閉じない
+    fn display_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let b = self.display_anchor.get();
+        let cost = self.cost_timeline;
+        let heading = |text: &'static str| {
             div()
-                .id(g.label())
+                .px_2()
+                .pt_1()
+                .pb_1()
+                .text_xs()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(c(theme::MUTED))
+                .child(text)
+        };
+        let note = |text: &'static str| div().px_2().pb_1().text_xs().text_color(c(theme::MUTED)).child(text);
+        // 見出しと切り替えを横に並べた行
+        let labeled = |label: &'static str, control: Div| {
+            div()
                 .flex()
-                .items_start()
+                .items_center()
                 .gap_2()
                 .px_2()
-                .py_1p5()
-                .rounded_md()
-                .cursor_pointer()
-                .hover(|s| s.bg(c(theme::HOVER)))
-                .child(
-                    div()
-                        .w(px(14.0))
-                        .pt(px(2.0))
-                        .flex_none()
-                        .when(on, |d| d.child(icons::icon(Icon::Check, theme::ACCENT))),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(g.label()))
-                        .child(div().text_xs().text_color(c(theme::MUTED)).child(g.description())),
-                )
-                .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
-                    t.gran = g;
-                    t.popover = None;
-                    t.persist();
-                    cx.notify();
-                }))
-        });
-        deferred(
-            anchored().position(point(b.right(), b.bottom() + px(4.0))).anchor(Corner::TopRight).child(
+                .py_1()
+                .child(div().w(px(72.0)).flex_none().text_xs().text_color(c(theme::MUTED)).child(label))
+                .child(control)
+        };
+        let divider = || div().mx_2().my_1p5().h(px(1.0)).bg(c(theme::BORDER));
+        let metric = self.tool_segmented(
+            "display-metric",
+            &[
+                Choice { value: false, label: "イベント", tip: "", key: None },
+                Choice { value: true, label: "API コスト", tip: "", key: None },
+            ],
+            cost,
+            cx,
+            |t, v, _, cx| {
+                if t.cost_timeline != v {
+                    t.toggle_cost_timeline(cx);
+                    t.popover = Some(Popover::Display);
+                }
+            },
+        );
+        let rows = self.tool_segmented(
+            "display-rows",
+            &[
+                Choice { value: false, label: "セッション", tip: "", key: None },
+                Choice { value: true, label: "ディレクトリ", tip: "", key: None },
+            ],
+            self.directory_timeline,
+            cx,
+            |t, v, w, cx| {
+                if t.directory_timeline != v {
+                    t.toggle_directory_timeline(w, cx);
+                }
+            },
+        );
+        let metric_note = if cost {
+            "区間ごとの API 換算料金（USD）を棒で表示"
+        } else {
+            "ツール呼び出しやメッセージをブロックで表示"
+        };
+        let rows_note = match (self.directory_timeline, cost) {
+            (false, _) => "セッションとサブエージェントを 1 行ずつ並べる",
+            (true, false) => "メインのイベントだけを詰めて並べる",
+            (true, true) => "ディレクトリごとに全セッションの料金を合計",
+        };
+        // ブロックのまとめ方は、API コストの表示では使わない
+        let grans =
+            Granularity::ALL.into_iter().map(|g| {
+                let on = self.gran == g;
                 div()
-                    .id("gran-menu")
-                    .occlude()
-                    .w(px(300.0))
-                    .p_1()
+                    .id(g.label())
                     .flex()
-                    .flex_col()
-                    .rounded_lg()
-                    .bg(c(theme::ELEVATED))
-                    .border_1()
-                    .border_color(c(theme::BORDER))
-                    .shadow_lg()
-                    .text_color(c(theme::TEXT))
+                    .items_start()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_xs()
+                    .when(!cost, |d| d.cursor_pointer().hover(|s| s.bg(c(theme::HOVER))))
+                    .child(div().w(px(14.0)).pt(px(1.0)).flex_none().when(on, |d| {
+                        d.child(icons::icon(Icon::Check, if cost { theme::SUBTLE } else { theme::ACCENT }))
+                    }))
                     .child(
                         div()
-                            .px_2()
-                            .pt_1()
-                            .pb_1p5()
-                            .text_xs()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(c(theme::MUTED))
-                            .child("ブロックのまとめ方"),
+                            .w(px(64.0))
+                            .flex_none()
+                            .when(on, |d| d.font_weight(FontWeight::SEMIBOLD))
+                            .text_color(c(if cost { theme::SUBTLE } else { theme::TEXT }))
+                            .child(g.label()),
                     )
-                    .children(items),
-            ),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(c(if cost { theme::SUBTLE } else { theme::MUTED }))
+                            .child(g.description()),
+                    )
+                    .when(!cost, |d| {
+                        d.on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
+                            t.gran = g;
+                            t.persist();
+                            cx.notify();
+                        }))
+                    })
+            });
+        let on = self.in_view_only;
+        let in_view = div()
+            .id("display-in-view")
+            .flex()
+            .items_start()
+            .gap_2()
+            .px_2()
+            .py_1p5()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(|s| s.bg(c(theme::HOVER)))
+            // 切り替えスイッチ
+            .child(
+                div()
+                    .mt(px(1.0))
+                    .flex_none()
+                    .flex()
+                    .when(on, |d| d.justify_end())
+                    .w(px(28.0))
+                    .h(px(16.0))
+                    .p(px(2.0))
+                    .rounded_full()
+                    .bg(c(if on { theme::ACCENT } else { theme::BORDER }))
+                    .child(div().size(px(12.0)).rounded_full().bg(gpui::white())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().text_xs().child("表示範囲内のセッションだけ"))
+                    .child(div().text_xs().text_color(c(theme::MUTED)).child(if on {
+                        "範囲にイベントのないセッションを隠す"
+                    } else {
+                        "範囲外のセッションもグレーで並べる"
+                    })),
+            )
+            .child(kbd("V").flex_none())
+            .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.toggle_in_view_only(cx)));
+        deferred(
+            anchored()
+                .position(point(b.right(), b.bottom() + px(4.0)))
+                .anchor(Corner::TopRight)
+                .snap_to_window_with_margin(px(8.0))
+                .child(
+                    div()
+                        .id("display-menu")
+                        .occlude()
+                        .w(px(380.0))
+                        .p_1()
+                        .flex()
+                        .flex_col()
+                        .rounded_lg()
+                        .bg(c(theme::ELEVATED))
+                        .border_1()
+                        .border_color(c(theme::BORDER))
+                        .shadow_lg()
+                        .text_color(c(theme::TEXT))
+                        .child(heading("表示オプション"))
+                        .child(labeled("表示する値", metric))
+                        .child(note(metric_note).pl(px(88.0)))
+                        .child(labeled("行", rows))
+                        .child(note(rows_note).pl(px(88.0)))
+                        .child(divider())
+                        .child(heading(if cost {
+                            "ブロックのまとめ方（API コストの表示では使いません）"
+                        } else {
+                            "ブロックのまとめ方"
+                        }))
+                        .children(grans)
+                        .child(divider())
+                        .child(in_view),
+                ),
         )
         .with_priority(2)
         .into_any_element()
@@ -208,6 +328,7 @@ impl Rireki {
                     ("⌘1", "タイムライン"),
                     ("⌘2 · D", "日"),
                     ("⌘3 · W", "週"),
+                    ("M", "月"),
                     ("⌘4", "統計"),
                     ("⌃⌘S · ⌘B", "サイドバーの表示を切り替え"),
                     ("V", "表示範囲内のセッションだけを表示"),
@@ -218,10 +339,11 @@ impl Rireki {
                 &[
                     ("⌘T · T", "今日（現在時刻）へ"),
                     ("⌘← ⌘→ · ← →", "前 / 次の期間"),
+                    ("G", "期間・日付を選ぶ"),
                     ("⌘= ⌘- · + −", "拡大 / 縮小"),
                     ("ドラッグ · スクロール", "表示範囲を動かす"),
                     ("⌘ + スクロール · ピンチ", "マウス位置を中心に拡大縮小"),
-                    ("ダブルクリック", "ブロックの範囲まで拡大"),
+                    ("ダブルクリック", "ブロックの範囲まで拡大（カレンダーではタイムラインで開く）"),
                 ],
             ),
             (

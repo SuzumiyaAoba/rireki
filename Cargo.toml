@@ -33,6 +33,12 @@ unicode-segmentation = { version = "1.13.3", optional = true }
 block = { version = "0.1.6", optional = true }
 objc = { version = "0.2.7", optional = true }
 
+# 本体で実体化するジェネリック処理も最適化し、開発時の検査を維持する。
+[profile.dev]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true
+
 # 依存クレート（GPUI など）は dev ビルドでも最適化する。未最適化の GPUI は描画が極端に遅い
 [profile.dev.package."*"]
 opt-level = 3

@@ -8,7 +8,7 @@ use gpui::{
     StyledText, WeakEntity, Window, div, prelude::*, px,
 };
 
-use super::widgets::{Marquee, dot, event_icon, kbd, project_tile, prompt_tip, tip};
+use super::widgets::{Marquee, dot, event_icon, kbd, project_tile, tip};
 use super::{HEADER_H, INNER_RADIUS, Rireki, is_live, rel_time, when};
 use crate::icons::{self, Icon};
 use crate::model::one_line;
@@ -227,9 +227,9 @@ impl Rireki {
             weak.upgrade().map_or_else(|| div().into_any_element(), |app| {
                 app.update(cx, |app, cx| {
                     app.navigator_list.row(index).map_or_else(|| div().into_any_element(), |row| {
-                        // 外枠で行の余白も高さに含め、見出しや「さらに表示」の間隔を保つ。
+                        // 外枠をパネル幅に広げ、行の余白も高さに含めて見出しや「さらに表示」の間隔を保つ。
                         let previous = index.checked_sub(1).and_then(|i| app.navigator_list.row(i));
-                        div().flex().flex_col().child(app.navigator_item(row, previous, cx)).into_any_element()
+                        div().w_full().flex().flex_col().child(app.navigator_item(row, previous, cx)).into_any_element()
                     })
                 })
             })
@@ -309,7 +309,6 @@ impl Rireki {
                                     .child(div().flex_none().child(rel_time(s.end))),
                             ),
                     )
-                    .tooltip(prompt_tip(title_of(&s.title), format!("{} · {}", self.project_name(&s.cwd), rel_time(s.end))))
                     .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))).into_any_element()
             }
             NavRow::AllProjects => {
@@ -362,9 +361,6 @@ impl Rireki {
                 let (logo, logo_color) = icons::source_icon(s.source);
                 let selected = sel_session == Some(si);
                 let live = is_live(s.end);
-                let sub_label = if self.focus.is_none() {
-                    format!("{} · {}", self.project_name(&s.cwd), super::local(s.start).format("%m/%d %H:%M"))
-                } else { super::local(s.start).format("%m/%d %H:%M").to_string() };
                 self.row(ElementId::NamedInteger("ses".into(), si as u64), selected)
                     .child(icons::icon(logo, if selected { theme::TEXT } else { logo_color }))
                     .child(div().flex_1().min_w_0().child(Marquee::new("title", title_of(&s.title))))
@@ -376,7 +372,6 @@ impl Rireki {
                             .text_color(if selected { gpui::white().opacity(0.8) } else { c(theme::SUBTLE) })
                             .child(rel_time(s.end)),
                     )
-                    .tooltip(prompt_tip(title_of(&s.title), sub_label))
                     .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))).into_any_element()
             }
             NavRow::More(rest) => {
@@ -433,7 +428,9 @@ impl Rireki {
         let weak = cx.weak_entity();
         gpui::list(self.result_list.clone(), move |row, _, cx| {
             weak.upgrade().map_or_else(|| div().into_any_element(), |app| {
-                app.update(cx, |app, cx| app.search_result_item(row, &terms, cx))
+                app.update(cx, |app, cx| {
+                    div().w_full().flex().flex_col().child(app.search_result_item(row, &terms, cx)).into_any_element()
+                })
             })
         }).flex_1().min_h_0().pb_3().into_any_element()
     }
@@ -508,7 +505,6 @@ impl Rireki {
                                     rel_time(s.end)
                                 ))),
                         )
-                        .tooltip(prompt_tip(title, format!("{} · {}", self.project_name(&s.cwd), rel_time(s.end))))
                         .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.click_result(i, window, cx))).into_any_element();
             }
             row -= ns;
@@ -548,7 +544,7 @@ impl Rireki {
                                                 .flex_none()
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(c(color))
-                                                .child(highlight(&e.name, terms)),
+                                                .child(highlight(e.name.clone().into(), terms)),
                                         )
                                         .child(div().flex_1().min_w_0().text_color(c(theme::MUTED)).child(
                                             Marquee::new("session-title", match &lane_name {
@@ -563,7 +559,7 @@ impl Rireki {
                                         div()
                                             .line_clamp(2)
                                             .text_color(c(theme::TEXT))
-                                            .child(highlight(&summary, terms)),
+                                            .child(highlight(summary, terms)),
                                     )
                                 }),
                         )
@@ -648,59 +644,204 @@ fn result_heading(title: &'static str, n: usize) -> Div {
 }
 
 /// 検索語に一致する部分を強調した文字列
-fn highlight(text: &str, terms: &[String]) -> StyledText {
-    StyledText::new(SharedString::from(text.to_string())).with_highlights(highlights(text, terms))
+fn highlight(text: SharedString, terms: &[String]) -> StyledText {
+    let runs = highlights(&text, terms);
+    StyledText::new(text).with_highlights(runs)
 }
 
 fn highlights(text: &str, terms: &[String]) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
-    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
-    for t in terms {
-        let mut from = 0;
-        while let Some(r) = crate::search::find(&text[from..], t) {
-            ranges.push(from + r.start..from + r.end);
-            from += r.end;
-            if from >= text.len() {
-                break;
+    if terms.is_empty() || text.is_empty() { return Vec::new(); }
+    let mut ranges = {
+        // ASCIIの小文字化は一致するたびに繰り返さず、一回だけ行う。
+        let lower = text.to_ascii_lowercase();
+        let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
+        if lower.len() < 64 {
+            for t in terms {
+                let mut from = 0;
+                while let Some(i) = memchr::memmem::find(&lower.as_bytes()[from..], t.as_bytes()) {
+                    let start = from + i;
+                    let end = start + t.len();
+                    if !text.is_char_boundary(start) || !text.is_char_boundary(end) { break; }
+                    ranges.push(start..end);
+                    from = end;
+                    if from >= text.len() { break; }
+                }
+            }
+        } else {
+            for t in terms {
+                // 同じ長さなら全文の比較だけで決まる。全面一致なら他の語も同じ範囲に含まれる。
+                if t.len() >= lower.len() {
+                    if t.as_bytes() == lower.as_bytes() {
+                        ranges.clear();
+                        ranges.push(0..text.len());
+                        break;
+                    }
+                    continue;
+                }
+                // 長い表示文字列では、検索器を語ごとに一度だけ準備する。
+                for start in memchr::memmem::find_iter(lower.as_bytes(), t.as_bytes()) {
+                    let end = start + t.len();
+                    if !text.is_char_boundary(start) || !text.is_char_boundary(end) { break; }
+                    ranges.push(start..end);
+                    if end >= text.len() { break; }
+                }
             }
         }
-    }
-    ranges.sort_by_key(|r| r.start);
-    // 重なりをまとめる
-    let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
-    for r in ranges {
-        match merged.last_mut() {
-            Some(m) if r.start <= m.end => m.end = m.end.max(r.end),
-            _ => merged.push(r),
+        ranges
+    };
+    // 同じ開始の並びに依存せず最大の終了を使うので、安定ソートの作業領域は不要。
+    ranges.sort_unstable_by_key(|r| r.start);
+    let mut merged = 0;
+    for i in 0..ranges.len() {
+        if merged > 0 && ranges[i].start <= ranges[merged - 1].end {
+            ranges[merged - 1].end = ranges[merged - 1].end.max(ranges[i].end);
+        } else {
+            ranges[merged] = ranges[i].clone();
+            merged += 1;
         }
     }
+    ranges.truncate(merged);
     let style = HighlightStyle {
         color: Some(gpui::white()),
         background_color: Some(c(theme::ACCENT).opacity(0.35)),
         font_weight: Some(FontWeight::BOLD),
         ..Default::default()
     };
-    merged.into_iter().map(|r| (r, style)).collect()
+    ranges.into_iter().map(|r| (r, style)).collect()
 }
 
 /// 一致した位置（`range`）が見えるよう、長い文字列の前後を省いた 1 行
 fn snippet(text: &str, range: std::ops::Range<usize>) -> String {
     const BEFORE: usize = 24;
-    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    // 空白をまとめると位置がずれるので、一致した文字列で探し直す
+    const LIMIT: usize = 160;
     let needle = text.get(range).unwrap_or("");
-    let at = line.find(needle).unwrap_or(0);
-    let chars_before = line[..at].chars().count();
-    if chars_before <= BEFORE {
-        return one_line(&line, 160);
+    // 検索結果の一致位置は空白のない一語。複数語の範囲は従来どおり整形後に探す。
+    if needle.chars().any(char::is_whitespace) {
+        let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let at = line.find(needle).unwrap_or(0);
+        let chars_before = line[..at].chars().count();
+        if chars_before <= BEFORE { return one_line(&line, LIMIT); }
+        let start = line.char_indices().nth(chars_before - BEFORE).map_or(0, |(i, _)| i);
+        return format!("…{}", one_line(&line[start..], LIMIT));
     }
-    let skip = chars_before - BEFORE;
-    let start = line.char_indices().nth(skip).map_or(0, |(i, _)| i);
-    format!("…{}", one_line(&line[start..], 160))
+    // 空白をまとめても一語の最初の一致は変わらない。前後の表示に必要な文字だけ作る。
+    let at = text.find(needle).unwrap_or(0);
+    let mut before = ['\0'; BEFORE + 1];
+    let mut count = 0;
+    let mut space = false;
+    for c in text[..at].chars().rev() {
+        if c.is_whitespace() { space = true; continue; }
+        if space {
+            before[count] = ' ';
+            count += 1;
+            if count == before.len() { break; }
+            space = false;
+        }
+        before[count] = c;
+        count += 1;
+        if count == before.len() { break; }
+    }
+    let leading = count > BEFORE;
+    let mut chars = ['\0'; LIMIT];
+    let mut len = count.min(BEFORE);
+    // 切り出しの先頭が区切りなら、one_lineと同じく先頭の空白を除く。
+    if leading && before[len - 1] == ' ' { len -= 1; }
+    for (i, &c) in before[..len].iter().rev().enumerate() { chars[i] = c; }
+    let mut space = false;
+    let mut trailing = false;
+    for c in text[at..].chars() {
+        if c.is_whitespace() { space |= len > 0; continue; }
+        if space {
+            if len == LIMIT { trailing = true; break; }
+            chars[len] = ' ';
+            len += 1;
+            space = false;
+        }
+        if len == LIMIT { trailing = true; break; }
+        chars[len] = c;
+        len += 1;
+    }
+    let bytes = chars[..len].iter().map(|c| c.len_utf8()).sum::<usize>()
+        + usize::from(leading) * '…'.len_utf8() + usize::from(trailing) * '…'.len_utf8();
+    let mut out = String::with_capacity(bytes);
+    if leading { out.push('…'); }
+    for &c in &chars[..len] { out.push(c); }
+    if trailing { out.push('…'); }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn highlight_keeps_unicode_and_repeated_matches_at_search_boundaries() {
+        let terms = ["cargo", "日本語", "a", "aa", "aaa"].map(str::to_string);
+        // 29/30/31文字の接頭辞で、表示文字列が63/64/65バイトになる。
+        for padding in [0, 29, 30, 31, 32, 63, 64, 65, 1024] {
+            let text = format!("{} 日本語 cargo CARGO cargo aaaaa", "z".repeat(padding));
+            let p = padding + 1;
+            let expected = vec![p..p + 9, p + 10..p + 15, p + 16..p + 21, p + 22..p + 27, p + 28..p + 33];
+            let got: Vec<_> = highlights(&text, &terms).into_iter().map(|(r, _)| r).collect();
+            assert_eq!(got, expected);
+        }
+    }
+
+    #[test]
+    fn highlight_whole_text_covers_other_terms_and_skips_longer_needles() {
+        for padding in [0, 64, 1024] {
+            let text = format!("{} CARGO 日本語 aaaaa🙂", "z".repeat(padding));
+            let full = text.to_ascii_lowercase();
+            for terms in [
+                vec![full.clone(), "cargo".to_string(), "日本語".to_string()],
+                vec!["a".to_string(), "aa".to_string(), full.clone()],
+                vec!["none".to_string(), full.clone(), "aaa".to_string()],
+            ] {
+                let got: Vec<_> = highlights(&text, &terms).into_iter().map(|(r, _)| r).collect();
+                let expected: Vec<_> = std::iter::once(0..text.len()).collect();
+                assert_eq!(got, expected);
+            }
+            let terms = vec!["x".repeat(text.len() + 1), full.replace("cargo", "other"), "cargo".to_string()];
+            let got: Vec<_> = highlights(&text, &terms).into_iter().map(|(r, _)| r).collect();
+            let expected: Vec<_> = std::iter::once(padding + 1..padding + 6).collect();
+            assert_eq!(got, expected);
+        }
+    }
+
+    #[test]
+    fn highlight_keeps_shared_text_alive_without_copying() {
+        let source: std::sync::Arc<str> = std::sync::Arc::from("日本語 CARGO cargo".repeat(128));
+        let terms = vec!["cargo".to_string()];
+        let styled = highlight(source.clone().into(), &terms);
+        assert_eq!(std::sync::Arc::strong_count(&source), 2);
+        drop(styled);
+        assert_eq!(std::sync::Arc::strong_count(&source), 1);
+    }
+
+    #[test]
+    fn highlight_preserves_case_unicode_and_merged_ranges() {
+        let expected_style = HighlightStyle {
+            color: Some(gpui::white()),
+            background_color: Some(c(theme::ACCENT).opacity(0.35)),
+            font_weight: Some(FontWeight::BOLD),
+            ..Default::default()
+        };
+        let cases = [
+            ("Cargo cargo CARGO", vec!["cargo"], vec![0..5, 6..11, 12..17]),
+            ("aaaaa ababa", vec!["a", "aa", "aaa", "ab", "aba", "ba"], vec![0..5, 6..11]),
+            ("日本語🙂日本語", vec!["日本語", "🙂", "日本語"], std::iter::once(0..22).collect()),
+            ("é e\u{301}", vec!["é", "e\u{301}"], vec![0..2, 3..6]),
+            ("\0\tCARGO\n", vec!["\0", "cargo"], vec![0..1, 2..7]),
+            ("Cargo", vec!["Cargo", "none"], vec![]),
+            ("cargo", vec![], vec![]),
+            ("", vec!["cargo"], vec![]),
+        ];
+        for (text, terms, ranges) in cases {
+            let terms: Vec<_> = terms.into_iter().map(str::to_string).collect();
+            let expected: Vec<_> = ranges.into_iter().map(|r| (r, expected_style)).collect();
+            assert_eq!(highlights(text, &terms), expected);
+        }
+    }
 
     #[test]
     fn snippet_keeps_match_visible() {
@@ -709,6 +850,44 @@ mod tests {
         assert!(s.starts_with('…'));
         assert!(s.contains("cargo test"));
         assert_eq!(snippet("cargo build", 0..5), "cargo build");
+    }
+
+
+    #[test]
+    fn snippet_preserves_unicode_whitespace_and_clipping() {
+        fn reference(text: &str, range: std::ops::Range<usize>) -> String {
+            const BEFORE: usize = 24;
+            let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            // 空白をまとめると位置がずれるので、一致した文字列で探し直す
+            let needle = text.get(range).unwrap_or("");
+            let at = line.find(needle).unwrap_or(0);
+            let chars_before = line[..at].chars().count();
+            if chars_before <= BEFORE {
+                return one_line(&line, 160);
+            }
+            let skip = chars_before - BEFORE;
+            let start = line.char_indices().nth(skip).map_or(0, |(i, _)| i);
+            format!("…{}", one_line(&line[start..], 160))
+        }
+
+        let samples = ["", " \t\n\u{a0}", "cargo cargo\tbuild cargo build", "日本語\u{2003}検索\u{a0}語", "é🙂👩\u{200d}💻\u{301} 日\r\n本", "\0\u{85}字\u{2028}文字"];
+        for text in samples {
+            // 文字境界を外した位置と逆向きの範囲も、従来の空のneedleとして扱う。
+            for a in 0..=text.len() + 1 {
+                for b in 0..=text.len() + 1 {
+                    assert_eq!(snippet(text, a..b), reference(text, a..b));
+                }
+            }
+        }
+        for n in [23, 24, 25, 26, 159, 160, 161, 1024] {
+            for pad in ["a", "字", "🙂", "a ", "a\t\n", "\u{2003}字\u{a0}"] {
+                let text = format!(" {}cargo{} ", pad.repeat(n), pad.repeat(n));
+                let at = text.find("cargo").unwrap();
+                for range in [at..at + 5, at + 1..at + 4, 0..0, 0..text.len(), at - 1..at + 5] {
+                    assert_eq!(snippet(&text, range.clone()), reference(&text, range));
+                }
+            }
+        }
     }
 
     #[test]

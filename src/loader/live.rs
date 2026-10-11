@@ -41,15 +41,11 @@ fn verify_chunk(
 }
 
 impl Prefix {
-    fn verify(&self, file: &mut fs::File) -> io::Result<bool> {
+    fn verify_length(&self, file: &fs::File) -> io::Result<bool> {
         if self.len == 0 {
             return Ok(true);
         }
-        if file.metadata()?.len() < self.len {
-            return Ok(false);
-        }
-        let mut reader = BufReader::with_capacity(256 * 1024, file);
-        self.verify_reader(&mut reader)
+        Ok(file.metadata()?.len() >= self.len)
     }
 
     fn verify_reader(&self, reader: &mut impl BufRead) -> io::Result<bool> {
@@ -90,7 +86,97 @@ impl Prefix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::EventText;
     use std::io::Cursor;
+
+    struct LogFixture(PathBuf);
+
+    impl LogFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!("rireki-live-reader-{}-{n}", std::process::id()));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn path(&self) -> PathBuf { self.0.join("session.jsonl") }
+    }
+
+    impl Drop for LogFixture {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    fn message(text: &str) -> String {
+        serde_json::json!({"type":"response_item", "timestamp":"2026-10-09T00:00:00Z",
+            "payload":{"type":"message", "role":"user", "content":[{"text":text}]}}).to_string()
+    }
+
+    fn check_cached_codex(file: &mut CachedFile, path: &Path) -> LiveStats {
+        let mut stats = LiveStats::default();
+        let ParsedFile::Codex(Some(Loaded::Session(actual))) = file.read(path, &mut stats) else {
+            panic!("session expected");
+        };
+        let Some(Loaded::Session(expected)) = load_codex(path) else { panic!("session expected"); };
+        assert_eq!(actual.id, expected.id);
+        assert_eq!(actual.title, expected.title);
+        let events = |lane: &Lane| lane.events.iter().map(|e| {
+            let text = match e.text() {
+                EventText::Inline(i, o) => (i.to_owned(), o.to_owned()),
+                EventText::Pending(i, o) => (i, o),
+                EventText::Row(_) => panic!("parser must not use database rows"),
+            };
+            (e.start.to_bits(), e.end.to_bits(), e.kind, e.status, e.name.clone(), e.summary.clone(), text)
+        }).collect::<Vec<_>>();
+        assert_eq!(events(&actual.lanes[0]), events(&expected.lanes[0]));
+        stats
+    }
+
+    #[test]
+    fn verified_read_ahead_is_parsed_once_and_edits_reset_the_reader() {
+        let fixture = LogFixture::new();
+        let path = fixture.path();
+        let original = format!("{}\n", message(&"original ".repeat(9000)));
+        fs::write(&path, &original).unwrap();
+        let mut cache = CachedFile::new(JobKind::Codex);
+        check_cached_codex(&mut cache, &path);
+        let stats = check_cached_codex(&mut cache, &path);
+        assert_eq!(stats.verified_bytes, original.len() as u64);
+        assert_eq!(stats.parsed_lines, 0);
+        let extended = format!("{original}{}\n{}\n", message("append one"), message("append two"));
+        fs::write(&path, &extended).unwrap();
+        let stats = check_cached_codex(&mut cache, &path);
+        assert_eq!(stats.verified_bytes, original.len() as u64);
+        assert_eq!(stats.parsed_lines, 2);
+        assert_eq!(stats.resets, 0);
+        fs::write(&path, extended.replacen("original", "modified", 1)).unwrap();
+        assert_eq!(check_cached_codex(&mut cache, &path).resets, 1);
+        fs::write(&path, format!("{}\n", message("truncated"))).unwrap();
+        assert_eq!(check_cached_codex(&mut cache, &path).resets, 1);
+    }
+
+    #[test]
+    fn unterminated_line_rewinds_inside_and_beyond_the_read_buffer() {
+        for len in [17, BLOCK + 17, 5 * BLOCK + 17] {
+            let fixture = LogFixture::new();
+            let path = fixture.path();
+            let complete = format!("{}\n", message("complete"));
+            let tail = message(&format!("tail {}", "x".repeat(len)));
+            let original = format!("{complete}{tail}");
+            fs::write(&path, &original).unwrap();
+            let mut cache = CachedFile::new(JobKind::Codex);
+            check_cached_codex(&mut cache, &path);
+            let stats = check_cached_codex(&mut cache, &path);
+            assert_eq!(stats.verified_bytes, original.len() as u64);
+            assert_eq!(stats.parsed_lines, 1);
+            assert_eq!(stats.resets, 0);
+            fs::write(&path, format!("{original}\n{}\n", message("after tail"))).unwrap();
+            let stats = check_cached_codex(&mut cache, &path);
+            assert_eq!(stats.parsed_lines, 2);
+            assert_eq!(stats.resets, 0);
+            assert_eq!(check_cached_codex(&mut cache, &path).parsed_lines, 0);
+        }
+    }
 
     fn bytes(len: usize) -> Vec<u8> {
         (0..len)
@@ -427,11 +513,18 @@ impl CachedFile {
     }
 
     fn read(&mut self, path: &Path, stats: &mut LiveStats) -> ParsedFile {
-        let Ok(mut file) = fs::File::open(path) else {
+        let Ok(file) = fs::File::open(path) else {
             *self = Self::new(self.kind);
             return self.parser.snapshot();
         };
-        if self.prefix.verify(&mut file).unwrap_or(false) {
+        // 短くなったファイルの旧状態は、読み出しバッファを確保する前に解放する。
+        if !self.prefix.verify_length(&file).unwrap_or(false) {
+            stats.resets += 1;
+            *self = Self::new(self.kind);
+        }
+        let mut reader = BufReader::with_capacity(256 * 1024, file);
+        let verified = self.prefix.verify_reader(&mut reader).unwrap_or(false);
+        if verified {
             stats.verified_bytes += self.prefix.len;
         } else {
             stats.resets += 1;
@@ -442,12 +535,19 @@ impl CachedFile {
         if self.parser.hidden() {
             return self.parser.snapshot();
         }
-        if file.seek(io::SeekFrom::Start(self.committed)).is_err() {
+        // 検証の先読みも同じバッファで解析する。未確定行だけ戻し、書き換え時は先頭へ戻る。
+        let rewind = self.prefix.len - self.committed;
+        let positioned = if verified && rewind <= i64::MAX as u64 {
+            reader.seek_relative(-(rewind as i64))
+        } else {
+            reader.seek(io::SeekFrom::Start(self.committed)).map(|_| ())
+        };
+        if positioned.is_err() {
             *self = Self::new(self.kind);
             return self.parser.snapshot();
         }
         let reader = DigestReader {
-            reader: BufReader::with_capacity(256 * 1024, file),
+            reader,
             prefix: std::mem::take(&mut self.prefix),
             position: self.committed,
         };

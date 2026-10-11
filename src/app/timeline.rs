@@ -1,15 +1,17 @@
 //! タイムライン（横軸が時刻、縦はセッションまたはディレクトリごとの行）と、ブロックの描画
 
+mod grid;
+
 use chrono::Timelike;
 use std::collections::HashSet;
 use std::rc::Rc;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, ContentMask, Context, ElementId, FontWeight, MouseButton, MouseDownEvent,
-    MouseMoveEvent, Pixels, SharedString, TextRun, Window, canvas, div, fill, point, prelude::*, px, size,
+    MouseMoveEvent, Pixels, Point, LineLayout, SharedString, TextRun, Window, canvas, div, fill, point, prelude::*, px, size,
 };
 
-use super::widgets::{Marquee, project_tile, prompt_tip, tip};
-use super::{AXIS_H, BlockPaint, MIN_BLOCK, ROW_H, Rireki, Row, Selection, fmt_dur, local, now};
+use super::widgets::{Marquee, project_tile, tip};
+use super::{AXIS_H, BlockPaint, MIN_BLOCK, ROW_H, Rireki, Row, Selection, local, now};
 use crate::icons::{self, Icon};
 use crate::layout::{Block, Granularity};
 use crate::model::one_line;
@@ -21,6 +23,56 @@ const ICON_MIN_W: f32 = 16.0;
 
 /// 右端の縦のミニマップの幅
 const LANE_MAP_W: f32 = 12.0;
+
+/// 単色・左寄せ・折り返しと装飾のないブロックのラベルを描く。
+/// GPUI 0.2.2 の paint_line に基づく。Apache-2.0: licenses/GPUI-APACHE-2.0.txt
+fn paint_block_label(
+    line: &LineLayout,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui::Result<()> {
+    let bounds = Bounds::new(origin, size(line.width, line_height));
+    window.paint_layer(bounds, |window| {
+        let padding_top = (line_height - line.ascent - line.descent) / 2.0;
+        let baseline_offset = point(px(0.0), padding_top + line.ascent);
+        let text_system = cx.text_system().clone();
+        let mut glyph_origin = origin;
+        let mut prev_glyph_position = Point::default();
+        for run in &line.runs {
+            let max_glyph_size = text_system.bounding_box(run.font_id, line.font_size).size;
+            for glyph in &run.glyphs {
+                // 差分を順に加え、GPUIと同じ浮動小数点の丸めを保つ。
+                glyph_origin.x += glyph.position.x - prev_glyph_position.x;
+                prev_glyph_position = glyph.position;
+                let bounds = Bounds {
+                    origin: glyph_origin,
+                    size: max_glyph_size,
+                };
+                if bounds.intersects(&window.content_mask().bounds) {
+                    if glyph.is_emoji {
+                        window.paint_emoji(
+                            glyph_origin + baseline_offset,
+                            run.font_id,
+                            glyph.id,
+                            line.font_size,
+                        )?;
+                    } else {
+                        window.paint_glyph(
+                            glyph_origin + baseline_offset,
+                            run.font_id,
+                            glyph.id,
+                            line.font_size,
+                            gpui::black(),
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    })
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key {
@@ -210,7 +262,8 @@ impl Rireki {
                                 end += 1;
                             }
                         }
-                        let mut paint = |window: &mut Window| {
+                        let mut label_paint = None;
+                        let paint = |window: &mut Window| {
                             for b in &blocks[first..end] {
                                 let (x, y, w, h) = b.rect;
                                 let r = Bounds::new(
@@ -259,42 +312,51 @@ impl Rireki {
                                     text_x = 3.0 + ICON + 3.0;
                                 }
                                 let Some(label) = &b.label else { continue };
-                                let run = TextRun {
-                                    len: label.len(),
-                                    font: font.clone(),
-                                    color: gpui::black(),
-                                    background_color: None,
-                                    underline: None,
-                                    strikethrough: None,
-                                };
-                                let line = window.text_system().shape_line(
-                                    label.clone(),
-                                    font_size,
-                                    &[run],
-                                    None,
-                                );
-                                let top = if h > line_h.into() {
-                                    (h - f32::from(line_h)) / 2.0
-                                } else {
-                                    0.0
-                                };
-                                window.with_content_mask(
-                                    Some(ContentMask { bounds: r }),
-                                    |window| {
-                                        let _ = line.paint(
-                                            r.origin + point(px(text_x), px(top)),
-                                            line_h,
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                );
+                                label_paint = Some((label, r, text_x, h));
                             }
                         };
                         if plain(&blocks[first]) {
                             window.paint_layer(layer, paint);
                         } else {
-                            paint(window);
+                            // SVGの画素丸めを含む範囲で、本体とアイコンをまとめる。
+                            window.paint_layer(layer.dilate(px(3.0 / window.scale_factor())), paint);
+                        }
+                        if let Some((label, r, text_x, h)) = label_paint {
+                            let run = TextRun {
+                                len: label.len(),
+                                font: font.clone(),
+                                color: gpui::black(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+                            debug_assert!(
+                                label.find('\n').is_none(),
+                                "text argument should not contain newlines"
+                            );
+                            let line = window.text_system().layout_line(
+                                label,
+                                font_size,
+                                &[run],
+                                None,
+                            );
+                            let top = if h > line_h.into() {
+                                (h - f32::from(line_h)) / 2.0
+                            } else {
+                                0.0
+                            };
+                            window.with_content_mask(
+                                Some(ContentMask { bounds: r }),
+                                |window| {
+                                    let _ = paint_block_label(
+                                        &line,
+                                        r.origin + point(px(text_x), px(top)),
+                                        line_h,
+                                        window,
+                                        cx,
+                                    );
+                                },
+                            );
                         }
                         first = end;
                     }
@@ -346,7 +408,7 @@ impl Rireki {
 
         // 時間軸
         let mut axis = div().relative().h(px(AXIS_H)).w(px(pw)).overflow_hidden();
-        let mut grid = div().absolute().top_0().left_0().size_full();
+        let mut grid = grid::Grid::default();
         for (t, label, major) in ticks(v0, v1, self.spp) {
             let x = x_of(t);
             if x < 0.0 {
@@ -362,21 +424,21 @@ impl Rireki {
                     .text_color(c(if major { theme::TEXT } else { theme::MUTED }))
                     .child(label),
             );
-            grid = grid.child(div().absolute().left(px(x)).top_0().bottom_0().w(px(1.0)).bg(c(if major {
+            grid.lines.push((x, if major {
                 0x353b47
             } else {
                 theme::GRID
-            })));
+            }));
         }
         let nx = x_of(now());
         if (0.0..pw).contains(&nx) {
-            grid = grid.child(div().absolute().left(px(nx)).top_0().bottom_0().w(px(1.0)).bg(c(theme::NOW)));
+            grid.lines.push((nx, theme::NOW));
             axis = axis
                 .child(div().absolute().left(px(nx - 3.0)).bottom_0().size(px(7.0)).rounded_full().bg(c(theme::NOW)));
         }
 
         let mut labels = div().relative().w(px(self.label_w)).h(px(ph)).overflow_hidden();
-        let mut plot = div().relative().w(px(pw)).h(px(ph)).overflow_hidden().child(grid);
+        let mut plot = div().relative().w(px(pw)).h(px(ph)).overflow_hidden();
         let mut blocks: Vec<BlockPaint> = Vec::new();
         let mut row_y_of_lane = std::collections::HashMap::new();
         let selected = self.selected;
@@ -476,17 +538,7 @@ impl Rireki {
                                 cx.notify();
                             })),
                     );
-                    plot = plot.child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top(px(y))
-                            .h(px(ROW_H))
-                            .bg(c(0x1b1e25))
-                            .border_t_1()
-                            .border_color(c(0x3a4150)),
-                    );
+                    grid.rows.push(grid::RowBackground::new(y, ROW_H, c(0x1b1e25)).border_top(c(0x3a4150)));
                     // 折りたたみ中はグループ内のメインレーンを 1 行に重ねて描く
                     if directory {
                         self.paint_packed_blocks(packed, y, &mut blocks);
@@ -526,20 +578,6 @@ impl Rireki {
             let (session, lane_i) = (tr.session, tr.lane);
             let indent = 16.0 + 16.0 * tr.depth as f32;
             let n = lane.events.len();
-            let detail = {
-                let (a, b) = lane.range().unwrap_or((s.start, s.end));
-                let mut d = format!(
-                    "{} · {} – {}（{}）· {n} 件",
-                    self.project_name(&s.cwd),
-                    local(a).format("%m/%d %H:%M"),
-                    local(b).format("%H:%M"),
-                    fmt_dur(b - a)
-                );
-                if !lane.model.is_empty() {
-                    d.push_str(&format!("\n{}", lane.model));
-                }
-                d
-            };
             labels = labels.child(
                 div()
                     .id(ElementId::NamedInteger("lbl".into(), row as u64))
@@ -567,24 +605,21 @@ impl Rireki {
                             .flex_1()
                             .min_w_0()
                             .text_color(c(if sub { theme::SUB } else { theme::TEXT }))
-                            .child(Marquee::new("title", title.clone())),
+                            .child(Marquee::new("title", title)),
                     )
-                    .tooltip(prompt_tip(title, detail))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.navigate(Selection { session, lane: lane_i, first: 0, last: n - 1 }, window, cx);
                     })),
             );
             if new_session {
-                plot = plot.child(div().absolute().left_0().right_0().top(px(y)).h(px(1.0)).bg(c(theme::BORDER)));
+                grid.rows.push(grid::RowBackground::new(y, 1.0, c(theme::BORDER)));
             }
             if !tr.active {
                 // 表示範囲外のレーンはグレーアウトする
-                plot = plot.child(div().absolute().left_0().right_0().top(px(y)).h(px(ROW_H)).bg(c(0x000000).opacity(0.18)));
+                grid.rows.push(grid::RowBackground::new(y, ROW_H, c(0x000000).opacity(0.18)));
             }
             if lane_selected {
-                plot = plot.child(
-                    div().absolute().left_0().right_0().top(px(y)).h(px(ROW_H)).bg(c(theme::ACCENT).opacity(0.07)),
-                );
+                grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::ACCENT).opacity(0.07)));
             }
             let aggregate_started = measurements.as_ref().map(|_| std::time::Instant::now());
             let grouped = self.layout_cache.borrow_mut().aggregate((tr.session, tr.lane), lane, (v0, v1), self.spp, self.gran);
@@ -602,7 +637,7 @@ impl Rireki {
                 blocks.push(self.block_paint(sel, (x, y + 3.0, w, ROW_H - 6.0), false));
             }
         }
-        plot = plot.child(self.blocks_canvas(blocks));
+        plot = plot.child(grid).child(self.blocks_canvas(blocks));
 
         // サブエージェントの起動位置から子レーンへの接続線
         let lane_rows = tracks.iter().skip(first_row).take(rows_visible).filter_map(|r| match r {
@@ -815,9 +850,10 @@ impl Rireki {
                 MouseButton::Left,
                 cx.listener(move |t, e: &MouseDownEvent, _, cx| {
                     t.lane_map_drag = true;
+                    let before = t.row_scroll;
                     t.lane_map_seek(e.position.y, total, ph);
                     cx.stop_propagation();
-                    cx.notify();
+                    if t.row_scroll != before { cx.notify(); }
                 }),
             )
             .on_mouse_move(cx.listener(move |t, e: &MouseMoveEvent, _, cx| {
@@ -829,8 +865,9 @@ impl Rireki {
                     return;
                 }
                 cx.stop_propagation();
+                let before = t.row_scroll;
                 t.lane_map_seek(e.position.y, total, ph);
-                cx.notify();
+                if t.row_scroll != before { cx.notify(); }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|t, _, _, _| t.lane_map_drag = false))
     }

@@ -154,10 +154,9 @@ impl SessionCache {
         if !is_current() {
             return None;
         }
-        let version = Arc::downgrade(session);
-        if !self.version.ptr_eq(&version) {
+        if self.version.as_ptr() != Arc::as_ptr(session) {
             self.summary = None;
-            self.version = version;
+            self.version = Arc::downgrade(session);
         }
         if self.summary.is_none() {
             self.summary = Some(Arc::new(SessionSummary::build(session, is_current)?));

@@ -71,6 +71,8 @@ pub(super) struct State {
     pub(super) unbatched_minimap: bool,
     pub(super) unbatched_lane_map: bool,
     dense_timeline: bool,
+    cold_diff_rows: bool,
+    cold_diff_serial: u64,
     pub(super) measurements: Option<Rc<Cell<TimelineMeasurements>>>,
 }
 
@@ -87,6 +89,7 @@ impl State {
             unbatched_minimap: args.iter().any(|a| a == "--profile-unbatched-minimap"),
             unbatched_lane_map: args.iter().any(|a| a == "--profile-unbatched-lane-map"),
             dense_timeline: args.iter().any(|a| a == "--profile-dense-timeline"),
+            cold_diff_rows: args.iter().any(|a| a == "--profile-cold-diff-rows"),
             measurements: args.iter().any(|a| a == "--profile-components").then(Default::default),
             ..Self::default()
         }
@@ -98,6 +101,7 @@ fn render_only(cx: &mut gpui::AsyncWindowContext, stage: &str, measurements: Opt
     if let Some(measurements) = measurements { measurements.set(TimelineMeasurements::default()); }
     let started = Instant::now();
     let Ok(cpu_ms) = cx.update(|window, cx| {
+        prepare_cold_diff_frame(stage, None, window, cx);
         let cpu_started = measurements.and_then(|_| thread_cpu_ns());
         window.draw(cx).clear();
         measurements.and_then(|_| cpu_delta_ms(cpu_started))
@@ -110,6 +114,43 @@ fn render_only(cx: &mut gpui::AsyncWindowContext, stage: &str, measurements: Opt
     );
     true
 }
+
+// 計測対象の draw の直前に別ファイルへ更新し、自動描画で暖められた寸法を避ける。
+fn prepare_cold_diff_frame(stage: &str, serial: Option<u64>, window: &mut Window, cx: &mut gpui::App) {
+    if stage != "detail_diff_rows" { return; }
+    let Some(Some(root)) = window.root::<Rireki>() else { return; };
+    let changed = root.update(cx, |app, cx| {
+        if !app.profile.as_ref().is_some_and(|profile| profile.cold_diff_rows)
+            || app.detail_cache.is_none() { return false; }
+        let profile = app.profile.as_mut().unwrap();
+        let serial = serial.unwrap_or_else(|| {
+            let serial = profile.cold_diff_serial;
+            profile.cold_diff_serial += 1;
+            serial
+        });
+        let filename = format!("profile_frame_{serial:06}.rs");
+        let detail = app.detail_cache.as_mut().unwrap();
+        // イベント表示はキャッシュの入力本文を再解析する。こちらのヘッダも更新する。
+        for (input, _) in &mut detail.texts {
+            let prefix = "*** Update File: ";
+            if input.starts_with(prefix) && let Some(end) = input.find('\n') {
+                input.replace_range(prefix.len()..end, &filename);
+            }
+        }
+        for patches in detail.patches.values_mut() {
+            for patch in patches { patch.path = filename.clone(); }
+        }
+        for file in &mut detail.files { file.path = filename.clone(); }
+        for touched in &mut detail.touched {
+            for (path, _, _) in touched { *path = filename.clone(); }
+        }
+        app.detail_changed(cx);
+        cx.notify();
+        true
+    });
+    if changed { window.refresh(); }
+}
+
 const STAGES: [(&str, usize); 9] = [
     ("timeline_pan", 120),
     ("timeline_zoom", 120),
@@ -356,7 +397,9 @@ impl Rireki {
             if args.iter().any(|arg| arg == "--profile-dense-timeline") {
                 let _ = this.update_in(cx, |app, _, _| app.profile_dense_sessions(anchor));
             }
-            let stages: &[(&str, usize)] = if args.iter().any(|arg| arg == "--profile-lane-map") {
+            let stages: &[(&str, usize)] = if args.iter().any(|arg| arg == "--profile-diff-rows") {
+                &[("detail_diff_rows", 240)]
+            } else if args.iter().any(|arg| arg == "--profile-lane-map") {
                 &LANE_MAP_STAGES
             } else if args.iter().any(|arg| arg == "--profile-dense-timeline") {
                 &DENSE_TIMELINE_STAGES
@@ -521,7 +564,9 @@ impl Rireki {
             self.row_scroll = 0.0;
             self.cal_scroll = 8.0 * self.px_per_hour;
             if stage.starts_with("detail_") {
-                let session = if stage == "detail_long_single" {
+                let session = if stage == "detail_diff_rows" {
+                    self.profile_diff_session(anchor)
+                } else if stage == "detail_long_single" {
                     self.profile_rich_session(anchor)
                 } else if matches!(stage, "detail_fullscreen" | "detail_analysis") {
                     let si = self.profile_session(anchor);
@@ -545,7 +590,9 @@ impl Rireki {
                     anchor
                 };
                 self.detail_tab = DetailTab::Events;
-                let last = if stage == "detail_long_single" {
+                let last = if stage == "detail_diff_rows" {
+                    2
+                } else if stage == "detail_long_single" {
                     0
                 } else {
                     self.store.sessions[session].lanes[0].events.len() - 1
@@ -554,7 +601,7 @@ impl Rireki {
                     Selection {
                         session,
                         lane: 0,
-                        first: 0,
+                        first: if stage == "detail_diff_rows" {2} else {0},
                         last,
                     },
                     window,
@@ -856,6 +903,14 @@ impl Rireki {
                 200 => self.detail_profile_open_file_edit(window, cx),
                 _ => {}
             },
+            // 長い差分を展開して連続スクロールする。本文の描画キャッシュも毎回更新する。
+            "detail_diff_rows" => {
+                self.expanded.insert("in");
+                self.detail_w = 320.25 + (step % 80) as f32 * 2.0;
+                self.detail_scroll.set_offset(gpui::point(px(0.0),
+                    -self.detail_scroll.max_offset().height * (step % 80) as f32 / 80.0));
+                self.detail_changed(cx);
+            }
             "detail_long_single" => {
                 let event = match step {
                     60 => Some(1),
@@ -1058,6 +1113,8 @@ impl Rireki {
                     let mut event = profile_event(step, start);
                     event.name = "read_file".into();
                     session.lanes[0].events.push(event);
+                    // 途中時刻の追記でも、二分探索に渡す開始時刻順を維持する。
+                    session.lanes[0].finish();
                     session.finalize();
                     self.layout_cache.borrow_mut().invalidate(&[si]);
                     self.rebuild_order();
@@ -1302,6 +1359,18 @@ impl Rireki {
         self.store.sessions.push(std::sync::Arc::new(session));
         self.rebuild_order();
         self.store.sessions.len() - 1
+    }
+
+    fn profile_diff_session(&mut self, anchor: usize) -> usize {
+        let index = self.profile_rich_session(anchor);
+        let session = std::sync::Arc::make_mut(&mut self.store.sessions[index]);
+        session.lanes[0].events[2].input = format!(
+            "*** Update File: profile.rs\n@@ -1,600 +1,600 @@\n{}",
+            "-b\n+a\n".repeat(600)
+        );
+        session.finalize();
+        self.rebuild_order();
+        index
     }
 
     fn profile_rich_session(&mut self, anchor: usize) -> usize {

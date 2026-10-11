@@ -74,6 +74,12 @@ impl Usage {
     pub fn total(&self) -> u64 {
         self.input as u64 + self.cache_read as u64 + self.cache_write as u64 + self.output as u64
     }
+
+    /// 入力全体のうちキャッシュから読んだ割合。入力がなければ算出できない。
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        let input = self.input as u64 + self.cache_read as u64 + self.cache_write as u64;
+        (input > 0).then(|| self.cache_read as f64 / input as f64)
+    }
 }
 
 /// 集計用。u32 の和はあふれうるので u64 で持つ
@@ -164,6 +170,12 @@ impl UsageSum {
     #[inline]
     pub fn total(&self) -> u64 {
         self.input + self.cache_read + self.cache_write + self.output
+    }
+
+    /// 入力トークン数で重み付けしたキャッシュヒット率。
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        let input = self.input + self.cache_read + self.cache_write;
+        (input > 0).then(|| self.cache_read as f64 / input as f64)
     }
 }
 
@@ -604,6 +616,37 @@ pub fn one_line(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_hit_rate_distinguishes_missing_input_and_cache_misses() {
+        for (usage, expected) in [
+            (Usage::default(), None),
+            (Usage { output: 100, reasoning: 50, ..Default::default() }, None),
+            (Usage { input: 100, ..Default::default() }, Some(0.0)),
+            (Usage { cache_write: 100, cache_write_1h: 100, ..Default::default() }, Some(0.0)),
+            (Usage { cache_read: 100, ..Default::default() }, Some(1.0)),
+            (Usage { input: 20, cache_read: 60, cache_write: 20, cache_write_1h: 10,
+                output: 100, reasoning: 50 }, Some(0.6)),
+            (Usage { input: u32::MAX, cache_read: u32::MAX, cache_write: u32::MAX,
+                ..Default::default() }, Some(1.0 / 3.0)),
+        ] {
+            assert_eq!(usage.cache_hit_rate(), expected);
+            let mut sum = UsageSum::default();
+            sum.add_priced(&usage, None);
+            assert_eq!(sum.cache_hit_rate(), expected);
+        }
+    }
+
+    #[test]
+    fn cache_hit_rate_weights_calls_by_input_tokens_when_merging() {
+        let mut main = UsageSum::default();
+        main.add_priced(&Usage { cache_read: 100, output: 10, ..Default::default() }, None);
+        let mut child = UsageSum::default();
+        child.add_priced(&Usage { input: 700, cache_write: 200, output: 1000,
+            ..Default::default() }, None);
+        main.merge(&child);
+        assert_eq!(main.cache_hit_rate(), Some(0.1));
+    }
 
     #[test]
     fn metadata_versions_share_text_and_preserve_replaced_values() {

@@ -59,7 +59,7 @@ impl Rireki {
                 "nav-calendar",
                 Icon::Calendar,
                 "カレンダー",
-                "⌘2 / ⌘3",
+                "⌘2 / ⌘3 / M",
                 !self.statistics_open && self.mode != Mode::Timeline,
                 cx,
                 |t, w, _| t.set_mode(t.calendar, w),
@@ -84,20 +84,16 @@ impl Rireki {
         let active = self.source == s;
         let (live_claude, live_codex) = self.live_sources;
         let logo = |i: Icon, color: u32| -> AnyElement { icons::icon(i, color).size(px(18.0)).into_any_element() };
-        let (content, bg, name, live): (AnyElement, u32, &'static str, bool) = match s {
+        let (content, bg, name, live): (AnyElement, Option<u32>, &'static str, bool) = match s {
             SourceFilter::All => (
-                div()
-                    .text_size(px(16.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(gpui::white())
-                    .child("履")
-                    .into_any_element(),
-                0x3b6fd8,
+                // アイコン本体の周囲に余白があるため、36px の枠より大きく描く。
+                icons::app_icon().size(px(44.0)).into_any_element(),
+                None,
                 "すべての履歴",
                 live_claude || live_codex,
             ),
-            SourceFilter::Claude => (logo(Icon::Claude, 0xd97757), 0x2b211d, "Claude Code", live_claude),
-            SourceFilter::Codex => (logo(Icon::Codex, 0xd0d0d0), 0x262a31, "Codex", live_codex),
+            SourceFilter::Claude => (logo(Icon::Claude, 0xd97757), Some(0x2b211d), "Claude Code", live_claude),
+            SourceFilter::Codex => (logo(Icon::Codex, 0xd0d0d0), Some(0x262a31), "Codex", live_codex),
         };
         let id = match s {
             SourceFilter::All => "src-all",
@@ -118,7 +114,14 @@ impl Rireki {
             .cursor_pointer()
             .when(!active, |d| d.hover(|s| s.border_color(c(theme::SUBTLE))))
             .child(
-                div().size(px(36.0)).rounded(px(9.0)).bg(c(bg)).flex().items_center().justify_center().child(content),
+                div()
+                    .size(px(36.0))
+                    .rounded(px(9.0))
+                    .when_some(bg, |d, color| d.bg(c(color)))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(content),
             )
             .when(live, |d| {
                 d.child(

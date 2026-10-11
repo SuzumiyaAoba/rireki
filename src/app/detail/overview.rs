@@ -4,7 +4,7 @@ use std::cell::RefCell;
 
 use gpui::{AnyElement, ClickEvent, Context, ListAlignment, ListOffset, ListState, Window, div, list, prelude::*, px};
 
-use super::{Rireki, RowFilter, Selection, badge, fmt_dur, fmt_n, is_live, label, local, stat, usage_cost_label};
+use super::{Rireki, RowFilter, Selection, badge, cache_hit_stat, fmt_dur, fmt_n, is_live, label, local, stat, usage_cost_label};
 use crate::app::widgets::Marquee;
 use crate::icons::{self, Icon};
 use crate::model::one_line;
@@ -167,7 +167,8 @@ impl Rireki {
                             fmt_n(summary.total.stats.failures()),
                             (summary.total.stats.failures() > 0).then_some(theme::ERR),
                         ))
-                        .child(stat("API換算料金", usage_cost_label(&summary.total.usage), None)),
+                        .child(stat("API換算料金", usage_cost_label(&summary.total.usage), None))
+                        .child(cache_hit_stat("overview-cache-hit", &summary.total.usage)),
                 )
                 .child(label("指示と応答 · クリックでターンの履歴を表示"))
                 .into_any_element(),

@@ -4,13 +4,18 @@ use super::*;
 use crate::model::{Event, Kind, Session};
 use crate::time::midnight;
 use chrono::{Local, TimeZone, Timelike};
-use std::collections::hash_map::Entry;
+use std::collections::hash_map::{Entry, RandomState};
+use std::collections::HashMap;
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const DAY_MS: i64 = 86_400_000;
 const HOUR_MS: i64 = 3_600_000;
 /// 取り消しを確かめる間隔（イベント数）
 const CHUNK: usize = 256;
+/// 前回の種類数による予約の上限。小さな絞り込みでも大きく確保しない。
+const MERGED_RESERVE: usize = 256;
 
 #[derive(Default)]
 pub struct Cache {
@@ -22,7 +27,30 @@ pub struct Cache {
 struct PeriodCache {
     period: Period,
     range: Range,
-    sessions: HashMap<usize, CachedSession>,
+    sessions: HashMap<usize, CachedSession, BuildHasherDefault<SessionHash>>,
+    hashes: RandomState,
+    names: Names,
+    merged_counts: [u16; 2],
+}
+
+/// Store が付けるセッション番号専用。文字列のハッシュには使わない。
+/// 上位ビットも混ぜ、連番や飛び飛びの番号でも表の指紋を分散させる。
+#[derive(Default)]
+struct SessionHash(u64);
+
+impl Hasher for SessionHash {
+    fn finish(&self) -> u64 {
+        let mut hash = self.0;
+        hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        hash ^ (hash >> 31)
+    }
+    fn write_usize(&mut self, index: usize) {
+        self.0 = index as u64;
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("session indices write a single usize");
+    }
 }
 
 /// 期間の日付と、イベントの日・時を求める境界
@@ -139,15 +167,177 @@ struct CachedSession {
     version: Weak<Session>,
     total: Totals,
     previous: Totals,
-    models: Vec<(String, UsageSum)>,
-    tools: Vec<(String, bool, Calls)>,
+    models: Vec<(Option<Arc<str>>, u64, UsageSum)>,
+    tools: Vec<(Arc<str>, bool, u64, Calls)>,
     /// イベントのある列とその量（列の順）
     buckets: Vec<(u32, Amount)>,
     /// イベントのある時間帯のマスとその量
     cells: Vec<(u8, Amount)>,
     /// イベントのある日（期間の最初の日から）
     days: Vec<u32>,
-    recorded: bool,
+    meta: SessionMeta,
+}
+
+/// 使用量の有無とパスのハッシュを一語に収め、boolの後の余白を使う。
+/// ハッシュの下位56ビットを保持し、検索時は上位ビットにも分散させる。
+/// 衝突時はパス全体を照合する。
+#[derive(Default)]
+struct SessionMeta(AtomicU64);
+
+impl SessionMeta {
+    const HASH: u64 = 0x00ff_ffff_ffff_ffff;
+    const RECORDED: u64 = 1 << 63;
+    const HASHED: u64 = 1 << 62;
+
+    fn set_project_hash(&self, hash: u64) -> u64 {
+        let value = (self.0.load(Ordering::Relaxed) & Self::RECORDED) | Self::HASHED | (hash & Self::HASH);
+        self.0.store(value, Ordering::Relaxed);
+        value
+    }
+
+    fn record(&mut self) {
+        *self.0.get_mut() |= Self::RECORDED;
+    }
+
+    fn recorded(&self) -> bool {
+        self.0.load(Ordering::Relaxed) & Self::RECORDED != 0
+    }
+
+    #[inline]
+    fn project_hash(&self, path: &str, hashes: &RandomState) -> u64 {
+        // 名前の参照を借りたまま、数値の目印だけを書き戻す。
+        // 同じセッションの版と期間では値が一定で、他のデータの公開には使わない。
+        let saved = self.0.load(Ordering::Relaxed);
+        let value = if saved & Self::HASHED == 0 {
+            self.set_project_hash(hashes.hash_one(path))
+        } else {
+            saved
+        };
+        (value & Self::HASH).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    }
+}
+
+/// 同じ期間のランダムな種で計算済みのハッシュ。衝突時は名前の内容も照合する。
+struct HashedKey<K> {
+    hash: u64,
+    key: K,
+}
+
+impl<K: TallyKey> PartialEq for HashedKey<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.hash == other.hash && self.key.same(other.key)
+    }
+}
+
+impl<K: TallyKey> Eq for HashedKey<K> {}
+
+impl<K> Hash for HashedKey<K> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+#[derive(Default)]
+struct StoredHash(u64);
+
+impl Hasher for StoredHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write_u64(&mut self, hash: u64) {
+        self.0 = hash;
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("HashedKey writes a single u64");
+    }
+}
+
+/// 検索表には配列の位置だけを置き、集計値は連続した配列に持つ。
+/// 同じハッシュの別名だけ別表に持ち、名前の内容も照合する。
+struct Merged<K, V> {
+    heads: HashMap<u64, usize, BuildHasherDefault<StoredHash>>,
+    collisions: HashMap<HashedKey<K>, usize, BuildHasherDefault<StoredHash>>,
+    rows: Vec<(HashedKey<K>, V)>,
+    last: usize,
+}
+
+impl<K, V> Default for Merged<K, V> {
+    fn default() -> Self {
+        Self { heads: HashMap::default(), collisions: HashMap::default(), rows: Vec::new(), last: 0 }
+    }
+}
+
+impl<K: TallyKey, V: Default> Merged<K, V> {
+    fn with_capacity(count: usize) -> Self {
+        Self {
+            heads: HashMap::with_capacity_and_hasher(count, BuildHasherDefault::default()),
+            rows: Vec::with_capacity(count),
+            ..Self::default()
+        }
+    }
+
+    #[inline]
+    fn entry(&mut self, key: HashedKey<K>) -> &mut V {
+        if self.rows.get(self.last).is_some_and(|(previous, _)| *previous == key) {
+            return &mut self.rows[self.last].1;
+        }
+        let index = match self.heads.entry(key.hash) {
+            Entry::Occupied(entry) => {
+                let index = *entry.get();
+                if self.rows[index].0 == key {
+                    index
+                } else {
+                    match self.collisions.entry(key) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            let index = self.rows.len();
+                            let key = HashedKey { hash: entry.key().hash, key: entry.key().key };
+                            self.rows.push((key, V::default()));
+                            entry.insert(index);
+                            index
+                        }
+                    }
+                }
+            }
+            Entry::Vacant(entry) => {
+                let index = self.rows.len();
+                self.rows.push((key, V::default()));
+                entry.insert(index);
+                index
+            }
+        };
+        self.last = index;
+        &mut self.rows[index].1
+    }
+
+    fn into_iter(self) -> impl Iterator<Item = (HashedKey<K>, V)> {
+        // 結果配列への入力領域の再利用で、拡張時の余剰容量を引き継がない。
+        self.rows.into_boxed_slice().into_vec().into_iter()
+    }
+}
+
+/// 同じ名前は期間内で一つの参照にそろえる。名前だけを弱参照し、履歴は保持しない。
+#[derive(Default)]
+struct Names(HashMap<u64, Weak<str>, BuildHasherDefault<StoredHash>>);
+
+impl Names {
+    fn get(&mut self, name: &Arc<str>, hash: u64) -> Arc<str> {
+        match self.0.entry(hash) {
+            Entry::Occupied(mut entry) => match entry.get().upgrade() {
+                Some(shared) if shared.as_ref().same(name.as_ref()) => shared,
+                // 同じハッシュの別名は合流せず、元の参照を使う。
+                Some(_) => name.clone(),
+                None => {
+                    entry.insert(Arc::downgrade(name));
+                    name.clone()
+                }
+            },
+            Entry::Vacant(entry) => {
+                entry.insert(Arc::downgrade(name));
+                name.clone()
+            }
+        }
+    }
 }
 
 /// セッションの集計に使う作業領域。使った所だけを次のセッションのために戻す
@@ -219,7 +409,43 @@ struct Tally<K, V> {
     last: usize,
 }
 
-impl<K: PartialEq + Copy, V: Default> Tally<K, V> {
+/// 共有する名前は本文を比較せず、別の割り当ての同名も内容で照合する。
+trait TallyKey: Copy {
+    fn same(self, other: Self) -> bool;
+}
+
+impl TallyKey for &str {
+    #[inline]
+    fn same(self, other: Self) -> bool { std::ptr::eq(self, other) || self == other }
+}
+
+impl TallyKey for (&str, bool) {
+    #[inline]
+    fn same(self, other: Self) -> bool { self.1 == other.1 && self.0.same(other.0) }
+}
+
+fn model_name(model: Option<&Arc<str>>) -> &str {
+    model.map(|m| m.as_ref()).unwrap_or("モデル不明")
+}
+
+/// イベント走査中は文字列を直接照合し、集計の保存時だけ共有参照を使う。
+#[derive(Clone, Copy)]
+struct NameRef<'a, A> {
+    text: &'a str,
+    shared: A,
+}
+
+impl<A: Copy> TallyKey for NameRef<'_, A> {
+    #[inline]
+    fn same(self, other: Self) -> bool { self.text.same(other.text) }
+}
+
+impl<A: Copy> TallyKey for (NameRef<'_, A>, bool) {
+    #[inline]
+    fn same(self, other: Self) -> bool { self.1 == other.1 && self.0.same(other.0) }
+}
+
+impl<K: TallyKey, V: Default> Tally<K, V> {
     fn new() -> Self {
         Self {
             items: Vec::new(),
@@ -229,8 +455,8 @@ impl<K: PartialEq + Copy, V: Default> Tally<K, V> {
 
     #[inline]
     fn entry(&mut self, key: K) -> &mut V {
-        if self.items.get(self.last).is_none_or(|(k, _)| *k != key) {
-            self.last = match self.items.iter().position(|(k, _)| *k == key) {
+        if self.items.get(self.last).is_none_or(|(k, _)| !k.same(key)) {
+            self.last = match self.items.iter().position(|(k, _)| k.same(key)) {
                 Some(i) => i,
                 None => {
                     self.items.push((key, V::default()));
@@ -257,6 +483,8 @@ impl CachedSession {
         range: &Range,
         prices: &mut crate::pricing::Cache<'a>,
         scratch: &mut Scratch,
+        hashes: &RandomState,
+        names: &mut Names,
         keep_running: &impl Fn() -> bool,
     ) -> Option<Self> {
         let mut out = Self {
@@ -268,10 +496,10 @@ impl CachedSession {
             buckets: Vec::new(),
             cells: Vec::new(),
             days: Vec::new(),
-            recorded: false,
+            meta: SessionMeta::default(),
         };
-        let mut models: Tally<&str, UsageSum> = Tally::new();
-        let mut tools: Tally<(&str, bool), Calls> = Tally::new();
+        let mut models: Tally<NameRef<'_, Option<&Arc<str>>>, UsageSum> = Tally::new();
+        let mut tools: Tally<(NameRef<'_, &Arc<str>>, bool), Calls> = Tally::new();
         for lane in &session.lanes {
             if let Some((a, b)) = range.previous {
                 let first = lane.events.partition_point(|e| e.start < a);
@@ -316,12 +544,12 @@ impl CachedSession {
                         cost = usage.cost;
                         out.total.usage.merge(&usage);
                         models
-                            .entry(e.model.as_deref().unwrap_or("モデル不明"))
+                            .entry(NameRef { text: e.model.as_deref().unwrap_or("モデル不明"), shared: e.model.as_ref() })
                             .merge(&usage);
-                        out.recorded = true;
+                        out.meta.record();
                     }
                     if tool {
-                        let calls = tools.entry((e.name.as_ref(), e.kind == Kind::Agent));
+                        let calls = tools.entry((NameRef { text: &e.name, shared: &e.name }, e.kind == Kind::Agent));
                         calls.calls += 1;
                         calls.failures += usize::from(failed);
                     }
@@ -339,16 +567,25 @@ impl CachedSession {
             }
         }
         scratch.take(&mut out);
-        out.models = models
+        // collect() の入力配列の再利用で余剰容量も残さず、保存する件数だけ確保する。
+        out.models.reserve_exact(models.items.len());
+        out.models.extend(models
             .items
             .into_iter()
-            .map(|(m, u)| (m.to_owned(), u))
-            .collect();
-        out.tools = tools
+            .map(|(m, u)| {
+                let hash = hashes.hash_one(m.text);
+                (m.shared.map(|m| names.get(m, hash)), hash, u)
+            })
+        );
+        out.tools.reserve_exact(tools.items.len());
+        out.tools.extend(tools
             .items
             .into_iter()
-            .map(|((name, agent), calls)| (name.to_owned(), agent, calls))
-            .collect();
+            .map(|((name, agent), calls)| {
+                let hash = hashes.hash_one((name.text, agent));
+                (names.get(name.shared, hash), agent, hash, calls)
+            })
+        );
         Some(out)
     }
 }
@@ -389,6 +626,8 @@ impl Cache {
                 let cache = &mut self.periods[index];
                 if !cache.range.matches(&span) {
                     cache.sessions.clear();
+                    cache.names.0.clear();
+                    cache.merged_counts = [0; 2];
                     cache.range = Range::new(span);
                 }
                 cache
@@ -397,7 +636,10 @@ impl Cache {
                 self.periods.push(PeriodCache {
                     period,
                     range: Range::new(span),
-                    sessions: HashMap::new(),
+                    sessions: HashMap::default(),
+                    hashes: RandomState::new(),
+                    names: Names::default(),
+                    merged_counts: [0; 2],
                 });
                 self.periods.last_mut().unwrap()
             }
@@ -406,33 +648,48 @@ impl Cache {
             store
                 .sessions
                 .get(si)
-                .is_some_and(|s| cached.version.ptr_eq(&Arc::downgrade(s)))
+                .is_some_and(|s| cached.version.as_ptr() == Arc::as_ptr(s))
         });
+        cache.names.0.retain(|_, name| name.strong_count() > 0);
         let range = &cache.range;
+        // clear() 後も同じ種を使うので、保持したセッションのハッシュも再利用できる。
+        let hashes = &cache.hashes;
         // 先に不足分を作り、キャッシュを借用しながら結果を結合する。
         let mut prices = crate::pricing::Cache::default();
         let mut scratch = None;
-        for &si in order {
-            if !keep_running() {
-                return None;
+        let clamp = order.len() < usize::from(cache.merged_counts[0].max(cache.merged_counts[1]));
+        let mut entries = if clamp { [0_usize; 2] } else { [usize::MAX; 2] };
+        // retain() 後は有効な添字と版だけが残る。件数が全体と同じなら不足分はない。
+        // 小さな絞り込みの予約数を数える場合は、この走査を使う。
+        if clamp || cache.sessions.len() != store.sessions.len() {
+            for &si in order {
+                if !keep_running() {
+                    return None;
+                }
+                let contribution = match cache.sessions.entry(si) {
+                    Entry::Occupied(entry) => entry.into_mut(),
+                    Entry::Vacant(entry) => {
+                        let scratch = scratch.get_or_insert_with(|| Scratch::new(range));
+                        let contribution = CachedSession::build(
+                            &store.sessions[si], range, &mut prices, scratch,
+                            hashes, &mut cache.names, &keep_running,
+                        )?;
+                        self.rebuilt += 1;
+                        entry.insert(contribution)
+                    }
+                };
+                if clamp {
+                    entries[0] = entries[0].saturating_add(contribution.models.len());
+                    entries[1] = entries[1].saturating_add(contribution.tools.len());
+                }
             }
-            if let Entry::Vacant(entry) = cache.sessions.entry(si) {
-                let scratch = scratch.get_or_insert_with(|| Scratch::new(range));
-                let contribution = CachedSession::build(
-                    &store.sessions[si],
-                    range,
-                    &mut prices,
-                    scratch,
-                    &keep_running,
-                )?;
-                entry.insert(contribution);
-                self.rebuilt += 1;
-            }
+        } else if !order.is_empty() && !keep_running() {
+            return None;
         }
         let mut out = Summary::empty(&range.span, period);
-        let mut models: HashMap<&str, [UsageSum; 2]> = HashMap::new();
-        let mut projects: HashMap<&str, [Totals; 2]> = HashMap::new();
-        let mut tools: HashMap<(&str, bool), [Calls; 2]> = HashMap::new();
+        let mut models: Merged<&str, [UsageSum; 2]> = Merged::with_capacity(usize::from(cache.merged_counts[0]).min(entries[0]));
+        let mut projects: Merged<&str, [Totals; 2]> = Merged::default();
+        let mut tools: Merged<(&str, bool), [Calls; 2]> = Merged::with_capacity(usize::from(cache.merged_counts[1]).min(entries[1]));
         let mut days = vec![false; range.day_bucket.len()];
         for &si in order {
             if !keep_running() {
@@ -449,13 +706,22 @@ impl Cache {
             }
             out.total.merge(&c.total);
             out.sources[src].merge(&c.total);
-            projects.entry(&session.cwd).or_default()[src].merge(&c.total);
-            out.recorded_sessions += usize::from(c.recorded);
-            for (model, usage) in &c.models {
-                models.entry(model).or_default()[src].merge(usage);
+            projects
+                .entry(HashedKey { hash: c.meta.project_hash(&session.cwd, hashes), key: session.cwd.as_str() })
+                [src]
+                .merge(&c.total);
+            out.recorded_sessions += usize::from(c.meta.recorded());
+            for (model, hash, usage) in &c.models {
+                models
+                    .entry(HashedKey { hash: *hash, key: model_name(model.as_ref()) })
+                    [src]
+                    .merge(usage);
             }
-            for (name, agent, calls) in &c.tools {
-                tools.entry((name, *agent)).or_default()[src].merge(calls);
+            for (name, agent, hash, calls) in &c.tools {
+                tools
+                    .entry(HashedKey { hash: *hash, key: (name.as_ref(), *agent) })
+                    [src]
+                    .merge(calls);
             }
             for (bucket, amount) in &c.buckets {
                 out.activity[*bucket as usize].sources[src].merge(amount);
@@ -470,7 +736,149 @@ impl Cache {
         }
         out.active_days = days.iter().filter(|&&d| d).count();
         out.sum_cells();
-        out.finish(models, projects, tools);
+        cache.merged_counts = [models.rows.len().min(MERGED_RESERVE) as u16,
+                               tools.rows.len().min(MERGED_RESERVE) as u16];
+        out.finish(
+            models.into_iter().map(|(k, v)| (k.key, v)),
+            projects.into_iter().map(|(k, v)| (k.key, v)),
+            tools.into_iter().map(|(k, v)| (k.key, v)),
+        );
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_cache_reuse_checks_coverage_versions_and_reused_indices() {
+        use crate::model::{Lane, Source, Usage};
+        use std::cell::Cell;
+
+        let today = NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+        let start = midnight(today) + 3600.0;
+        let mut store = Snapshot { sessions: (0..3).map(|i| {
+            let mut lane = Lane::new("main");
+            lane.events.push(Event {
+                start, end: start + 1.0, kind: Kind::Tool, name: format!("tool-{i}").into(),
+                summary: "coverage".into(), input: String::new(), output: String::new(),
+                call_id: None, text_ref: Default::default(),
+                usage: Usage { input: 1, ..Default::default() },
+                model: Some(format!("test-cache-model-{i}").into()), status: Default::default(),
+            });
+            let mut session = Session {
+                id: format!("session-{i}"), source: if i == 1 { Source::Codex } else { Source::Claude },
+                cwd: format!("/project/{i}"), headless: false, title: "coverage".into(),
+                branch: String::new(), version: String::new(), lanes: vec![lane],
+                start, end: start + 1.0, parents: Vec::new(), tree: Vec::new(),
+            };
+            session.finalize();
+            Arc::new(session)
+        }).collect() };
+        fn check(cache: &mut Cache, store: &Snapshot, order: &[usize], today: NaiveDate) {
+            let actual = cache.build(store, order, Period::Month, today);
+            let expected = Summary::reference(store, order, Period::Month, today);
+            assert_eq!(actual.total.sessions, order.len());
+            assert_eq!(actual.recorded_sessions, order.len());
+            assert_eq!(actual.sources.each_ref().map(|s| s.sessions), expected.sources.each_ref().map(|s| s.sessions));
+            let projects = |s: &Summary| s.projects.iter().map(|(name, sources)|
+                (name.clone(), sources.each_ref().map(|s| s.sessions))).collect::<Vec<_>>();
+            assert_eq!(projects(&actual), projects(&expected));
+            let models = |s: &Summary| s.models.iter().map(|(name, sources)|
+                (name.clone(), sources.each_ref().map(|s| (s.total(), s.calls, s.unpriced, s.cost.to_bits())))).collect::<Vec<_>>();
+            assert_eq!(models(&actual), models(&expected));
+            let tools = |s: &Summary| s.tools.iter().map(|tool|
+                (tool.name.clone(), tool.agent, tool.sources.each_ref().map(|s| (s.calls, s.failures)))).collect::<Vec<_>>();
+            assert_eq!(tools(&actual), tools(&expected));
+        }
+        let mut cache = Cache::default();
+        check(&mut cache, &store, &[0, 1], today);
+        assert_eq!(cache.rebuilt, 2);
+        // キャッシュと選択範囲が同じ件数でも、未集計のセッションがある。
+        check(&mut cache, &store, &[1, 2], today);
+        assert_eq!(cache.rebuilt, 1);
+        check(&mut cache, &store, &[0, 1, 2], today);
+        assert_eq!(cache.rebuilt, 0);
+        // 全件がそろった後の絞り込みでは、各セッションの予約数も数える。
+        assert_eq!(cache.periods[0].merged_counts, [3, 3]);
+        check(&mut cache, &store, &[1], today);
+        assert_eq!(cache.rebuilt, 0);
+        let polls = Cell::new(0);
+        assert!(cache.build_while(&store, &[0, 1, 2], Period::Month, today, || {
+            polls.set(polls.get() + 1);
+            polls.get() < 2
+        }).is_none());
+        check(&mut cache, &store, &[0, 1, 2], today);
+        assert_eq!(cache.rebuilt, 0);
+        store.sessions.remove(0);
+        check(&mut cache, &store, &[0, 1], today);
+        assert_eq!(cache.rebuilt, 2);
+        Arc::make_mut(&mut store.sessions[0]).cwd = "/renamed".into();
+        check(&mut cache, &store, &[0, 1], today);
+        assert_eq!(cache.rebuilt, 1);
+        check(&mut cache, &store, &[1, 1, 0], today);
+        assert_eq!(cache.rebuilt, 0);
+    }
+
+    #[test]
+    fn shared_names_check_content_on_hash_collisions() {
+        let a: Arc<str> = "同名".into();
+        let same: Arc<str> = "同名".into();
+        let different: Arc<str> = "別名".into();
+        let mut names = Names::default();
+        let first = names.get(&a, 7);
+        assert!(Arc::ptr_eq(&first, &names.get(&same, 7)));
+        let second = names.get(&different, 7);
+        assert_eq!(second.as_ref(), "別名");
+        assert!(!Arc::ptr_eq(&first, &second));
+        drop(a);
+        drop(first);
+        assert!(Arc::ptr_eq(&second, &names.get(&different, 7)));
+    }
+
+    #[test]
+    fn hash_collisions_keep_names_and_call_kinds_separate() {
+        let first = String::from("同じ名前");
+        let second = first.clone();
+        let mut calls: Merged<(&str, bool), usize> = Merged::default();
+        for key in [(first.as_str(), false), (second.as_str(), false),
+                    (second.as_str(), true), ("別の名前", false),
+                    (first.as_str(), false), (second.as_str(), true),
+                    (second.as_str(), false)] {
+            *calls.entry(HashedKey { hash: 7, key }) += 1;
+        }
+        let counts: HashMap<_, _> = calls.into_iter().map(|(key, count)| (key.key, count)).collect();
+        assert_eq!(counts.len(), 3);
+        assert_eq!(counts[&("同じ名前", false)], 4);
+        assert_eq!(counts[&("同じ名前", true)], 2);
+        assert_eq!(counts[&("別の名前", false)], 1);
+    }
+
+    #[test]
+    fn compressed_project_hash_collisions_keep_full_paths_separate() {
+        let mut first = SessionMeta::default();
+        let second = SessionMeta::default();
+        first.set_project_hash(0x0123_4567_89ab_cdef);
+        second.set_project_hash(0xff23_4567_89ab_cdef);
+        first.record();
+        assert!(first.recorded());
+        assert!(!second.recorded());
+        let hashes = RandomState::new();
+        assert_eq!(first.project_hash("/work/project", &hashes), second.project_hash("/work/project/sub", &hashes));
+        let path = String::from("/work/project");
+        let same = path.clone();
+        let mut projects: Merged<&str, usize> = Merged::default();
+        for key in [path.as_str(), "/work/project/sub", same.as_str(),
+                    "/work/project/sub", path.as_str()] {
+            *projects.entry(HashedKey { hash: first.project_hash(key, &hashes), key }) += 1;
+        }
+        let counts: HashMap<_, _> = projects.into_iter().map(|(key, count)| (key.key, count)).collect();
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts["/work/project"], 3);
+        assert_eq!(counts["/work/project/sub"], 2);
+        first.set_project_hash(0);
+        assert_eq!(first.project_hash("/work/zero", &hashes), 0);
+        assert!(first.recorded());
     }
 }
