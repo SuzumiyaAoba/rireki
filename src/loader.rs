@@ -1189,14 +1189,14 @@ impl CodexParser {
         }
         if ty == "turn_context" {
             let str_at = |k: &str| pl.pointer(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-            let m = str_at("/model");
-            if !m.is_empty() && self.model.as_deref() != Some(m.as_str()) {
-                self.model = Some(Arc::from(m.as_str()));
+            let m = pl.pointer("/model").and_then(|x| x.as_str()).unwrap_or_default();
+            if !m.is_empty() && self.model.as_deref() != Some(m) {
+                self.model = Some(Arc::from(m));
             }
             if !self.lane.model.is_empty() {
                 return;
             }
-            self.lane.model = m;
+            self.lane.model = m.to_owned();
             self.lane.effort = str_at("/effort");
             if self.lane.effort.is_empty() {
                 self.lane.effort = str_at("/collaboration_mode/settings/reasoning_effort");

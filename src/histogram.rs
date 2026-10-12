@@ -49,13 +49,18 @@ pub fn count_bins(store: &Snapshot, order: &[usize], edges: &[f64]) -> Vec<u32> 
                 }
             } else {
                 if events[0].start.is_finite() && events[events.len() - 1].start.is_finite() {
-                    let mut prev = 0;
-                    for i in from..to - 1 {
-                        let next = events.partition_point(|e| e.start < edges[i + 1]);
-                        out[i] += (next - prev) as u32;
-                        prev = next;
+                    let columns = to - from;
+                    if columns >= 64 && events.len() <= columns.saturating_mul(4) {
+                        add_linear(events, &edges[from + 1..to], &mut out[from..to]);
+                    } else {
+                        let mut prev = 0;
+                        for i in from..to - 1 {
+                            let next = events.partition_point(|e| e.start < edges[i + 1]);
+                            out[i] += (next - prev) as u32;
+                            prev = next;
+                        }
+                        out[to - 1] += (events.len() - prev) as u32;
                     }
-                    out[to - 1] += (events.len() - prev) as u32;
                 } else {
                     let mut prev = 0;
                     for i in from..to {
@@ -68,6 +73,21 @@ pub fn count_bins(store: &Snapshot, order: &[usize], edges: &[f64]) -> Vec<u32> 
         }
     }
     out
+}
+
+// 二分探索のループと前向き走査のループを同じ関数に展開しない。
+#[inline(never)]
+fn add_linear(events: &[crate::model::Event], cuts: &[f64], counts: &mut [u32]) {
+    let mut previous = 0;
+    for (&cut, count) in cuts.iter().zip(counts.iter_mut()) {
+        let mut next = previous;
+        while next < events.len() && events[next].start < cut {
+            next += 1;
+        }
+        *count += (next - previous) as u32;
+        previous = next;
+    }
+    *counts.last_mut().unwrap() += (events.len() - previous) as u32;
 }
 
 #[cfg(test)]
@@ -242,6 +262,41 @@ mod tests {
         let store = snapshot(vec![vec![-f64::NAN, -f64::NAN, 0.0], vec![-1.0]]);
         assert_eq!(count_bins(&store, &[0], &[-2.0, 2.0]), vec![1]);
         assert_eq!(count_bins(&store, &[0], &[-2.0, -1.0, 0.0, 2.0]), vec![0, 1, 0]);
+    }
+
+    #[test]
+    fn merge_and_search_density_boundary_match_full_scan() {
+        for bins in [2, 7, 8, 42, 63, 64, 65, 256, 1024] {
+            for n in [bins - 1, bins, bins + 1, bins * 4 - 1, bins * 4, bins * 4 + 1, bins * 8] {
+                for repeated in [false, true] {
+                    let starts: Vec<_> = (0..n).map(|i| {
+                        if repeated { (i * bins / n) as f64 } else { i as f64 * bins as f64 / n as f64 }
+                    }).collect();
+                    let store = snapshot(vec![starts.clone(), starts]);
+                    for edges in [
+                        (0..=bins).map(|i| i as f64).collect::<Vec<_>>(),
+                        (0..=bins).flat_map(|i| [i as f64, i as f64]).collect(),
+                        (0..=bins).map(|i| i as f64 + 0.5).collect(),
+                    ] {
+                        assert_eq!(count_bins(&store, &[0], &edges), full_scan(&store, &[0], &edges),
+                            "bins={bins}, events={n}, repeated={repeated}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finite_merge_with_infinite_edges_preserves_half_open_counts() {
+        let store = snapshot(vec![vec![-f64::INFINITY, -1.0, -0.0, 0.0, 0.5, 1.0, f64::INFINITY], (0..=128).map(|i| (i as f64 - 64.0) / 64.0).collect()]);
+        for edges in [
+            std::iter::once(-f64::INFINITY).chain((0..=64).map(|i| i as f64 / 64.0)).chain(std::iter::once(f64::INFINITY)).collect(),
+            vec![-f64::INFINITY, 0.0, 0.0, 0.5, 1.0, f64::INFINITY],
+            vec![-2.0, -1.0, 0.0, 0.5, 1.0, 2.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+        ] {
+            assert_eq!(count_bins(&store, &[0], &edges), full_scan(&store, &[0], &edges));
+        }
     }
 
 }

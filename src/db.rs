@@ -751,7 +751,9 @@ fn read_events(conn: &Connection) -> rusqlite::Result<Vec<EventRows>> {
                                     summaries.get(s, (0, flat.len()), |_, i| flat.get(i).map(|(_, e)| e)))?;
                                 flat.push((lane_id, event));
                             }
-                            flat.shrink_to_fit();
+                            // この配列はレーンへ移して解放する。余りが64行以内なら
+                            // 大きな配列の縮小再確保を省く（最大16workerで1024行）。
+                            if flat.capacity() - flat.len() > 64 { flat.shrink_to_fit(); }
                             return Ok(EventRows::Flat(flat));
                         }
                         let event = read_event(r, &mut names, &mut models, |s|

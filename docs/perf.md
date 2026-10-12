@@ -27,10 +27,12 @@
 - 要約と呼び出しIDも `Arc<str>` で公開した版の間に共有し、ライブログの更新やスナップショットの複製で文字列を毎回コピーしない。索引の読み取りでは、スレッドごとの1,024枠の一時キャッシュで512byte以下の同じ要約を共有する。先頭16byte・末尾8byte・長さから枠を選び、文字列全体の一致を確かめてから再利用する。枠には既読の群とイベントの位置だけを各32bitで保持し、一意な要約のために共有参照を追加しない。位置が32bitに収まらない値はキャッシュへ追加せず、要約全文を通常どおり保持する。短い文字列では存在する部分だけを使う。衝突した枠は差し替え、読み取り後にキャッシュを解放する。呼び出しIDはイベント間では共有しない。変更時は新しい文字列へ差し替える。索引はSQLiteの借用文字列から直接共有領域を作り、要約の表示にもGPUIの `SharedString` を使う。ライブ保持量は共有文字列の長さと参照カウントの領域を含めて見積もる。DBの文字列・NULL・空文字列を維持し、スキーマは変更しない。
 - 索引のイベントはID順に連続するレーンごとに配列へ読み、その配列をレーンへ直接渡す。群を読み終えたら実サイズの確保へ移し、アロケーターが縮小前の余剰領域を保持するのを避ける。ID区間や別の群に跨ぐレーンだけ、読み取り済みの件数を使って残りを予約し、ID順に追記する。追加のSQL走査はしない。
 - 群の初期容量は、先頭では16件、以降は既読の群の平均を次の2の累乗に丸めて最大64件とし、ID区間の幅も上限にする。小さい群が続く入力では小さい容量を保つ。件数表の予約は読み取った群数・行数を上限にし、項目・レーンの対応表と件数表は使い終えた時点で解放する。
-- 各ID区間で64群以上が平均4イベント未満の場合、平坦な読み取り配列へ一度切り替え、小さい配列が増えるのを防ぐ。切り替え時に要約の位置キャッシュをリセットする。平坦な配列はレーンへ移す前に余剰容量を返す。読み取りスレッド数は全イベント数を超えない。
+- 各ID区間で64群以上が平均4イベント未満の場合、平坦な読み取り配列へ一度切り替え、小さい配列が増えるのを防ぐ。切り替え時に要約の位置キャッシュをリセットする。平坦な配列はレーンへ移す前に、余剰が64行を超えるときだけ縮小する。小さい余剰の縮小再確保を省き、最大16workerで残る追加要求容量を1024行までに制限する。読み取りスレッド数は全イベント数を超えない。
 - `loader/codex_row.rs` は64 KiB以上で画像を含むCodexの行について、出力配列のテキストだけを保持する。画像などの未使用値も通常のデシリアライザで構文・Unicode・数値・深さを検証し、重複キーは最後の値を使う。オブジェクト形式の出力は保持する。単一テキストの出力と加工不要の本文は借用して表示上限までのコピーを減らす。
 - 大きいログの行はバッファを再利用して読む。容量を超えて2 MiBより大きくなる必要な行だけ、一時的な断片へ読み込んで長さを確定し、一度だけ連続領域を確保する。改行なしの最終行・UTF-8の分割・不要な巨大行の読み飛ばしを維持する。
 - 必要な行は `simdutf8` でUTF-8を一括検証してから文字列としてJSONを解析し、文字列の値ごとのUTF-8再検証を省く。不正なUTF-8は従来のバイト列パーサへ渡し、エラー位置を維持する。JSONのエスケープ・構文・数値・深さの検証はデシリアライザが行う。
+
+Codexのturn_contextはモデル名を借用し、レーンへ初めて保存するときだけStringへ複製する。同じ現在モデルのArcは再利用する。ライブキャッシュの保持量は、イベントと現在モデルが持つArcの確保先ごとに文字列とヘッダを一度ずつ数える。同内容でも別のArc確保なら別々に数える。モデルが1確保先だけなら重複判定の辞書を確保せず、既存のイベント走査内で計算する。Claudeは既存のモデル辞書で計上する。
 
 ## 本文の保存と共有 (`text.rs`)
 
@@ -689,3 +691,180 @@ P43独立通常rlibを明示リンクした同じclientでViewLoader::open/load_
 CPU時計(12)のnsとworker込みscopeを3Python threads preflightで確認（process131.806ms/main0.714、指定PID終了CPU218.149）。OS最大RSSはDarwin bytes/MiB・終了時PID指定wait4。GPU等を含む物理footprintではない。生成前usize:ToSql compile1を保存→i64修正後両compile0、client変数名warning各1を保持。native再実行/除外0、解析各初回0。品質/診断/preflightは性能標本ではない。性能中ps/自身build/文書/重いhash0、境界2観測conflict0、外部重複/host周波数/QoS/cache固定は未証明、品質がcacheを暖め得る。全204と各driver終了後P29 source/native/library照合・所有MDXR再開、共有target不変、Cargo fingerprint復元主張なし。
 
 COUNTとflat初期ヒントを分離していないため、allocator保持/再確保がRSS退行の原因という説明は仮説。次に容量を切り分けて解消する。全GPUI Scene/GPU pixelsとGUI起動差も未解決、P43/P42/P41/P37失敗を保持。通常248tests/Clippy/releaseはP42同一候補の既存証拠。候補未採用、全体目標継続中。
+
+### P45 — flat初期容量の分離と4096行ブロックの検証
+
+旧`.mdxr`全体が作業中に消失したため、現在のP29製品82ファイルからA/B/C/Dを一時領域で再構築。消失した旧249テスト等を今回の証拠として継承せず、過去の不合格記録は保持。旧17形状と境界前後・長い群の5形状を再生成（旧入力とのhash一致未主張）。22入力、各方式4,535,361events。88品質native0、SQLite全属性・本文全bytesとStore全出力13,617,819レコード比較が一致（入力44,362,526/output51,429,529bytes各方式）。基準139libtests/Clippy、D140libtests/Clippy、4libs+共通clients release0。
+
+4Williams順序ABDC/BCAD/CDBA/DACB、352普通ライブラリCLI0、各方式各case各block2標本/合計4。独立processでClock12 ns/workerCPUとDarwin wait4 RSS bytesを実測。全件COUNTのまま容量だけ小さくしたCは、大きい7条件全てでRSS最低標本>A最高標本。COUNTと容量を分離し、容量変更のRSS退行を再現（allocator機序は未確認）。D4096行blocksは1,048,576行でB492.441→D389.711MiB、A390.746MiB。境界前後も保存し、D/B RSS66条件pass、D/Aは1/66 fail（1,048,575 block1 A347.648→D390.977、threshold382.413）。A低値294.594、B低値261.906等を除外しない。反復325/1056 fail（A/D159）、D/A CPU-wall24/264 fail、D/B37/264 fail。全5比較CPU-wall115/1320、RSS41/330 fail。再実行/除外0。測定中ps/自身build/文書/重hash0、境界2conflicts0、外部負荷の連続不在/周波数/QoS固定未証明。全440終了後、現製品の全246testsとnormal release0で共有target基準を再構築（失われた元P29binary hash/Cargo fingerprint復元主張なし）。製品source維持、D未採用、全GUI・起動および残るCPU/RSS条件は未完了。
+
+新報告: `.mdxr/20261011140033-flat-recovery/index.mdx`。入力・生ログ正本: `/private/tmp/rireki-p45-recovery-20261011`。次に小さいflatの確保・縮小と低いRSS標本・CPU差を診断し、全GUI/起動を検証する。
+
+### P46 — 入力に合わせた先頭ブロックとbounded COUNT
+
+凍結済みP45のA/Dソース82+共通clients2・artifacts・22入力をhash一致で継承。EはLIMIT16のまま先頭容量をID範囲から見積もり、FはLIMIT32768と行数容量見積もり。後続4096行blocks・公開API・worker数/ID範囲・SQLite設定維持。E/F src/db.rsだけ変更、逆適用でDへbyte一致。各141libtests/Clippy/release0。新44品質native0、各4535361events、固定A出力と9078546全レコード比較一致。全属性・順序・元SQLite全本文44362526/51429529bytes各方式直接照合、A/D品質は固定P45証拠継承。
+
+4Williams順序ADFE/DEAF/EFDA/FAEDで352通常library native0、各方式各case各block2/合計4標本、再実行/除外0。閾値壁1ms/CPU2msまたは10%、RSS16MiBまたは10%維持。反復258/1056 fail、A/F反復122/528 fail、全6比較CPU-wall139/1584、RSS0/396 fail。F/A CPU-wall9/264、RSS0/66 fail。低いRSS標本含む全標本保存。全396終了と両driver終了後、基準246all-targets tests/通常release0で共通targetをAへ再構築。測定中所有2preview停止、自身build/文書/重hash/ps観測0、境界2観測、外部負荷連続不在/周波数/QoS固定未証明。製品82sources維持、E/F未採用。全GUI/自然起動とP45以前の未解決条件を保持し目標未完了。
+
+報告: `.mdxr/20261011144022-adaptive-flat/index.mdx`。生証拠正本: `/private/tmp/rireki-p46-adaptive-20261011`。
+
+P46基準再構築の補足: 基準の通常実行ファイルは測定時のP45基準と完全一致した。再ビルドしたrlib全体のhashは異なるが、archiveの全機械コードobjectはbyte一致し、差はlib.rmetaだけ。両metadataはそれぞれ異なるソースディレクトリを含む。metadata差の全要因は未特定で、archive全体のbyte同一性は主張しない。最初の厳密hash条件による検証失敗も保存した。
+
+### P47 — 小入力のworker起動コスト
+
+A/D/Fの82sources+共通clients2と実行物、旧22入力を固定P46からhash一致で継承。GはFのLIMIT32768とhead/block方式を維持し、8192行以下のみ1workerへまとめる。8191/8192/8193行の3入力を追加、25入力。G src/db.rsのworker選択と長い群の境界検証のみ、逆適用でFへbyte一致。141libtests/Clippy/release0。34新品質native0、G各4559937events、固定Aとの4613055全レコード比較一致、元SQLite全属性・全文44602889/51708199bytes直接照合。旧22 A/D/F品質は固定P45/P46継承、新3は全4方式新規。
+
+4Williams順序ADGF/DFAG/FGDA/GAFD、400通常library native0、各方式各case各block2/合計4標本、再実行/除外0。反復268/1200、A/G反復128/600 fail、全6比較CPU-wall182/1800、RSS0/450 fail。G/A CPU-wall17/300、RSS0/75 fail。閾値と全標本維持。測定中自身build/文書/重hash/ps0・所有3preview停止、境界2観測、外部連続無負荷/周波数/QoS固定未証明。全434終了・両driver終了後、基準246all-targets tests/通常release0。通常nativeと全object元Aとbyte一致、rlibのlib.rmetaのみ差があり全archive同一性を主張しない。製品82sources維持、G未採用。全GUI・自然起動・以前の不合格を保持して目標未完了。
+
+報告: `.mdxr/20261011151123-small-workers/index.mdx`。正本: `/private/tmp/rireki-p47-small-workers-20261011`。
+
+P47 CPUと壁時間の分離: 15行入力のload_stable CPU平均はA13.864msからG0.423msへ減った。512行は15.251→0.818ms、4100行の偏ったIDは18.290→3.761ms。一方、8191行のload_stable壁時間は6.940→8.464ms、8192行は6.032→7.812msへ増え、両blockと全体で壁時間条件が不合格。8193行では通常並列度へ戻るがCPU条件も不合格。1worker化を8192行まで広げると応答時間へ退行が出ることを切り分けた。次に、約2048行/workerを目安に並列度を段階的に増やす方式を比較する。
+
+### P48 — 行数に合わせた並列度
+
+A/F/Gの82sources+共通clients2・artifactsと旧25入力を固定P47からhash一致で継承。HはGのLIMIT32768/head/blockを維持し、ceil(n/2048)を上限workerへclampする。8192行は4worker。src/db.rsのworker選択とhead容量1382/1654/2064の境界検証のみ、逆適用でGへbyte一致。141libtests/Clippy/release0。2048/2049/14336/14337行を追加し29入力、新41品質native0。H各4592707events、固定Aと4662249全レコード比較一致、元SQLite全属性・全文44923402/52079753bytes直接照合。旧25 A/F/G品質は固定P45/P46/P47継承、新4は全4方式新規。
+
+4Williams順序AFHG/FGAH/GHFA/HAGF、464通常library native0、各方式各case各block2/合計4標本、再実行/除外0。反復568/1392、A/H反復291/696 fail、全6比較CPU-wall211/2088、RSS0/522 fail。H/A CPU-wall15/348、RSS0/87 fail。閾値と全標本維持。測定中自身build/文書/重hash/ps0・所有4preview停止、境界2観測、外部連続無負荷/周波数/QoS固定未証明。全505終了・両driver終了後、基準246all-targets tests/通常release0。通常nativeと全object元Aとbyte一致、rlibのlib.rmetaのみ差があり全archive同一性を主張しない。製品82sources維持、H未採用。全GUI・自然起動・以前の不合格を保持して目標未完了。
+
+報告: `.mdxr/20261011153600-balanced-workers/index.mdx`。正本: `/private/tmp/rireki-p48-balanced-workers-20261011`。
+
+P48 CPU・壁時間と環境: Hは8192行のload_stable CPU平均をA20.202msから15.633msへ減らし、壁時間平均は13.891→13.836msだった。一方、8191行の壁時間は10.104→14.355msへ増え、block2と全体が不合格。H/AのCPU・時間は15/348不合格、反復は568/1392不合格。RSSは全522条件を通過した。CPU削減と壁時間の両立は全条件で確定していない。 全505計測・品質nativeと基準ビルド終了後の観測では、load average 14.165/16.604/15.866、別のlanguage文書のMDXR2本とesbuildが合計約423% CPUを使用していた。Storage関連サービスも高負荷だった。これは測定中の連続観測ではなく、計測の差をすべて外部負荷へ帰属しない。時間条件は保持して未採用とし、次にRust側の要求割当量・再確保回数とRSSを診断する。
+
+### P49 — Rustの要求割当量診断
+
+固定P45の通常A/B/C/D libraryに同じGlobalAlloc clientを接続。29入力×4方式×2反復、232 specific PID native wait4終了0、合計36741656イベント数・セッション・レーン数を確認。4計数器の既知Layout自己検証0。alloc/reallocの新要求Layout bytesを累計し、旧Layout解放と要求上の生存量の収支を確認。116条件の要求累計など反復に5条件で差。全標本と差を保持。SQLite/C側確保、allocatorの解放後保持・丸め・一時物理重複、GPUは対象外。計数原子操作があるため時間合否に使わない。旧22品質は固定P45、追加7はモデル数のみ。製品ソース82・通常実行物を維持し、候補未採用・旧条件と全GUIを保持。
+
+報告: `.mdxr/20261011160507-allocation-diagnostic/index.mdx`。正本: `/private/tmp/rireki-p49-allocation-20261011`。
+
+P49の観測と次の切り分け: 100万行のflat入力では、load_stableの要求累計がA604.054MiB、B/C783.697MiB、D420.043MiBだった。要求上の生存peakはA/B/Cとも371.016MiB。要求累計・alloc/realloc件数は全116反復で一致し、5条件の差は解放1回・24bytesと生存量の差だった。計数時点での解放差の原因とallocator内部の保持機序は未確認。 基準Aのflat配列は最終レーンへ全要素を移して解放する一時配列だが、読み終わりにshrink_to_fitを呼んでいる。100万行では8回の縮小が再確保の新要求約184MiBを占める可能性がある。次にこの1行だけを省いた独立候補で、要求量・全内容・通常CPU/壁時間/RSSを確認する。これは現時点では未採用。
+
+### P50 — 一時flat配列の小さな余剰では縮小を省く
+
+Iを製品へ適用した。 一時flat配列の余りが64行以内だけshrink_to_fitを省き、余りが大きければ従来どおり縮小。最大16workerの要求容量増加は1024行=188416bytes、物理RSS上限を主張しない。100万行の要求累計604.054→420.054MiB、realloc73→65。独立候補246tests/Clippy/release0。新33品質native0、31入力各5903427events、5908023全レコード/全文57744210/66942919bytes一致。後半IDに巨大な間隔を付けた262144/1048576行も両版確認。124割当native0、要求累計/realloc増加0、反復差0。248通常native0、AIIA/IAAI各4標本、RSS0/93、CPU-wall11/372、反復207/744 fail。全旧閾値・不合格を保持して時間の確定改善率を主張しない。通常計測中自身build/重hash/文書/ps0・所有6preview停止、外部の連続無負荷等未証明。全native終了後、製品262all-targets tests/Clippyと通常release0。全GUI/自然起動・旧候補の不合格は残り、全体目標未完了。
+
+報告: `.mdxr/20261011161450-flat-shrink/index.mdx`。正本: `/private/tmp/rireki-p50-flat-shrink-20261011`。
+
+P50のテスト範囲訂正: テスト数の訂正: P45〜P49で「通常246件」と記録した実行は、統合テストを含まない隔離コピーに対する結果であり、製品ルートの全テスト数ではなかった。今回、既存の統合テスト2ファイル・16件を含む製品ルートの262件、Clippy、通常releaseが通過した。最初に246件を期待した集計assertion失敗と元ログを保持し、製品テストの失敗とは区別する。 計測Iと製品libraryの全object byte一致、lib.rmeta差のみ。
+
+### P51 — 1種類の文字列共有の予備CPU比較（未採用）
+
+JはInternerの追加16bytesで1種類だけ直接Arcを返し、2種類目で解放して既存辞書を使う。既存.0を維持し、ライブ保持量のsizeof(Self)が追加フィールドを計数する。263tests/Clippy/release0（既存16統合テスト含む）。最初の非公開フィールド変更によるcompile101は元ソースとログ保持、tupleの.0を維持して修正。9ケース・IJJI/JIIJ・72独立native0、各4標本。単一modelのCPU平均436.266→124.656ms/1000万get、単一tool484.494→147.216、長文単一648.001→79.276ms/100万get。混合・多種類CPU guard0 fail、全CPU/wall8/54、対照47/108 fail。閾値・全標本保持、再実行/除外0。実アプリの改善率には換算しない。計測中自身build/重hash/文書/ps0・所有7preview停止、前後2境界。事前の別観測24GiB RAM・約15GiB swap、所有preview RSS合計約138MiB、計測中連続無負荷は未証明。全micro終了後に通常libraryを製品Iから再構築、nativeはP50 byte一致、84選択ソース維持。製品262テスト/Clippyは同じP50ソース継承。J未採用、全内容・通常アプリCPU/RSS・GUI未検証、目標継続。
+
+報告: `.mdxr/20261011163836-single-interner/index.mdx`。正本: `/private/tmp/rireki-p51-single-interner-20261011`。
+
+
+### P52 — モデル名の一時確保とライブキャッシュの保持量
+
+製品に適用。Codex turn_contextのmodelを借用し、初回以外の非空modelごとの一時Stringを省く。Codexイベントと現在modelのArc確保先を一度ずつ計上し、同内容の別Arcは別計上。既存走査内、1確保先なら辞書確保なし。Claudeは既存辞書。ライブキャッシュの予算64MiBの採用・退避計算に反映。追加1unitで共有/非隣接/同内容別確保/現在modelだけ/解放を検証。製品263tests（140+107+12+4）/Clippy全targets/通常libraryとnative release0。
+
+P51復元の訂正: 保存normal libraryは未採用Jとarchive全byte/SHA一致していた。nativeのP50一致だけでlibrary復元を確認した結論は取り消す。P51の72microは別の固定I/J archiveであり対象外。今回の初回80diagnosticと20予測不一致を保存し、正しい採用済みP50 archiveへ接続した別80native+2計数器自己検証すべてspecific PID wait4終了0。10ケースIKKI/KIIK、各4標本、全323687イベント属性・全文比較byte一致、各nativeの通常parse/LiveLog全出力一致、反復200含む310条件すべて通過。両版Interner48bytes、J未採用。誤基準の80と2自己検証も保持し、元の診断で除外/再試行は0。修正集計helperの参照先失敗も保存し、native再実行なしで修正。
+
+32768同一短modelは32767確保/262136要求bytes減、4096同一1020bytes modelは4095確保/4176900要求bytes減。通常parseと初回LiveLogで同数。空/欠落・切替・現在modelだけも事前予測一致。Claude2対照で要求/保持差0。要求量/保持量はRust LayoutとArc長+ヘッダの近似で、物理RSSやアプリ時間の改善率は未確認。所有8previewを診断中停止し全native回収後再開。現84選択ソースと通常成果物を再照合。全GUI/自然起動と以前の不合格を維持、全体目標継続。
+
+報告: `.mdxr/20261011173818-model-retention/index.mdx`。正本: `/private/tmp/rireki-p52-model-retention-20261011`。
+
+
+### P53 — 製品Kの画面計測
+
+固定P52通常release・固定64セッション/65536eventsの隔離コピーと各空設定で15 nativeすべてspecific PID wait4終了0。ready/done/内部品質assertion、70stage/9600dispatch、186条件すべて通過。起動待ち・詳細/統計の準備も含む10032renderを保持。14方式は構築・layout・paint命令でGPU presentを含まず、最後のnative frame方式はfirst494.149ms/ready frame912.137ms、main-to-ready923.361ms、ready時active。通常の自然起動は未検証。各1回で前後比較・反復安定性は判定しない。
+
+CPU P95上位: detail_summary_selection19.488ms、sidebar_resize17.715ms、lane_map_selection16.339ms、detail_summary_session16.135ms。壁時間P95は20.323/20.497/16.408/17.285ms。全描画・全状態・設定・stderrを保存、再試行/除外0。所有9preview停止、全native終了後再開、外部連続無負荷は未証明。P52製品84選択ソース/通常成果物を維持し、263tests/Clippy/releaseは同じソースの結果を継承。clone準備時のPATH Nix cp失敗も保存、/bin/cpで修正。次に詳細集計と幅変更の未計測部分のスタックを診断する。全体目標継続。
+
+報告: `.mdxr/20261011175808-native-gui/index.mdx`。正本: `/private/tmp/rireki-p53-native-gui-20261011`。
+
+
+### P54 — 幅変更時のスタック診断
+
+製品K固定で3 GUI specific PID wait4終了0。sampleのsummary/sidebarは終了0でも空graph、defaultだけ有効で、空2件を保存。追加Time Profilerはsummary記録/TOC/time-profile export終了0、GUI PID25702 exit(0)をTOCで確認。sidebar記録tool終了139、TOC export10で、done出力はあるがGUIのOS終了状態は不明。最初の解析終了1も保持、欠落backtraceを扱う修正版で再採取せず解析完了。
+
+summary全体5223標本・欠落43、main4743・欠落26、manual_render_onlyを含む3884・欠落0。leaf histogram::count_bins1259標本/32.415%、memmove485、BoundsTree探索170。各標本1ms重みで、速度改善率ではない。inclusiveはstack内再帰を重複除去するが関数間は重なる。起動と2つの詳細幅変更ステージを含み、単独ステージや単一frameの値と扱わない。detail_summary_selection/sessionは幅420pxから2px刻み20種類の変更である。ミニマップの直前1件キャッシュは幅による本数変更で失効するため、次に再利用を検証する。
+
+84選択ソース/通常成果物を維持、263tests/Clippy/releaseはP52同一ソース結果を継承。所有10組previewを再開、採取時間は性能ゲートに使わず、自然起動未検証、全体目標継続。報告: `.mdxr/20261011180835-ui-stacks/index.mdx`。正本: `/private/tmp/rireki-p54-ui-stacks-20261011`。
+
+
+### P55 — 幅別ミニマップキャッシュ候補L、不採用
+
+同一期間/data_genでFIFO32幅・合計65536本/256KiBの要求カウント配列を保持する候補。独立走査/再利用/失効/上限の6テストを加え269tests、Clippy -D warnings、lib/native実releaseコンパイル終了0。K/Lのlibraryは8fee0362…で同一、nativeは実変更を確認。
+
+初回準備の表名誤りと、その後のDBコピー0444により11 nativeがreadonly DBエラー・60秒timeout、終了0でもready/doneなしで無効。後続launchを所有バイナリコピーの権限で防止し、自然終了回収・preview再開後に権限を戻した。新規0600コピーでwrite lock/rollback、内容hashを照合し、同じバイナリ/順序/gatesで48valid nativeすべてwait4終了0/ready/done。valid再試行/除外0。無効ログ/launch拒否も保持。
+
+65536events summary/sidebar/default/timeline、4096events summary/sidebar、各8回KLLK/LKKL。31360dispatch、296stage、32242render、18632状態/frame記録。全stage renderのmean/P95から各role中央値、block1/2/全体を比較。追加準備renderを保存し、解析のdispatchとの厳密一致32失敗を修正、sidebar_frameも照合へ追加。初回派生JSONはv2上書き後に同じ生ログ/コードで別名再計算、初回stdout一致。
+
+大規模幅変更CPU平均: selection詳細16.616→12.222ms(-26.44%)、session詳細14.403→8.707(-39.55%)、sidebar13.318→9.870(-25.89%)。ただしsidebar_update壁mean6.902→8.158/P958.248→10.564msで全体gate2不合格。全blockのCPU/壁比較11/444不合格、RSS0/18、block対照53/308不合格。厳密品質5/826不一致はdefault selection末尾のdetail.rendered6/8でK同士でも発生し、表示欠落の有無は未確認。sidebar/timelineのgeometry/hash照合は通過。安定した全環境改善率は未確認、不採用。
+
+候補source/artifacts保存。製品84ソースを固定P52Kへ復帰、全Rust source touch後にlib/native実コンパイルし通常両成果物をKとhash一致確認。root263tests/Clippyは同一P52sourceから継承。所有11組preview再開、GPU present/自然起動は含まず、目標継続。報告: `.mdxr/20261011183902-minimap-cache/index.mdx`。正本: `/private/tmp/rireki-p55-minimap-cache-20261011`、valid測定: `corrected`。次はcount_bins探索自体を検証する。
+
+
+### P56 — ヒストグラム前向き走査M、不採用
+
+有限値/密な選択レーンのイベント数<=対象列数*4で二分探索を前向き走査へ変更。新2テストを加え265tests(142lib/107bin/12+4integration)、Clippyと実lib/native release終了0。初回期待267の補助assertion失敗は保存、実テスト終了0/内訳265へ訂正して再実行せず継続。previewの保存パス転記誤りによる終了1も保存。
+
+51条件(35列数/密度合成、4特殊形状、4 readonly DB*3列数)、408 native全specific PID wait4終了0/独立全列照合。127144保存カウント列、計測前後で参照一致。KMMK/MKKM各role4回、256 calls、valid再試行/除外0。初期2048からの反復数変更はclient link/計測前、初期protocolを保存。DB読込/準備を内部関数時間に含めない。
+
+65536/256列 CPU256calls中央値dense312.786→88.331ms(-71.76%)、sparse445.595→93.855(-78.94%)。ただし全体gate: 65536dense/1024列wall431.565→475.935ms、1048576dense/42列CPU218.618→243.271/wall242.175→270.165msで3不合格。全block合計7/459不合格、RSS0/153、対照21/306不合格。直接集計gate不合格につきGUI比較は実施せず、不採用。アプリ全体改善率ではない。
+
+1048576/42列は128lane各8192eventsで前向き走査上限168を全て超え、従来binary経路で差を観測。逆アセンブル関数行数K372/M417、生成コード変化と回帰の因果は未証明。次に別関数へ切り出し/64列以上限定を検証する。候補保存、84root sourceをKへ戻し全Rust touch後lib/native双方を実コンパイル、通常両成果物hash一致。root263tests/Clippyは同一P52source結果を継承。所有12組preview再開、全体目標継続。
+
+報告: `.mdxr/20261011192547-bin-merge/index.mdx`。正本: `/private/tmp/rireki-p56-bin-merge-20261011`。
+
+
+### P57 — 前向き走査を切り出し64列以上へ限定、採用N
+
+有限値で対象64列以上/イベント数1〜4倍のレーンはinline(never) helperで前向き走査、それ以外は従来探索。追加の保持配列/キャッシュなし。実nativeのhelper call確認、265tests(142lib/107bin/12+4integration)、Clippy -D warnings、lib/native実release終了0。
+
+78条件/624 native全wait4終了0、計測前後の独立参照全列照合140968保存カウント列。KNNK/NKKN各role4回・256calls。全体回帰0、全block702比較の2不合格は65536dense/42列block1 CPU/wall、RSS0/234、対照6/468不合格。65536/256列CPU256calls dense188.724→34.398ms(-81.77%)、sparse169.414→31.754(-81.26%)。単体値をアプリ全体の改善率と扱わない。
+
+GUI6条件各8回48 native全wait4終了0/ready/done、DB新規0600コピー/write lock/rollback/hash確認。296stage/31893render、826品質条件全通過。detail.renderedはP55で同じKでも変動したためGUI採取前にその項目だけ必須照合から除き、生状態/厳密差分を保持。raw差2実行(K1/N1)、それ以外の全データ/幾何情報/frame hashes一致。
+
+65536幅変更CPU平均中央値: selection9.989→8.257ms(-17.34%)、session7.369→5.763(-21.79%)、sidebar8.511→6.849(-19.53%)。全CPU/wall444比較/RSS18比較に不合格0、block対照6/308不合格は保存。GUI候補値の旧キーLは実role N、non_width_combined_failuresは今回は全stage全体ゲート。再試行/除外0、所有13組preview再開。GPU present/自然起動/全環境安定差は未検証。84製品ソース/通常lib/nativeは固定Nにhash一致、全体目標継続。
+
+報告: `.mdxr/20261011195705-outlined-merge/index.mdx`。正本: `/private/tmp/rireki-p57-outlined-merge-20261011`。本節が前のヒストグラム末尾探索の適用範囲を更新する。
+
+
+### P58 — 採用Nの描画スタックと型サイズ
+
+固定Nのsummary Time Profiler記録/TOC/time-profile exportすべて終了0。tracer specific PID wait4、GUI PID53134 exit(0)はTOCで確認しGUI wait4とは区別。対象3453標本/欠落38、main3010/欠落26、manual render2418/欠落0。leaf memmove408(16.873%)、add_linear204(8.437%)、BoundsTree探索170(7.031%)。各1ms重み、起動と2詳細幅変更を含む。前P54との速度差の立証に使わない。
+
+固定GPUI archive＋実Marqueeソースのサイズ診断でMarquee layout8960/Drawable10440、ShapedLine2984 bytes。Div layout24/prepaint48/Drawable2168 bytes。GPUI段階移動のmem::takeは識別情報とstateを移す。共通DivのstateだけBoxにしても識別情報が残るため、次はMarquee stateだけBoxへまとめ、追加確保と描画CPU/RSSを比較する。初回診断Nix cc/libiconvリンク失敗を保存、既定/usr/bin/ccで修正成功。
+
+84製品ソース/通常lib/native N維持、265tests/Clippy/releaseは同じP57結果継承、所有14組preview再開。通常自然起動/GPU present未検証、全体目標継続。報告: `.mdxr/20261011202638-render-stacks/index.mdx`。正本: `/private/tmp/rireki-p58-render-stacks-20261011`。
+
+
+### P59 — Marquee layout stateのBox化O、不採用
+
+実型サイズrequest state8960→8/Drawable10440→1488 bytes、別Box payload8960。追加1確保/Marqueeでsizeof合計10440→10448、allocator/arena/RSS削減とは区別。265全tests(142lib/107bin/12+4integration)/Clippy/lib-native実release0、libraryはN同一/native O相違。初期準備スクリプト構文誤り2ソース版を保存し、実行前構文段階の失敗として区別。
+
+48 GUI全specific PID wait4終了0/ready/done、6条件各8回NOON/ONNO、各role4回。DB新規0600/write lock/rollback/hash確認、296stage/31924render、品質826通過、生厳密状態差0。primary sidebar_refresh CPUmean5.782811→5.210059ms(-9.90%)、sidebar_update5.236094→4.786354(-8.59%)で各10%未達。全CPU/wall444比較2不合格/全体1不合格: 4096 sidebar_scope壁P953.260313→4.260729ms(許容1msを0.000416ms超過)。境界超過を消す再測定/閾値変更なし、持続的回帰の因果は未証明。RSS全体0fail/全block18比較1fail(65536 default block1 +10.254%)、対照12/308fail。再試行/除外0。
+
+不採用O保存、84製品ソース/通常両成果物を固定Nへ復帰。全Rust touch後lib/native実compile/hash一致。265tests/Clippyは同じP57 Nソース継承。所有15組preview再開、GPU present/自然起動未検証。次は追加Boxを使わず補助文字の遅延整形を調べる。全体目標継続。報告: `.mdxr/20261011203533-marquee-box/index.mdx`。正本: `/private/tmp/rireki-p59-marquee-box-20261011`。
+
+
+### P60 — Marqueeの補助文字を遅延整形P、不採用
+
+request時のFont/色/装飾/TextRunを保持し、paint時に必要なseparator/ellipsisだけ整形。追加Boxなし、layout8960→3288/Drawable10440→4768 bytes(5672減)。sizeofでありarena/RSS削減値ではない。265tests/Clippy/lib-native実release0、library N同一/native P相違。
+
+別ネイティブで3字体/サイズ/色*5幅/ホバー条件を3描画、通常9/省略27/循環9。全ShapedLine Debug情報の従来request整形との照合一致、PID60242 wait4終了0/必須JSON。画素比較・性能値ではない。初回native終了0でもGPUI quit後のmainへ到達せずJSONなしで無効、firstソース/実行物/全記録保存、quit前出力へ修正成功。準備用コマンドの初期引用符構文誤りもソース変更前停止として区別。
+
+48 GUI全wait4終了0/ready/done、6条件各8回NPPN/PNNP各role4。新規0600 DB/write lock/rollback/hash、296stage/31798render、826品質通過、生厳密差0。primary sidebar_refresh CPUmean5.308113→5.130572ms(-3.34%)、update4.210050→3.760994(-10.67%)で各10%基準のrefresh未達、不採用。全体CPU/wall/RSS gate不合格0、全blockCPU/wall444比較1fail(timeline_calls壁P95block2 10.645916→11.738521ms)、RSS0/18、対照26/308fail。再試行/除外0、性能ゲート変更なし。
+
+候補保存、84製品ソース/通常lib-nativeを固定Nへ戻し全Rust touch実compile/hash一致。265tests/Clippyは同一P57 N継承。所有16組preview再開、GPU present/自然起動/全環境安定差未検証。全体目標継続。報告: `.mdxr/20261011205528-marquee-markers/index.mdx`。正本: `/private/tmp/rireki-p60-marquee-markers-20261011`。
+
+
+### P61 — 補助文字TextRun共有Q、不採用
+
+QはTextRunを一つ共有し補助文字を必要時に整形。layout8960→3144/Drawable10440→4624 bytes、5816 bytes(55.71%)減、追加Boxなし。GPUI Layout::newの要求サイズでありarena全容量/RSSの削減率ではない。新サイズ主条件は測定前に固定、P60の旧CPU主条件による不採用は変更しない。265tests(142/107/12/4)/Clippy全targets/lib-native実release0。別nativeで4字体装飾・サイズ・色*5幅ホバー条件*3描画、通常12/省略36/循環12、48全ShapedLine Debug従来整形照合一致、wait4終了0/必須JSON。画素比較や性能標本ではない。
+
+48 GUI全wait4終了0/ready/done、6条件各8回NQQN/QNNQ各role4。0600 DB/write lock/rollback/hash、296stage/32196render、826品質通過。全CPU/wall444比較7fail、全体2fail: 65536 timeline_directory_zoom壁P95 8.3044165→9.451937ms、timeline_scope壁P95 7.641958→8.6920835ms、各許容1ms超過。不採用。sidebar refresh CPUmean6.423615→6.078455ms(-5.37%)、update6.416997→5.762685(-10.20%)は観測値。RSS0/18fail、対照18/308fail、再試行/除外0。全生差分・標本保持、安定差/因果未証明。
+
+候補84ソース/固定成果物保存、製品84ソース/通常lib-nativeを固定Nへ戻し全Rust touch後両実compile/hash一致。root265tests/Clippyは同一P57 N継承。所有17組preview再開、GPU present/通常自然起動未検証。全体目標継続。報告: `.mdxr/20261011211800-shared-marker/index.mdx`。正本: `/private/tmp/rireki-p61-shared-marker-20261011`。
+
+生記録の厳密差はQのdefault終端1実行にあり、事前に必須照合から除いたdetail.renderedの変動だった。その他の必須826条件は通過。最初の証跡確認スクリプトが旧候補の生差0を期待して停止したため、初回記録を保存し、今回の生差1を明記した照合へ修正した。性能値や採用条件は変更していない。
+
+
+### P62 — 採用製品Nの画面・取り込み・実フレーム監査
+
+製品を変更せず19 native全specific PID wait4終了0、200品質通過。15既存画面/64sessions65536events、70stage/9600dispatch/9970render/186条件。CLI空索引10固定ログ・8非空セッション・46241events、本文含むroundtrip/snapshot一致、hash ea7a0bf4fdc78b08、resident/pending本文0bytes。取り込み739.877ms/照合173.816msは各1回の観測。GUI空索引取り込みtasks10→実active-ready-frame、main-to-ready1080.598ms、再起動tasks0→764.557ms、両8sessions46241events。待機tasks0/2.092秒、世代維持/loadingfalse。GPU完了・画素・既定ホーム通常探索・起動前後差の検証ではない。
+
+84ソース/通常lib-nativeは固定N一致。265tests/Clippyは同一P57 N結果、P61復帰時の全Rust touch両実release compileを継承。再試行/標本除外0。以前の所有36プロセスの12は終了済みで初回guard停止(native未起動/preview未停止)、初回保存、現存24の所有関係を確認して停止・全再開。boundary前後compiler衝突0、外部連続無負荷は未証明。
+
+残るlane_flags分岐の単純移動は期間外を除外済みの呼び出し側に効果なし。描画候補O/P/Qは既存主条件または回帰条件未達で不採用保存。現在の調査・計測で追加採用案はなく、未測定環境まで改善点不存在を証明したとは扱わない。報告: `.mdxr/20261011214301-product-audit/index.mdx`。正本: `/private/tmp/rireki-p62-product-audit-20261011`。

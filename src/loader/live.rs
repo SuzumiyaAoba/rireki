@@ -112,6 +112,41 @@ mod tests {
             "payload":{"type":"message", "role":"user", "content":[{"text":text}]}}).to_string()
     }
 
+    #[test]
+    fn retained_models_count_shared_allocations_once_and_distinct_allocations_separately() {
+        let mut parser = Parser::Codex(CodexParser::new());
+        let Parser::Codex(p) = &mut parser else { unreachable!() };
+        for _ in 0..4 {
+            p.push(message("one").as_bytes());
+        }
+        let before = parser.retained_bytes();
+        let shared: Arc<str> = Arc::from("モデル α".repeat(4096));
+        let bytes = shared.len() + 2 * std::mem::size_of::<usize>();
+        let Parser::Codex(p) = &mut parser else { unreachable!() };
+        for event in &mut p.lane.events {
+            event.model = Some(shared.clone());
+        }
+        p.model = Some(shared.clone());
+        assert_eq!(parser.retained_bytes() - before, bytes);
+
+        let distinct: Arc<str> = Arc::from(shared.as_ref());
+        assert!(!Arc::ptr_eq(&shared, &distinct));
+        let Parser::Codex(p) = &mut parser else { unreachable!() };
+        for i in [1, 3] {
+            p.lane.events[i].model = Some(distinct.clone());
+        }
+        assert_eq!(parser.retained_bytes() - before, 2 * bytes);
+
+        let current: Arc<str> = Arc::from("現在のモデル".repeat(4096));
+        let current_bytes = current.len() + 2 * std::mem::size_of::<usize>();
+        let Parser::Codex(p) = &mut parser else { unreachable!() };
+        p.model = Some(current);
+        assert_eq!(parser.retained_bytes() - before, 2 * bytes + current_bytes);
+        let Parser::Codex(p) = &mut parser else { unreachable!() };
+        p.model = None;
+        assert_eq!(parser.retained_bytes() - before, 2 * bytes);
+    }
+
     fn check_cached_codex(file: &mut CachedFile, path: &Path) -> LiveStats {
         let mut stats = LiveStats::default();
         let ParsedFile::Codex(Some(Loaded::Session(actual))) = file.read(path, &mut stats) else {
@@ -295,6 +330,33 @@ enum ParsedFile {
     Codex(Option<Loaded>),
 }
 
+/// 同じArcの共有は一度だけ数える。モデルが1種類なら辞書を確保しない。
+#[derive(Default)]
+struct ModelMemory {
+    first: Option<usize>,
+    last: Option<usize>,
+    others: std::collections::HashSet<usize>,
+    bytes: usize,
+}
+
+impl ModelMemory {
+    fn add(&mut self, model: &Arc<str>) {
+        let key = Arc::as_ptr(model) as *const () as usize;
+        if self.last == Some(key) {
+            return;
+        }
+        self.last = Some(key);
+        if let Some(first) = self.first {
+            if first == key || !self.others.insert(key) {
+                return;
+            }
+        } else {
+            self.first = Some(key);
+        }
+        self.bytes += model.len() + 2 * std::mem::size_of::<usize>();
+    }
+}
+
 impl Parser {
     fn finish(self) -> ParsedFile {
         match self {
@@ -425,17 +487,25 @@ impl Parser {
 
     fn retained_bytes(&self) -> usize {
         let lane = self.lane();
+        let codex = matches!(self, Self::Codex(_));
+        let mut models = ModelMemory::default();
         let events = lane.events.capacity() * std::mem::size_of::<Event>()
             + lane
                 .events
                 .iter()
                 .map(|e| {
+                    if codex && let Some(model) = &e.model {
+                        models.add(model);
+                    }
                     e.summary.len() + 2 * std::mem::size_of::<usize>()
                         + e.input.capacity()
                         + e.output.capacity()
                         + e.call_id.as_ref().map_or(0, |id| id.len() + 2 * std::mem::size_of::<usize>())
                 })
                 .sum::<usize>();
+        if let Self::Codex(p) = self && let Some(model) = &p.model {
+            models.add(model);
+        }
         let strings = |map: &HashMap<String, usize>| {
             map.capacity() * (std::mem::size_of::<(String, usize)>() + 1)
                 + map.keys().map(String::capacity).sum::<usize>()
@@ -448,6 +518,7 @@ impl Parser {
                     .sum::<usize>()
         };
         events
+            + models.bytes
             + std::mem::size_of::<Self>()
             + lane.name.capacity()
             + lane.model.capacity()
