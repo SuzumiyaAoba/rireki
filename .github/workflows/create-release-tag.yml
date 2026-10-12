@@ -2,11 +2,6 @@ name: Create release tag
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Version or tag matching Cargo.toml (empty uses the package version)
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -14,36 +9,40 @@ permissions:
 concurrency:
   group: create-release-tag
   cancel-in-progress: false
+  queue: max
 
 jobs:
   tag:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
-      - name: Create GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          permission-contents: write
-
       - name: Check out the selected commit
         uses: actions/checkout@v6
         with:
-          token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
 
-      - name: Validate and push the release tag
-        env:
-          REQUESTED_VERSION: ${{ inputs.version }}
+      - name: Test release tag numbering
+        run: python3 scripts/test-release-version.py
+
+      - name: Create and push the release tag
+        id: version
         run: |
-          tag=$(scripts/release-version.sh "$REQUESTED_VERSION")
-          if git show-ref --verify --quiet "refs/tags/$tag"; then
-            echo "::error::Tag $tag already exists. Run the Release workflow to rebuild it."
-            exit 1
-          fi
+          git fetch origin --tags
+          tag=$(scripts/release-version.sh)
           git tag "$tag" "$GITHUB_SHA"
           git push origin "refs/tags/$tag"
-          printf 'Created `%s` at `%s`. The Release workflow will build its binaries.\n' \
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'Created `%s` at `%s`. The Release job will publish its DMGs and archives.\n' \
             "$tag" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: tag
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}

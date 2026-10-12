@@ -3,13 +3,19 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag to build (e.g. v0.1.0)
+        description: Existing release tag to rebuild (e.g. 2026-10-13 or 2026-10-13.1)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing release tag to build
         required: true
         type: string
 
@@ -19,6 +25,7 @@ permissions:
 concurrency:
   group: release-${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   metadata:
@@ -27,7 +34,6 @@ jobs:
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.version.outputs.commit }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Check out the release tag
         uses: actions/checkout@v6
@@ -41,18 +47,8 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
         run: |
           tag=$(scripts/release-version.sh "$RELEASE_TAG")
-          if [[ "$RELEASE_TAG" != "$tag" ]]; then
-            echo "::error::Release tags must use the v<version> format."
-            exit 1
-          fi
-          version=${tag#v}
-          version=${version%%+*}
-          prerelease=false
-          if [[ "$version" == *-* ]]; then
-            prerelease=true
-          fi
-          printf 'tag=%s\ncommit=%s\nprerelease=%s\n' \
-            "$tag" "$(git rev-parse HEAD)" "$prerelease" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\ncommit=%s\n' \
+            "$tag" "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.target }})
@@ -92,7 +88,7 @@ jobs:
       - name: Build the app bundle
         run: scripts/bundle.sh
 
-      - name: Package the executable and app bundle
+      - name: Package the DMG, executable and app bundle
         run: |
           actual_arch=$(lipo -archs target/release/rireki)
           if [[ "$actual_arch" != "$RELEASE_ARCH" ]]; then
@@ -106,6 +102,7 @@ jobs:
           tar -czf "dist/$archive.tar.gz" -C target/release rireki
           ditto -c -k --sequesterRsrc --keepParent \
             target/release/rireki.app "dist/$archive.zip"
+          scripts/dmg.sh "dist/$archive.dmg"
 
       - name: Upload release archives
         uses: actions/upload-artifact@v7
@@ -125,7 +122,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
-      RELEASE_PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
     steps:
       - name: Download release archives
         uses: actions/download-artifact@v8
@@ -136,7 +132,7 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum *.tar.gz *.zip > SHA256SUMS
+        run: sha256sum *.dmg *.tar.gz *.zip > SHA256SUMS
 
       - name: Publish the release assets
         run: |
@@ -148,5 +144,5 @@ jobs:
               --verify-tag \
               --generate-notes \
               --title "$RELEASE_TAG" \
-              --prerelease="$RELEASE_PRERELEASE"
+              --latest
           fi

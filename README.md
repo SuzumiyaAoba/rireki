@@ -43,32 +43,26 @@ The bundle script builds the release binary and writes `target/release/rireki.ap
 
 ## Releases
 
-The **Create release tag** workflow can be run manually from the repository's **Actions** tab. It tags the selected branch's commit as `v<version>` and starts the **Release** workflow, which builds macOS binaries for Apple Silicon and Intel and publishes them to GitHub Releases.
+The **Create release tag** workflow can be run manually from the repository's **Actions** tab. It tags the selected branch's commit and calls the reusable **Release** workflow, which builds macOS binaries for Apple Silicon and Intel and publishes them to GitHub Releases. This uses the built-in `GITHUB_TOKEN`; no GitHub App or additional secrets are required. [Reusable workflows are called directly from a job](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow), so publishing does not depend on the tag push triggering another workflow.
 
-### GitHub App setup
-
-1. [Create a GitHub App](https://docs.github.com/en/apps/creating-github-apps/setting-up-a-github-app/creating-a-github-app) with the repository permission **Contents: Read and write**. Webhooks are not required.
-2. Install the App on this repository. If tag rules restrict tag creation, allow this App to create release tags.
-3. Under **Settings → Secrets and variables → Actions**, add the repository variable `APP_CLIENT_ID` with the App's Client ID and the repository secret `APP_PRIVATE_KEY` with its generated PEM private key.
-4. Push the workflow files to the repository's default branch so that manual runs are available.
-
-Tag creation uses the App's installation token so that the tag push triggers the next workflow. [GitHub's built-in `GITHUB_TOKEN` does not trigger another workflow on a tag push](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+Release tags use the current date in **Asia/Tokyo** as `YYYY-MM-dd`, without a `v` prefix. Further releases on the same date use `.1`, `.2`, and so on, choosing one more than the highest existing suffix. For example: `2026-10-13`, `2026-10-13.1`, `2026-10-13.2`. Tag creation is serialized across branches to prevent concurrent manual runs from choosing the same version, and [multiple pending runs are queued](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#example-queueing-multiple-pending-runs). Release tags are independent of the package version in `Cargo.toml`.
 
 ### Publish a version
 
-1. Update the package version in `Cargo.toml` and regenerate `Cargo.lock` with `cargo check`. Commit and push both files along with the changes to release.
+1. Commit and push the changes to release. The workflow files must be on the default branch for manual runs to be available.
 2. Open **Actions → Create release tag → Run workflow** and select the branch containing that commit.
-3. Leave `version` empty to use `Cargo.toml`, or enter the matching version, for example `0.1.0` or `v0.1.0`. The workflow rejects mismatched versions and existing tags.
+3. Run the workflow without entering a version. It creates the next date tag, builds both architectures, and publishes the release assets.
 
 The release contains these assets, where `<tag>` is the version tag:
 
 - `rireki-<tag>-aarch64-apple-darwin.tar.gz` and `rireki-<tag>-x86_64-apple-darwin.tar.gz`: the executable for each architecture.
 - `rireki-<tag>-aarch64-apple-darwin.zip` and `rireki-<tag>-x86_64-apple-darwin.zip`: the icon-equipped `rireki.app` bundle for each architecture.
-- `SHA256SUMS`: SHA-256 checksums for all four archives.
+- `rireki-<tag>-aarch64-apple-darwin.dmg` and `rireki-<tag>-x86_64-apple-darwin.dmg`: disk images containing `rireki.app` and a link to `/Applications`. Open the DMG and drag the app into Applications to install it.
+- `SHA256SUMS`: SHA-256 checksums for all six assets.
 
-Both builds and their core tests must succeed before a new release is published. Tags with a prerelease suffix, such as `v0.2.0-rc.1`, produce a GitHub prerelease. The app bundles are ad-hoc signed; Developer ID signing and notarization are not configured.
+Both builds, their core tests, and DMG verification must succeed before a new release is published. The app bundles are ad-hoc signed; Developer ID signing and notarization are not configured.
 
-The **Release** workflow also builds assets when a release is published through GitHub's UI. To retry a build or replace existing assets, run **Actions → Release → Run workflow** with an existing version tag. It builds that tag's commit and preserves the release's existing description.
+The **Release** workflow also builds assets when a date tag is pushed or a release is published through GitHub's UI. To retry a build or replace existing assets, run **Actions → Release → Run workflow** with an existing date tag. It builds that tag's commit and preserves the release's existing description. Running **Create release tag** again creates a new release tag instead.
 
 ## Session logs
 
