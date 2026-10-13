@@ -1,6 +1,6 @@
 //! 上端の帯と、左端のアイコンレール（Slack のワークスペース切り替えとナビゲーションに当たる）
 
-use gpui::{AnyElement, ClickEvent, Context, Div, FontWeight, Stateful, Window, div, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, Context, Decorations, Div, FontWeight, MouseButton, Stateful, Window, div, prelude::*, px};
 
 use super::widgets::tip;
 use super::{Popover, RAIL_W, Rireki, STRIP_H, fmt_n};
@@ -9,14 +9,17 @@ use crate::prefs::{Mode, SourceFilter};
 use crate::theme::{self, c};
 
 impl Rireki {
-    /// macOS のタイトルバー領域。ドラッグでウィンドウを動かせるよう、操作する部品は置かず状態だけを出す
-    pub(super) fn top_strip(&self) -> Div {
+    /// 上端の状態表示。macOS では透明なタイトルバーと重なるので操作部品を置かない。
+    pub(super) fn top_strip(&self, window: &Window) -> Div {
+        // GNOME など、Wayland のサーバー側タイトルバーを提供しない環境では操作部品を描く。
+        let client = cfg!(target_os = "linux") && matches!(window.window_decorations(), Decorations::Client { .. });
         let status = match self.loading {
             Some((d, t)) if t > 0 => format!("索引を更新中 {d}/{t} ファイル"),
             Some(_) => "履歴を読み込み中…".to_string(),
             None => format!("{} セッション · {} プロジェクト", fmt_n(self.scope.len()), self.projects.len()),
         };
         div()
+            .relative()
             .h(px(STRIP_H))
             .flex_none()
             .flex()
@@ -28,6 +31,23 @@ impl Rireki {
             .child(div().text_color(c(theme::SUBTLE)).child("·"))
             .when(self.loading.is_some(), |d| d.child(icons::icon(Icon::Refresh, theme::ACCENT).size_3()))
             .child(div().text_color(c(theme::SUBTLE)).child(status))
+            .when(client, |d| {
+                let button = |id: &'static str, text: &'static str, title: &'static str| {
+                    div().id(id).w(px(30.0)).h_full().flex().items_center().justify_center()
+                        .cursor_pointer().hover(|s| s.bg(c(theme::HOVER))).child(text)
+                        .tooltip(tip(title, None))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                };
+                d.px(px(100.0))
+                    .on_mouse_down(MouseButton::Left, |event, window, cx| {
+                        if event.click_count == 2 { window.zoom_window(); } else { window.start_window_move(); }
+                        cx.stop_propagation();
+                    })
+                    .child(div().absolute().right(px(6.0)).top_0().h_full().flex()
+                        .child(button("window-minimize", "−", "最小化").on_click(|_, w, _| w.minimize_window()))
+                        .child(button("window-maximize", "□", "最大化 / 元に戻す").on_click(|_, w, _| w.zoom_window()))
+                        .child(button("window-close", "×", "閉じる").on_click(|_, w, _| w.remove_window())))
+            })
     }
 
     pub(super) fn rail(&self, cx: &mut Context<Self>) -> Div {
@@ -50,7 +70,7 @@ impl Rireki {
                 "nav-timeline",
                 Icon::Timeline,
                 "タイムライン",
-                "⌘1",
+                crate::platform::shortcut("⌘1", "Ctrl+1"),
                 !self.statistics_open && self.mode == Mode::Timeline,
                 cx,
                 |t, w, _| t.set_mode(Mode::Timeline, w),
@@ -59,7 +79,7 @@ impl Rireki {
                 "nav-calendar",
                 Icon::Calendar,
                 "カレンダー",
-                "⌘2 / ⌘3 / M",
+                crate::platform::shortcut("⌘2 / ⌘3 / M", "Ctrl+2 / Ctrl+3 / M"),
                 !self.statistics_open && self.mode != Mode::Timeline,
                 cx,
                 |t, w, _| t.set_mode(t.calendar, w),
@@ -68,7 +88,7 @@ impl Rireki {
                 "nav-statistics",
                 Icon::Chart,
                 "統計",
-                "⌘4",
+                crate::platform::shortcut("⌘4", "Ctrl+4"),
                 self.statistics_open,
                 cx,
                 |t, w, cx| t.show_statistics(w, cx),

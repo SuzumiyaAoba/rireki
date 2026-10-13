@@ -1238,7 +1238,7 @@ impl CodexParser {
                 self.parent = spawn.get("parent_thread_id").and_then(|x| x.as_str()).map(String::from);
                 let nick = spawn.get("agent_nickname").and_then(|x| x.as_str()).unwrap_or("agent");
                 let path = spawn.get("agent_path").and_then(|x| x.as_str()).unwrap_or("");
-                self.lane.name = format!("{nick}: {}", path.rsplit('/').next().unwrap_or(path));
+                self.lane.name = format!("{nick}: {}", crate::paths::basename(path));
             }
             return;
         }
@@ -1749,7 +1749,7 @@ fn patch_summary(p: &str) -> String {
         .filter_map(|l| {
             let r = l.strip_prefix("*** ")?;
             let (op, path) = r.split_once(" File: ")?;
-            let base = path.trim().rsplit('/').next().unwrap_or(path);
+            let base = crate::paths::basename(path.trim());
             Some(format!("{op} {base}"))
         })
         .collect();
@@ -2026,7 +2026,8 @@ mod tests {
         fixture.file("codex/2026/10/05/b.jsonl", 8, 1200);
         fixture.file("codex/ignored.txt", 9, 9999);
         let jobs = fixture.scan();
-        let records: Vec<_> = jobs.iter().map(|j| (j.path.strip_prefix(&fixture.0).unwrap().to_string_lossy().into_owned(), j.kind, j.mtime, j.fingerprint.as_str())).collect();
+        let records: Vec<_> = jobs.iter().map(|j| (j.path.strip_prefix(&fixture.0).unwrap().components()
+            .map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"), j.kind, j.mtime, j.fingerprint.as_str())).collect();
         assert_eq!(records, vec![
             ("codex/2026/10/05/b.jsonl".into(), JobKind::Codex, 1200.0, "1200.000:8;"),
             ("codex/2026/10/05/a.jsonl".into(), JobKind::Codex, 1100.0, "1100.000:7;"),

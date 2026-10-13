@@ -1,0 +1,32 @@
+name: Set up build environment
+description: Install Rust and the native dependencies needed by GPUI.
+runs:
+  using: composite
+  steps:
+    - name: Set up stable Rust
+      shell: bash
+      run: |
+        rustup toolchain install stable --profile minimal --component clippy --no-self-update
+        rustup default stable
+
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential cmake clang pkg-config libssl-dev \
+          libfontconfig1-dev libfreetype6-dev libwayland-dev \
+          libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+          libvulkan-dev fonts-dejavu-core fonts-noto-cjk
+
+    - name: Locate the Windows SDK shader compiler
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+        $fxc = Get-ChildItem "$sdk\*\x64\fxc.exe" |
+          Sort-Object { [version] $_.Directory.Parent.Name } -Descending |
+          Select-Object -First 1
+        if (-not $fxc) { throw 'Install a Windows SDK containing x64/fxc.exe.' }
+        "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV

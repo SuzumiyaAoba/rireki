@@ -4554,6 +4554,7 @@ dependencies = [
  "two-face",
  "twox-hash",
  "unicode-segmentation",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1,9 +1,13 @@
-//! 操作（アクション）とキー割り当て、macOS のメニューバー
+//! 操作（アクション）と OS に合わせたキー割り当て、macOS のメニューバー
 //!
 //! メニューには各操作に最初に登録したキーが表示されるので、修飾キー付きのものを先に登録する。
 //! 1 文字のショートカット（Google カレンダー風の D / W / T など）は、検索欄に入力している間は効かせない。
 
-use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, actions};
+use gpui::{App, KeyBinding, actions};
+#[cfg(target_os = "macos")]
+use gpui::{Menu, MenuItem, OsAction};
+
+use crate::platform::shortcut;
 
 use crate::input;
 
@@ -55,48 +59,46 @@ pub fn init(cx: &mut App) {
     const VIEW: Option<&str> = Some("Rireki && !TextInput");
     const SEARCH: Option<&str> = Some("TextInput && !EventAnalysis");
     cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-h", Hide, None),
-        KeyBinding::new("alt-cmd-h", HideOthers, None),
-        KeyBinding::new("cmd-w", CloseWindow, None),
-        KeyBinding::new("cmd-f", FocusSearch, APP),
-        KeyBinding::new("cmd-k", FocusSearch, APP),
-        KeyBinding::new("ctrl-cmd-s", ToggleSidebar, APP),
-        KeyBinding::new("cmd-b", ToggleSidebar, APP),
-        KeyBinding::new("shift-cmd-v", ToggleInViewOnly, APP),
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-w", CloseWindow, None),
+        KeyBinding::new("secondary-f", FocusSearch, APP),
+        KeyBinding::new("secondary-k", FocusSearch, APP),
+        KeyBinding::new(shortcut("ctrl-cmd-s", "ctrl-alt-s"), ToggleSidebar, APP),
+        KeyBinding::new("secondary-b", ToggleSidebar, APP),
+        KeyBinding::new("shift-secondary-v", ToggleInViewOnly, APP),
         KeyBinding::new("v", ToggleInViewOnly, VIEW),
-        KeyBinding::new("cmd-1", ShowTimeline, APP),
-        KeyBinding::new("cmd-2", ShowDay, APP),
-        KeyBinding::new("cmd-3", ShowWeek, APP),
-        KeyBinding::new("cmd-4", ShowStatistics, APP),
+        KeyBinding::new("secondary-1", ShowTimeline, APP),
+        KeyBinding::new("secondary-2", ShowDay, APP),
+        KeyBinding::new("secondary-3", ShowWeek, APP),
+        KeyBinding::new("secondary-4", ShowStatistics, APP),
         KeyBinding::new("d", ShowDay, VIEW),
         KeyBinding::new("w", ShowWeek, VIEW),
         KeyBinding::new("m", ShowMonth, VIEW),
-        KeyBinding::new("cmd-t", GoToday, APP),
+        KeyBinding::new("secondary-t", GoToday, APP),
         KeyBinding::new("t", GoToday, VIEW),
-        KeyBinding::new("cmd-left", GoPrev, APP),
-        KeyBinding::new("cmd-right", GoNext, APP),
+        KeyBinding::new("secondary-left", GoPrev, VIEW),
+        KeyBinding::new("secondary-right", GoNext, VIEW),
         KeyBinding::new("left", GoPrev, VIEW),
         KeyBinding::new("right", GoNext, VIEW),
         KeyBinding::new("g", PickPeriod, VIEW),
-        KeyBinding::new("cmd-=", ZoomIn, APP),
-        KeyBinding::new("cmd-+", ZoomIn, APP),
+        KeyBinding::new("secondary-=", ZoomIn, APP),
+        KeyBinding::new("secondary-+", ZoomIn, APP),
         KeyBinding::new("=", ZoomIn, VIEW),
         KeyBinding::new("+", ZoomIn, VIEW),
-        KeyBinding::new("cmd--", ZoomOut, APP),
+        KeyBinding::new("secondary--", ZoomOut, APP),
         KeyBinding::new("-", ZoomOut, VIEW),
-        KeyBinding::new("cmd-[", Back, APP),
-        KeyBinding::new("cmd-]", Forward, APP),
+        KeyBinding::new("secondary-[", Back, APP),
+        KeyBinding::new("secondary-]", Forward, APP),
         KeyBinding::new("j", NextEvent, VIEW),
         KeyBinding::new("k", PrevEvent, VIEW),
         KeyBinding::new("1", DetailSession, VIEW),
         KeyBinding::new("2", DetailEvents, VIEW),
         KeyBinding::new("3", DetailFiles, VIEW),
         KeyBinding::new("4", DetailAnalysis, VIEW),
-        KeyBinding::new("shift-cmd-enter", ToggleDetailFullscreen, APP),
+        KeyBinding::new("shift-secondary-enter", ToggleDetailFullscreen, APP),
         KeyBinding::new("escape", CancelAnalysisSearch, Some("TextInput && EventAnalysis")),
         KeyBinding::new("escape", Dismiss, APP),
-        KeyBinding::new("cmd-/", ShowHelp, APP),
+        KeyBinding::new("secondary-/", ShowHelp, APP),
         KeyBinding::new("?", ShowHelp, VIEW),
         KeyBinding::new("up", SearchUp, SEARCH),
         KeyBinding::new("down", SearchDown, SEARCH),
@@ -107,8 +109,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", SearchCancel, SEARCH),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
-    cx.on_action(|_: &Hide, cx| cx.hide());
-    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     // 1 ウィンドウのアプリなので、閉じたら終了する
     cx.on_window_closed(|cx| {
         if cx.windows().is_empty() {
@@ -116,6 +116,18 @@ pub fn init(cx: &mut App) {
         }
     })
     .detach();
+    #[cfg(target_os = "macos")]
+    init_mac_menu(cx);
+}
+
+#[cfg(target_os = "macos")]
+fn init_mac_menu(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("alt-cmd-h", HideOthers, None),
+    ]);
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.set_menus(vec![
         Menu {
             name: "rireki".into(),

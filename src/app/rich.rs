@@ -19,7 +19,7 @@ mod syntax;
 mod diff_rows;
 
 /// 等幅フォント
-pub const MONO: &str = "Menlo";
+pub const MONO: &str = crate::platform::MONO;
 /// コードや出力の箱の地の色と文字の色
 pub const CODE_BG: u32 = 0x15171c;
 pub const CODE_TEXT: u32 = 0xc5c9d1;
@@ -398,7 +398,7 @@ pub fn numbered_view(lines: &[(Option<u32>, &str)]) -> Div {
 
 /// パスを作業ディレクトリからの相対にする
 pub fn rel_path<'a>(path: &'a str, cwd: &str) -> &'a str {
-    path.strip_prefix(cwd).and_then(|p| p.strip_prefix('/')).filter(|p| !p.is_empty()).unwrap_or(path)
+    rireki::paths::relative(path, cwd)
 }
 
 /// 差分の表示。`limit` 行を超える分は省き、省いた行数を返す
@@ -411,10 +411,8 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
         let digits = f.rows.iter().filter_map(|r| r.old.max(r.new)).max().unwrap_or(0).to_string().len().max(2);
         let gutter = digits as f32 * 7.5 + 8.0;
         let path = rel_path(&f.path, cwd);
-        let (dir, base) = match path.rsplit_once('/') {
-            Some((d, b)) => (format!("{d}/"), b.to_string()),
-            None => (String::new(), path.to_string()),
-        };
+        let (dir, base) = rireki::paths::split_file(path);
+        let (dir, base) = (dir.to_string(), base.to_string());
         let op_color = match f.op {
             "追加" => ADD,
             "削除" => DEL,

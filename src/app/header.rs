@@ -651,7 +651,7 @@ impl Rireki {
                 "sidebar-open",
                 Icon::PanelLeftOpen,
                 "サイドバーを表示",
-                Some("⌃⌘S"),
+                Some(crate::platform::shortcut("⌃⌘S", "Ctrl+Alt+S")),
                 true,
                 cx,
                 |t, _, cx| t.toggle_sidebar(cx),

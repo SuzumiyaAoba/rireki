@@ -2,7 +2,7 @@
 
 # rireki
 
-A native macOS app for exploring Claude Code and Codex session history. Built with Rust and GPUI, rireki turns local JSONL logs into timelines, calendars, and usage statistics so you can review what your coding agents did, when they did it, and which files they changed.
+A native app for macOS, Linux, and Windows for exploring Claude Code and Codex session history. Built with Rust and GPUI, rireki turns local JSONL logs into timelines, calendars, and usage statistics so you can review what your coding agents did, when they did it, and which files they changed.
 
 The app's interface is currently in Japanese.
 
@@ -18,7 +18,28 @@ The app's interface is currently in Japanese.
 
 ## Build and run
 
-You need macOS, a Rust toolchain that supports edition 2024, and the Xcode Command Line Tools. The repository uses the macOS compiler at `/usr/bin/cc`.
+You need a Rust toolchain that supports edition 2024 and the native build tools for your OS:
+
+- **macOS:** Xcode Command Line Tools and the Metal shader compiler. The repository selects `/usr/bin/cc` for macOS targets only.
+- **Linux:** a C/C++ compiler, CMake, Clang, pkg-config, and the development libraries below. The GUI uses X11 or Wayland and needs a Vulkan-capable GPU and driver.
+- **Windows:** the MSVC Rust toolchain, Visual Studio Build Tools with the **Desktop development with C++** workload, CMake, and a Windows SDK containing `fxc.exe`. Build from a Visual Studio developer terminal. The GUI uses Direct3D 11.
+
+The Windows release executable uses the static C runtime and opens without a console window. CLI modes such as `--stats` attach to the launching terminal; piped or redirected output is also supported.
+
+On Ubuntu / Debian, install the Linux build dependencies:
+
+```sh
+sudo apt-get install build-essential cmake clang pkg-config libssl-dev \
+  libfontconfig1-dev libfreetype6-dev libwayland-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev \
+  libvulkan-dev fonts-dejavu-core fonts-noto-cjk
+```
+
+The upstream [Linux](https://zed.dev/docs/development/linux) and [Windows](https://zed.dev/docs/development/windows) build guides provide more background on GPUI's native dependencies. For release builds on Windows, GPUI 0.2.2 finds `fxc.exe` on `PATH`, at its default Windows SDK location, or through `GPUI_FXC_PATH`. If needed, set it in PowerShell:
+
+```powershell
+$env:GPUI_FXC_PATH = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe'
+```
 
 From the repository root:
 
@@ -41,9 +62,13 @@ open target/release/rireki.app
 
 The bundle script builds the release binary and writes `target/release/rireki.app`.
 
+Linux and Windows builds produce `target/release/rireki` and `target/release/rireki.exe`, respectively. They use the OS titlebar for moving, minimizing, maximizing, and closing the window. When a Wayland compositor does not provide a titlebar, rireki provides window buttons, a draggable top bar, and resize handles. Linux selects Wayland when `WAYLAND_DISPLAY` is set, otherwise X11 when `DISPLAY` is set. To force X11 in a Wayland session, run with `WAYLAND_DISPLAY=''`.
+
+Trackpad pinch zoom is available on macOS. On every OS, use the zoom buttons, `+` / `-`, or Cmd / Ctrl + scroll to zoom.
+
 ## Releases
 
-The **Create release tag** workflow can be run manually from the repository's **Actions** tab. It tags the selected branch's commit and calls the reusable **Release** workflow, which builds macOS binaries for Apple Silicon and Intel and publishes them to GitHub Releases. This uses the built-in `GITHUB_TOKEN`; no GitHub App or additional secrets are required. [Reusable workflows are called directly from a job](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow), so publishing does not depend on the tag push triggering another workflow.
+The **Create release tag** workflow can be run manually from the repository's **Actions** tab. It tags the selected branch's commit and calls the reusable **Release** workflow, which builds binaries for macOS (Apple Silicon and Intel), Linux (x86_64), and Windows (x86_64 MSVC) and publishes them to GitHub Releases. This uses the built-in `GITHUB_TOKEN`; no GitHub App or additional secrets are required. [Reusable workflows are called directly from a job](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow), so publishing does not depend on the tag push triggering another workflow.
 
 Release tags use the current date in **Asia/Tokyo** as `YYYY-MM-dd`, without a `v` prefix. Further releases on the same date use `.1`, `.2`, and so on, choosing one more than the highest existing suffix. For example: `2026-10-13`, `2026-10-13.1`, `2026-10-13.2`. Tag creation is serialized across branches to prevent concurrent manual runs from choosing the same version, and [multiple pending runs are queued](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#example-queueing-multiple-pending-runs). Release tags are independent of the package version in `Cargo.toml`.
 
@@ -51,16 +76,26 @@ Release tags use the current date in **Asia/Tokyo** as `YYYY-MM-dd`, without a `
 
 1. Commit and push the changes to release. The workflow files must be on the default branch for manual runs to be available.
 2. Open **Actions → Create release tag → Run workflow** and select the branch containing that commit.
-3. Run the workflow without entering a version. It creates the next date tag, builds both architectures, and publishes the release assets.
+3. Run the workflow without entering a version. It creates the next date tag, builds all supported release targets, and publishes the release assets.
 
 The release contains these assets, where `<tag>` is the version tag:
 
 - `rireki-<tag>-aarch64-apple-darwin.tar.gz` and `rireki-<tag>-x86_64-apple-darwin.tar.gz`: the executable for each architecture.
 - `rireki-<tag>-aarch64-apple-darwin.zip` and `rireki-<tag>-x86_64-apple-darwin.zip`: the icon-equipped `rireki.app` bundle for each architecture.
 - `rireki-<tag>-aarch64-apple-darwin.dmg` and `rireki-<tag>-x86_64-apple-darwin.dmg`: disk images containing `rireki.app` and a link to `/Applications`. Open the DMG and drag the app into Applications to install it.
-- `SHA256SUMS`: SHA-256 checksums for all six assets.
+- `rireki-<tag>-x86_64-unknown-linux-gnu.tar.gz`: the Linux executable, built on Ubuntu 22.04. Extract it and run `./rireki` in an X11 or Wayland desktop session. Install the runtime libraries listed below when they are not already provided by your desktop.
+- `rireki-<tag>-x86_64-pc-windows-msvc.zip`: the Windows executable. Extract it and run `rireki.exe`.
+- `SHA256SUMS`: SHA-256 checksums for all release assets.
 
-Both builds, their core tests, and DMG verification must succeed before a new release is published. The app bundles are ad-hoc signed; Developer ID signing and notarization are not configured.
+Linux releases need glibc 2.35 or newer, a Vulkan driver, and the following runtime packages on Ubuntu / Debian:
+
+```sh
+sudo apt-get install libfontconfig1 libfreetype6 libwayland-client0 \
+  libxkbcommon0 libxkbcommon-x11-0 libxcb1 libvulkan1 libssl3 \
+  fonts-dejavu-core fonts-noto-cjk
+```
+
+All four builds and their core tests, plus macOS DMG verification, must succeed before a new release is published. The app bundles are ad-hoc signed; Developer ID signing and notarization are not configured.
 
 The **Release** workflow also builds assets when a date tag is pushed or a release is published through GitHub's UI. To retry a build or replace existing assets, run **Actions → Release → Run workflow** with an existing date tag. It builds that tag's commit and preserves the release's existing description. Running **Create release tag** again creates a new release tag instead.
 
@@ -84,23 +119,25 @@ Select a source or project in the sidebar, switch between timeline and calendar 
 
 ## Keyboard shortcuts
 
+`Mod` means **Cmd on macOS** and **Ctrl on Linux / Windows**. The app's hints and shortcut help show the keys for the current OS.
+
 | Shortcut | Action |
 | --- | --- |
-| `Cmd+F` or `Cmd+K` | Focus search |
-| `Cmd+1` | Show the timeline |
+| `Mod+F` or `Mod+K` | Focus search |
+| `Mod+1` | Show the timeline |
 | `D`, `W`, `M` | Show the day, week, or month calendar |
-| `Cmd+4` | Show statistics |
-| `T` or `Cmd+T` | Go to today |
+| `Mod+4` | Show statistics |
+| `T` or `Mod+T` | Go to today |
 | `Left` / `Right` | Go to the previous / next period |
 | `G` | Choose a period or date |
 | `+` / `-` | Zoom in / out |
 | `J` / `K` | Select the next / previous event |
 | `1`, `2`, `3`, `4` | Open the session, events, files, or analysis detail tab |
-| `Cmd+[` / `Cmd+]` | Navigate back / forward |
-| `Cmd+B` | Toggle the sidebar |
-| `Cmd+Shift+Enter` | Toggle fullscreen for the detail panel |
+| `Mod+[` / `Mod+]` | Navigate back / forward |
+| `Mod+B` | Toggle the sidebar |
+| `Mod+Shift+Enter` | Toggle fullscreen for the detail panel |
 | `Esc` | Dismiss the current panel or search |
-| `?` or `Cmd+/` | Show keyboard shortcut help |
+| `?` or `Mod+/` | Show keyboard shortcut help |
 
 Single-letter shortcuts are disabled while typing in a text field.
 
@@ -108,12 +145,14 @@ Single-letter shortcuts are disabled while typing in a text field.
 
 rireki reads the original session logs and stores its index, cached content, and preferences locally.
 
-| Data | Default macOS location |
-| --- | --- |
-| Session index | `~/Library/Caches/rireki/index.db` |
-| Compressed event inputs and outputs | `~/Library/Caches/rireki/texts.db` |
-| UI preferences | `~/Library/Application Support/rireki/prefs.json` |
-| Model pricing | `~/Library/Application Support/rireki/prices.json` |
+| Data | macOS | Linux | Windows |
+| --- | --- | --- | --- |
+| Session index | `~/Library/Caches/rireki/index.db` | `~/.cache/rireki/index.db` | `%LOCALAPPDATA%\rireki\index.db` |
+| Compressed event inputs and outputs | `~/Library/Caches/rireki/texts.db` | `~/.cache/rireki/texts.db` | `%LOCALAPPDATA%\rireki\texts.db` |
+| UI preferences | `~/Library/Application Support/rireki/prefs.json` | `~/.config/rireki/prefs.json` | `%APPDATA%\rireki\prefs.json` |
+| Model pricing | `~/Library/Application Support/rireki/prices.json` | `~/.config/rireki/prices.json` | `%APPDATA%\rireki\prices.json` |
+
+Linux honors `XDG_CACHE_HOME` and `XDG_CONFIG_HOME` when set. On Windows, `~` in the session log paths denotes the user's home directory. Environment variables can be set with `$env:CODEX_HOME = 'C:\path\to\codex-home'` in PowerShell, and similarly for `RIREKI_CACHE_DIR` and `RIREKI_CONFIG_DIR`.
 
 Use `RIREKI_CACHE_DIR` to change the index and text cache directory, and `RIREKI_CONFIG_DIR` to change the UI preferences directory:
 
@@ -123,7 +162,7 @@ RIREKI_CONFIG_DIR=/path/to/config \
 cargo run --release
 ```
 
-`RIREKI_CONFIG_DIR` applies to `prefs.json`; `prices.json` remains in the default application support directory.
+`RIREKI_CONFIG_DIR` applies to `prefs.json`; `prices.json` remains in the default configuration directory for the OS.
 
 ### Cost estimates
 
@@ -132,6 +171,8 @@ Costs are API-equivalent estimates based on token usage recorded in the logs and
 The app creates `prices.json` from its built-in rates when pricing is first used. Edit that file to add models or override rates, then restart the app. Each model entry requires `input` and `output` rates in USD per million tokens and may include `cache_read`, `cache_write`, and `cache_write_1h`. Entries match exact model names and names with numeric suffixes, such as dated model versions; longer matching keys take precedence.
 
 ## Development
+
+The **CI** workflow builds the release executable, runs tests with and without GUI dependencies, checks Clippy, and smoke-tests `--stats` on macOS ARM64, Ubuntu 22.04 x86_64, and Windows x86_64 MSVC. These checks do not exercise GPU rendering or desktop input; those still need a desktop session on each OS.
 
 ```sh
 cargo build

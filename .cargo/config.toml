@@ -5,6 +5,12 @@ linker = "/usr/bin/cc"
 [target.x86_64-apple-darwin]
 linker = "/usr/bin/cc"
 
+# 配布する Windows EXE が Visual C++ ランタイムの追加インストールを要求しないようにする。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [env]
-CC = "/usr/bin/cc"
-CXX = "/usr/bin/c++"
+CC_aarch64_apple_darwin = "/usr/bin/cc"
+CXX_aarch64_apple_darwin = "/usr/bin/c++"
+CC_x86_64_apple_darwin = "/usr/bin/cc"
+CXX_x86_64_apple_darwin = "/usr/bin/c++"

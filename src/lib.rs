@@ -10,6 +10,7 @@ pub mod layout;
 pub mod loader;
 pub mod model;
 pub mod patch;
+pub mod paths;
 pub mod pricing;
 pub mod search;
 pub mod statistics;

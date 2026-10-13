@@ -1,7 +1,10 @@
+#![cfg_attr(all(target_os = "windows", not(debug_assertions), not(test)), windows_subsystem = "windows")]
+
 mod app;
 mod icons;
 mod input;
 mod pinch;
+mod platform;
 mod perf;
 mod prefs;
 mod theme;
@@ -20,6 +23,10 @@ static PROCESS_STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::Onc
 fn main() {
     PROCESS_STARTED.set(std::time::Instant::now()).unwrap();
     let args: Vec<_> = std::env::args().collect();
+    #[cfg(target_os = "windows")]
+    if args.len() > 1 {
+        platform::attach_parent_console();
+    }
     if args.get(1).is_some_and(|a| a == "--bench-parse") {
         return perf::parse(std::path::Path::new(args.get(2).expect("manifest を指定してください")));
     }
@@ -92,11 +99,12 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                // タイトルバーを透明にして、上端の帯とアイコンレールを地の色でつなげる（信号機ボタンは帯の中央に置く）
+                // macOS は透明なタイトルバー、Linux / Windows は OS のタイトルバーとウィンドウ操作を使う。
                 titlebar: Some(TitlebarOptions {
                     title: Some("rireki".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(14.0), px((app::STRIP_H - 14.0) / 2.0))),
+                    appears_transparent: cfg!(target_os = "macos"),
+                    traffic_light_position: cfg!(target_os = "macos")
+                        .then(|| point(px(14.0), px((app::STRIP_H - 14.0) / 2.0))),
                 }),
                 window_min_size: Some(size(px(960.0), px(600.0))),
                 ..Default::default()

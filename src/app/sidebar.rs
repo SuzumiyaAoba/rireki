@@ -118,7 +118,7 @@ impl Rireki {
                                 })),
                         )
                     })
-                    .when(empty && !focused, |d| d.child(kbd("⌘K")))
+                    .when(empty && !focused, |d| d.child(kbd(crate::platform::shortcut("⌘K", "Ctrl+K"))))
                     .on_click(cx.listener(|t, _: &ClickEvent, window, cx| {
                         if !t.search_input.focus_handle(cx).is_focused(window) {
                             window.focus(&t.search_input.focus_handle(cx));
@@ -129,7 +129,7 @@ impl Rireki {
                 "sidebar-close",
                 Icon::PanelLeftClose,
                 "サイドバーを隠す",
-                Some("⌃⌘S"),
+                Some(crate::platform::shortcut("⌃⌘S", "Ctrl+Alt+S")),
                 true,
                 cx,
                 |t, _, cx| t.toggle_sidebar(cx),

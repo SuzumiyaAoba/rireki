@@ -369,7 +369,7 @@ impl Rireki {
                     "analysis-search-focus",
                     Icon::TextSearch,
                     "分析内を検索",
-                    Some("⌘F"),
+                    Some(crate::platform::shortcut("⌘F", "Ctrl+F")),
                     true,
                     cx,
                     |app, window, cx| app.focus_analysis_search(window, cx),

@@ -19,26 +19,37 @@ actions!(
 );
 
 pub fn bind_keys(cx: &mut App) {
+    cx.bind_keys(key_bindings());
+}
+
+fn key_bindings() -> Vec<KeyBinding> {
     const CTX: Option<&str> = Some("TextInput");
-    cx.bind_keys([
+    let mut keys = vec![
         KeyBinding::new("backspace", Backspace, CTX),
         KeyBinding::new("delete", Delete, CTX),
-        KeyBinding::new("cmd-backspace", DeleteToStart, CTX),
         KeyBinding::new("left", Left, CTX),
         KeyBinding::new("right", Right, CTX),
         KeyBinding::new("shift-left", SelectLeft, CTX),
         KeyBinding::new("shift-right", SelectRight, CTX),
-        KeyBinding::new("cmd-a", SelectAll, CTX),
-        KeyBinding::new("cmd-v", Paste, CTX),
-        KeyBinding::new("cmd-c", Copy, CTX),
-        KeyBinding::new("cmd-x", Cut, CTX),
+        KeyBinding::new("secondary-a", SelectAll, CTX),
+        KeyBinding::new("secondary-v", Paste, CTX),
+        KeyBinding::new("secondary-c", Copy, CTX),
+        KeyBinding::new("secondary-x", Cut, CTX),
         KeyBinding::new("home", Home, CTX),
         KeyBinding::new("end", End, CTX),
+    ];
+    // macOS の Emacs 操作を他 OS に登録すると Ctrl+A（全選択）と衝突する。
+    #[cfg(target_os = "macos")]
+    keys.extend([
+        KeyBinding::new("cmd-backspace", DeleteToStart, CTX),
         KeyBinding::new("cmd-left", Home, CTX),
         KeyBinding::new("cmd-right", End, CTX),
         KeyBinding::new("ctrl-a", Home, CTX),
         KeyBinding::new("ctrl-e", End, CTX),
     ]);
+    #[cfg(not(target_os = "macos"))]
+    keys.push(KeyBinding::new("ctrl-u", DeleteToStart, CTX));
+    keys
 }
 
 /// 内容が変わったときに通知する
@@ -594,5 +605,27 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn primary_text_shortcuts_keep_their_actions_and_have_no_conflicts() {
+        let keys = key_bindings();
+        let modifier = crate::platform::shortcut("cmd", "ctrl");
+        for (key, action) in [
+            ("a", Box::new(SelectAll) as Box<dyn gpui::Action>),
+            ("c", Box::new(Copy)),
+            ("x", Box::new(Cut)),
+            ("v", Box::new(Paste)),
+        ] {
+            let keystroke = gpui::Keystroke::parse(&format!("{modifier}-{key}")).unwrap();
+            let matching: Vec<_> = keys.iter().filter(|b| b.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)).collect();
+            assert_eq!(matching.len(), 1, "duplicate binding for {modifier}-{key}");
+            assert_eq!(matching[0].action().name(), action.name());
+        }
     }
 }

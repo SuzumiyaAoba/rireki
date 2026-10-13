@@ -10,7 +10,7 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-gui = ["dep:async-channel", "dep:gpui", "dep:two-face", "dep:unicode-segmentation", "dep:block", "dep:objc"]
+gui = ["dep:async-channel", "dep:gpui", "dep:two-face", "dep:unicode-segmentation", "dep:block", "dep:objc", "dep:windows-sys"]
 
 [dependencies]
 async-channel = { version = "2.5.0", optional = true }
@@ -32,6 +32,9 @@ unicode-segmentation = { version = "1.13.3", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 block = { version = "0.1.6", optional = true }
 objc = { version = "0.2.7", optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Console"], optional = true }
 
 # 本体で実体化するジェネリック処理も最適化し、開発時の検査を維持する。
 [profile.dev]

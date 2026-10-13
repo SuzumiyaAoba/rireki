@@ -787,9 +787,9 @@ impl Rireki {
         let s = self.detail_session(sel);
         div().h(px(HEADER_H)).flex_none().flex().items_center().gap_1().px_2()
             .border_b_1().border_color(c(theme::BORDER))
-            .child(self.ghost_button("d-back", Icon::ArrowLeft, "戻る", Some("⌘["),
+            .child(self.ghost_button("d-back", Icon::ArrowLeft, "戻る", Some(crate::platform::shortcut("⌘[", "Ctrl+[")),
                 !self.back.is_empty(), cx, |t, w, cx| t.go_back(w, cx)))
-            .child(self.ghost_button("d-forward", Icon::ArrowRight, "進む", Some("⌘]"),
+            .child(self.ghost_button("d-forward", Icon::ArrowRight, "進む", Some(crate::platform::shortcut("⌘]", "Ctrl+]")),
                 !self.forward.is_empty(), cx, |t, w, cx| t.go_forward(w, cx)))
             .child(div().flex_1().min_w_0().font_weight(FontWeight::SEMIBOLD)
                 .child(Marquee::new("session-title", if s.title.is_empty() { "(無題)".to_string() }
@@ -800,7 +800,7 @@ impl Rireki {
                     t.detail_changed(cx); cx.notify(); }))
             .child(self.ghost_button("d-fullscreen", if self.detail_fullscreen { Icon::Minimize } else { Icon::Maximize },
                 if self.detail_fullscreen { "通常のパネルに戻す" } else { "詳細を全画面表示" },
-                Some("⇧⌘↵"), true, cx, |t, w, cx| t.toggle_detail_fullscreen(w, cx)))
+                Some(crate::platform::shortcut("⇧⌘↵", "Ctrl+Shift+Enter")), true, cx, |t, w, cx| t.toggle_detail_fullscreen(w, cx)))
             .child(self.ghost_button("d-close", Icon::X, "詳細を閉じる", Some("esc"), true, cx,
                 |t, w, cx| { t.close_detail(cx); w.focus(&t.focus_handle); }))
     }
@@ -1489,10 +1489,8 @@ impl Rireki {
             if row != FileRow::File(i) { continue; }
             let open = self.file_open.as_deref() == Some(f.path.as_str());
             let path = rich::rel_path(&f.path, cwd);
-            let (dir, base) = match path.rsplit_once('/') {
-                Some((d, b)) => (format!("{d}/"), b.to_string()),
-                None => (String::new(), path.to_string()),
-            };
+            let (dir, base) = rireki::paths::split_file(path);
+            let (dir, base) = (dir.to_string(), base.to_string());
             let key = f.path.clone();
             let row = div()
                 .id(ElementId::NamedInteger("file".into(), i as u64))

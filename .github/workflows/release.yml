@@ -65,6 +65,13 @@ jobs:
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             arch: x86_64
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        shell: bash
     env:
       RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
       RELEASE_TARGET: ${{ matrix.target }}
@@ -77,18 +84,21 @@ jobs:
           ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
 
-      - name: Set up stable Rust
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+      - uses: ./.github/actions/setup-build
 
       - name: Test the core library
-        run: cargo test --release --locked --lib --no-default-features
+        run: cargo test --release --locked --no-default-features
+
+      - name: Build the executable
+        if: runner.os != 'macOS'
+        run: cargo build --release --locked
 
       - name: Build the app bundle
+        if: runner.os == 'macOS'
         run: scripts/bundle.sh
 
       - name: Package the DMG, executable and app bundle
+        if: runner.os == 'macOS'
         run: |
           actual_arch=$(lipo -archs target/release/rireki)
           if [[ "$actual_arch" != "$RELEASE_ARCH" ]]; then
@@ -103,6 +113,19 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent \
             target/release/rireki.app "dist/$archive.zip"
           scripts/dmg.sh "dist/$archive.dmg"
+
+      - name: Package the Linux executable
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          tar -czf "dist/rireki-$RELEASE_TAG-$RELEASE_TARGET.tar.gz" -C target/release rireki
+
+      - name: Package the Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path target/release/rireki.exe -DestinationPath "dist/rireki-$env:RELEASE_TAG-$env:RELEASE_TARGET.zip"
 
       - name: Upload release archives
         uses: actions/upload-artifact@v7

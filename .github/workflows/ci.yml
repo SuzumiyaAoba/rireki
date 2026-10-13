@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            binary: rireki
+          - runner: ubuntu-22.04
+            binary: rireki
+          - runner: windows-2022
+            binary: rireki.exe
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-build
+      - name: Test without GUI dependencies
+        run: cargo test --locked --no-default-features
+      - name: Test the application
+        run: cargo test --locked --all-targets
+      - name: Check Rust lints
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build the release executable
+        run: cargo build --release --locked
+      - name: Run the executable without a window
+        env:
+          RIREKI_CACHE_DIR: ${{ runner.temp }}/rireki-cache
+          RIREKI_CONFIG_DIR: ${{ runner.temp }}/rireki-config
+        run: |
+          output=$("target/release/${{ matrix.binary }}" --stats)
+          printf '%s\n' "$output"
+          if [[ "$output" != *"tool calls"* ]]; then
+            echo '::error::The executable did not print the expected statistics.'
+            exit 1
+          fi

@@ -1,6 +1,6 @@
 //! メインウィンドウ（GPUI のビュー）。Slack のように、左端のアイコンレール・サイドバー・メイン・詳細パネルを並べる
 //!
-//! - 上端の帯: macOS のタイトルバー領域。信号機ボタンと状態表示だけを置き、ドラッグでウィンドウを動かせる
+//! - 上端の帯: 状態表示。macOS では透明なタイトルバーの信号機ボタンと重なる
 //! - レール (`rail.rs`): 読み込み元（すべて / Claude / Codex）と表示（タイムライン / カレンダー / 統計）の切り替え
 //! - サイドバー (`sidebar.rs`): 検索欄と、進行中・プロジェクト・セッションの一覧、または検索結果
 //! - メイン: タイムライン (`timeline.rs`) / カレンダー (`calendar.rs`) と見出し・凡例、または統計 (`statistics.rs`)
@@ -15,6 +15,7 @@ mod keymap;
 mod overlay;
 mod profile;
 mod rail;
+mod window_frame;
 mod range;
 mod rich;
 mod sidebar;
@@ -61,7 +62,7 @@ use keymap::{
 use sidebar::SidebarView;
 use track_index::TrackIndex;
 
-/// 上端の帯（macOS のタイトルバー領域）の高さ
+/// 上端の状態表示（macOS ではタイトルバー領域）の高さ
 pub const STRIP_H: f32 = 34.0;
 /// 左端のアイコンレールの幅
 const RAIL_W: f32 = 68.0;
@@ -415,15 +416,15 @@ fn fmt_n(n: usize) -> String {
 
 /// ホームディレクトリを `~` にしたパス
 fn tilde(p: &str) -> String {
-    match dirs::home_dir().and_then(|h| p.strip_prefix(h.to_str()?).map(str::to_string)) {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+    match dirs::home_dir().and_then(|h| rireki::paths::strip_directory_prefix(p, h.to_str()?).map(str::to_string)) {
+        Some(rest) => format!("~{rest}"),
         _ => p.to_string(),
     }
 }
 
 /// パスの末尾のディレクトリ名
 fn base_name(p: &str) -> &str {
-    p.rsplit('/').find(|s| !s.is_empty()).unwrap_or(p)
+    rireki::paths::basename(p)
 }
 
 fn is_live(end: f64) -> bool {
@@ -885,7 +886,7 @@ impl Rireki {
                 let base = base_name(cwd);
                 let name = if names[base] > 1 {
                     // 同じ名前のディレクトリが複数あるときは親ディレクトリで見分ける
-                    let parent = cwd.trim_end_matches('/').rsplit('/').nth(1).unwrap_or("");
+                    let parent = rireki::paths::parent_name(cwd);
                     format!("{base} — {parent}")
                 } else {
                     base.to_string()
@@ -2103,9 +2104,11 @@ impl Render for Rireki {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::end_resize))
             .bg(c(theme::BACKDROP))
             .text_color(c(theme::TEXT))
-            .child(self.top_strip())
+            .child(self.top_strip(window))
             .child(div().flex().flex_1().min_h_0().when(!fullscreen, |d| d.child(self.rail(cx))).child(panel))
             .children(self.overlays(window, cx))
+            .when(cfg!(target_os = "linux") && matches!(window.window_decorations(), gpui::Decorations::Client { .. }),
+                |d| d.child(window_frame::resize_border(window)))
     }
 }
 
