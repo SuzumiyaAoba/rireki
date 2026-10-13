@@ -50,18 +50,16 @@ impl Rireki {
                 .set_offset(point(px(0.0), px(0.0)));
         }
         match stage {
-            "statistics_open" => {
-                if step.is_multiple_of(20) {
-                    self.statistics_state.metric = Metric::ALL[step / 20 % Metric::ALL.len()];
-                    self.statistics_state.hover = Some(if step.is_multiple_of(40) {
-                        Hover::Bucket(step / 20)
-                    } else {
-                        Hover::Hour(step * 7 % 168)
-                    });
-                    self.statistics_state
-                        .scroll
-                        .set_offset(point(px(0.0), px(-(step as f32) * 5.0)));
-                }
+            "statistics_open" if step.is_multiple_of(20) => {
+                self.statistics_state.metric = Metric::ALL[step / 20 % Metric::ALL.len()];
+                self.statistics_state.hover = Some(if step.is_multiple_of(40) {
+                    Hover::Bucket(step / 20)
+                } else {
+                    Hover::Hour(step * 7 % 168)
+                });
+                self.statistics_state
+                    .scroll
+                    .set_offset(point(px(0.0), px(-(step as f32) * 5.0)));
             }
             "statistics_period" => {
                 if step.is_multiple_of(30) {

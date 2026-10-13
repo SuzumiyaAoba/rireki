@@ -77,7 +77,7 @@ pub fn discover_in(claude: &Path, codex: &Path) -> Vec<Job> {
     let mut jobs: Vec<Job> = Vec::new();
     for proj in read_dir(claude) {
         for f in read_dir(&proj) {
-            if !f.extension().is_some_and(|e| e == "jsonl") {
+            if f.extension().is_none_or(|e| e != "jsonl") {
                 continue;
             }
             let legacy = f.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("agent-"));
@@ -1951,7 +1951,8 @@ mod tests {
             let path = self.0.join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, vec![b'x'; size]).unwrap();
-            fs::File::open(&path).unwrap().set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds)).unwrap();
+            fs::OpenOptions::new().write(true).open(&path).unwrap()
+                .set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds)).unwrap();
             path
         }
 

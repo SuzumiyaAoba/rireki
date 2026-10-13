@@ -223,7 +223,7 @@ struct LineMemo<'a> {
 
 fn memo_line_spans<'a>(highlighter: &mut DiffHighlighter<'_>, text: &'a str, memo: &mut Option<LineMemo<'a>>) -> Spans {
     // 異なる本文では状態を複製しない。繰り返しを見つけた次の行で固定点を確かめる。
-    if !memo.as_ref().is_some_and(|last| last.text == text) {
+    if memo.as_ref().is_none_or(|last| last.text != text) {
         *memo = Some(LineMemo {
             text,
             checked: false,

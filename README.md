@@ -50,7 +50,7 @@ GPU driver access with [nixGL](https://github.com/nix-community/nixGL) if necess
 
 ### Cargo
 
-You need a Rust toolchain that supports edition 2024 and the native build tools for your OS:
+You need Rust 1.95 or newer and the native build tools for your OS:
 
 - **macOS:** Xcode Command Line Tools and the Metal shader compiler. The repository selects `/usr/bin/cc` for macOS targets only.
 - **Linux:** a C/C++ compiler, CMake, Clang, pkg-config, and the development libraries below. The GUI uses X11 or Wayland and needs a Vulkan-capable GPU and driver.

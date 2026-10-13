@@ -270,7 +270,7 @@ impl Indexer {
             let state = t.live.then_some(state).flatten().and_then(|log| {
                 let bytes = log.retained_bytes();
                 use std::sync::atomic::Ordering::Relaxed;
-                batch_bytes.fetch_update(Relaxed, Relaxed, |held| {
+                batch_bytes.try_update(Relaxed, Relaxed, |held| {
                     held.checked_add(bytes).filter(|total| *total <= LIVE_CACHE_BYTES)
                 }).ok().map(|_| (log, bytes))
             });
