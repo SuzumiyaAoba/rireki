@@ -18,6 +18,38 @@ The app's interface is currently in Japanese.
 
 ## Build and run
 
+### Nix
+
+On macOS or Linux, use the included flake to build and run the app:
+
+```sh
+nix run
+nix run . -- --stats
+```
+
+To build without launching, run `nix build`; the executable is available at
+`result/bin/rireki`. The flake pins Nixpkgs in `flake.lock` and uses `Cargo.lock`
+for Rust dependencies. Enable the `nix-command` and `flakes` experimental features
+in your Nix configuration if needed, or pass
+`--extra-experimental-features 'nix-command flakes'` to these commands.
+
+For development, enter the shell or run Cargo directly in it:
+
+```sh
+nix develop
+nix develop -c cargo run --features gpui/runtime_shaders
+nix develop -c cargo test --lib --no-default-features
+```
+
+The shell provides Rust and the native build dependencies. On macOS, add
+`--features gpui/runtime_shaders` when building or testing with GUI dependencies
+to compile Metal shaders at runtime, without requiring Xcode's Metal compiler.
+`nix run` and `nix build` enable this automatically. Linux needs an X11 or Wayland
+desktop session and a working Vulkan driver; on non-NixOS distributions, configure
+GPU driver access with [nixGL](https://github.com/nix-community/nixGL) if necessary.
+
+### Cargo
+
 You need a Rust toolchain that supports edition 2024 and the native build tools for your OS:
 
 - **macOS:** Xcode Command Line Tools and the Metal shader compiler. The repository selects `/usr/bin/cc` for macOS targets only.
