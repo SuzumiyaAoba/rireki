@@ -1,7 +1,7 @@
 //! 更新中の JSONL は確定した行までの解析状態を保持する。
 //! 既読部分のチェックサムを照合してから末尾だけ解析し、書き換え時は読み直す。
 
-use std::io::{self, Read, Seek};
+use std::io::{self, BufRead, BufReader, Read, Seek};
 
 use super::*;
 
