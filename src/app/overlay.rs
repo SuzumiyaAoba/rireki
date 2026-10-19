@@ -26,7 +26,7 @@ impl Rireki {
                 out.push(self.range_menu(window, cx));
             }
             Some(Popover::Help) => out.push(self.help_sheet(cx)),
-            Some(Popover::Mcp) => out.push(self.mcp_sheet(cx)),
+            Some(Popover::Mcp) => out.push(self.mcp_sheet(window, cx)),
             None => out.extend(self.hover_card()),
         }
         out
