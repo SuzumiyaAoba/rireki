@@ -225,12 +225,14 @@ impl Rireki {
     pub(super) fn flash_copied(&mut self, id: &'static str, cx: &mut Context<Self>) {
         self.copied = Some(id);
         self.detail_changed(cx);
+        cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(1200)).await;
             let _ = this.update(cx, |this, cx| {
                 if this.copied == Some(id) {
                     this.copied = None;
                     this.detail_changed(cx);
+                    cx.notify();
                 }
             });
         })

@@ -344,7 +344,7 @@ impl Totals {
         use crate::model::Kind;
         self.sessions = 1;
         self.turns += usize::from(e.kind == Kind::User);
-        self.tools += usize::from(matches!(e.kind, Kind::Tool | Kind::Agent));
+        self.tools += usize::from(e.kind.is_tool());
         self.failures += usize::from(e.status.failed());
         self.usage.add(&e.usage, e.model.as_deref());
     }
@@ -385,7 +385,7 @@ impl Summary {
                     continue;
                 }
                 current.add(e);
-                let tool = matches!(e.kind, Kind::Tool | Kind::Agent);
+                let tool = e.kind.is_tool();
                 let mut usage = UsageSum::default();
                 usage.add(&e.usage, e.model.as_deref());
                 if !e.usage.is_empty() {

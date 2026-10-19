@@ -18,6 +18,9 @@ async-channel = { version = "2.5.0", optional = true }
 chrono = { version = "0.4.45", features = ["serde"] }
 dirs = "7.0.0"
 gpui = { version = "0.2.2", optional = true }
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
 lz4_flex = "0.14.0"
 memchr = "2.8.3"
 rayon = "1.12.0"
@@ -26,6 +29,8 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 simdutf8 = "0.1.5"
+socket2 = "0.6.5"
+tokio = { version = "1.53.2", features = ["rt", "net", "time", "sync", "macros"] }
 twox-hash = { version = "2.1.4", default-features = false, features = ["std", "xxhash3_128"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"], optional = true }
 unicode-segmentation = { version = "1.13.3", optional = true }

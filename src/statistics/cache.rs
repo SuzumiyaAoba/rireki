@@ -33,25 +33,7 @@ struct PeriodCache {
     merged_counts: [u16; 2],
 }
 
-/// Store が付けるセッション番号専用。文字列のハッシュには使わない。
-/// 上位ビットも混ぜ、連番や飛び飛びの番号でも表の指紋を分散させる。
-#[derive(Default)]
-struct SessionHash(u64);
-
-impl Hasher for SessionHash {
-    fn finish(&self) -> u64 {
-        let mut hash = self.0;
-        hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        hash ^ (hash >> 31)
-    }
-    fn write_usize(&mut self, index: usize) {
-        self.0 = index as u64;
-    }
-    fn write(&mut self, _: &[u8]) {
-        unreachable!("session indices write a single usize");
-    }
-}
+use crate::model::SessionIndexHasher as SessionHash;
 
 /// 期間の日付と、イベントの日・時を求める境界
 struct Range {
@@ -512,7 +494,7 @@ impl CachedSession {
                         let p = &mut out.previous;
                         p.sessions = 1;
                         p.turns += usize::from(e.kind == Kind::User);
-                        p.tools += usize::from(matches!(e.kind, Kind::Tool | Kind::Agent));
+                        p.tools += usize::from(e.kind.is_tool());
                         p.failures += usize::from(e.status.failed());
                         if !e.usage.is_empty() {
                             p.usage.merge(&priced(e, prices));
@@ -532,7 +514,7 @@ impl CachedSession {
                         continue;
                     }
                     let user = e.kind == Kind::User;
-                    let tool = matches!(e.kind, Kind::Tool | Kind::Agent);
+                    let tool = e.kind.is_tool();
                     let failed = e.status.failed();
                     out.total.sessions = 1;
                     out.total.turns += usize::from(user);

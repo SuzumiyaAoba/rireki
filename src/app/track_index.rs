@@ -2,18 +2,7 @@
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 
-#[derive(Default)]
-pub(super) struct SessionHash(u64);
-impl std::hash::Hasher for SessionHash {
-    fn finish(&self) -> u64 {
-        let mut hash = self.0;
-        hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        hash ^ (hash >> 31)
-    }
-    fn write_usize(&mut self, index: usize) { self.0 = index as u64; }
-    fn write(&mut self, _: &[u8]) { unreachable!("session indices write a single usize"); }
-}
+use crate::model::SessionIndexHasher as SessionHash;
 
 pub(super) enum Children {
     Sorted(Vec<(usize, Vec<usize>)>),

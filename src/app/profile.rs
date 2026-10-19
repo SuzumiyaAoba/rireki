@@ -961,7 +961,7 @@ impl Rireki {
                     assert!(std::ptr::eq(self.detail_session(sel), &*self.store.sessions[sel.session]));
                     assert_eq!(self.detail_cache.as_ref().unwrap().selection_summary.total.stats.tools,
                         self.store.sessions[sel.session].lanes[sel.lane].events[sel.first..=sel.last].iter()
-                            .filter(|e| matches!(e.kind, Kind::Tool | Kind::Agent)).count());
+                            .filter(|e| e.kind.is_tool()).count());
                     assert!(self.file_open.is_some() && self.expanded.contains("file-diff") && self.row_filter.is_some());
                 }
             }

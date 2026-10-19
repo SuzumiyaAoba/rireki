@@ -38,7 +38,7 @@ pub struct Filter {
 }
 
 pub fn is_tool(e: &Event) -> bool {
-    matches!(e.kind, Kind::Tool | Kind::Agent)
+    e.kind.is_tool()
 }
 
 /// 記録された経過時間。欠損や不正な値は集計に混ぜない。

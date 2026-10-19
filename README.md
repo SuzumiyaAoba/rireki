@@ -15,6 +15,7 @@ The app's interface is currently in Japanese.
 - **File history:** Review edited files, change summaries, and diffs for individual edits.
 - **Usage and analysis:** Explore token usage, estimated API costs, tool activity, and trends over 7 days, 30 days, 90 days, or all history.
 - **Live updates:** Refresh active logs every three seconds and index completed logs locally for faster startup.
+- **Local MCP server:** Start and stop a read-only Streamable HTTP server from the GUI so coding agents can search, retrieve, and analyze the same history.
 
 ## Build and run
 
@@ -148,6 +149,72 @@ CODEX_HOME=/path/to/codex-home cargo run --release
 ```
 
 Select a source or project in the sidebar, switch between timeline and calendar views, and click an event or session to open its details. The detail panel includes session summaries, events, file history, and event analysis.
+
+## Connect coding agents with MCP
+
+Click the **plug icon** near the bottom of the left rail, then **サーバーを起動**
+(Start server). The panel shows the running status, endpoint URL, and copy buttons
+for the URL and client configuration. The default endpoint is
+`http://127.0.0.1:47821/mcp`; you can change the port before starting if it is
+already in use. Use **サーバーを停止** (Stop server) to stop it. Closing the panel
+keeps the server running; exiting rireki stops it. Startup is always manual.
+
+For a client that accepts `mcpServers` configuration:
+
+```json
+{
+  "mcpServers": {
+    "rireki": {
+      "type": "http",
+      "url": "http://127.0.0.1:47821/mcp"
+    }
+  }
+}
+```
+
+Select **Streamable HTTP** in clients with a connection form. Configuration
+formats vary by client; use the displayed URL in the client's HTTP MCP settings.
+The server supports MCP protocol versions `2025-03-26`, `2025-06-18`, and
+`2025-11-25`, with JSON responses and no persistent SSE stream or session ID.
+The transport follows the [MCP Streamable HTTP specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
+
+| Tool | Purpose |
+| --- | --- |
+| `list_sessions` | Find sessions by title, project directory, ID, source, or time range. |
+| `get_session` | Retrieve session metadata, subagent lanes, parent relationships, and usage totals. |
+| `get_events` | Retrieve a session's conversation and tool activity across lanes, optionally including input/output text. |
+| `search_events` | Search event names, summaries, and models across history, with source, project, time, kind, and outcome filters. |
+| `analyze_history` | Aggregate turns, tool outcomes and durations, tokens, and estimated API costs by tool and model. |
+
+For example, call `list_sessions` with `{"query":"my-project","source":"codex"}`,
+then `get_events` with `{"session_id":"<id>","include_text":true,"limit":20}`.
+For error analysis, use `analyze_history` with
+`{"cwd":"/absolute/project/path","status":"failed"}`.
+
+The server shares all loaded history, independently of the GUI's current search
+and filters, and receives live updates as the app loads changed logs. `cwd` is an
+exact directory match; `after` and `before` are inclusive Unix seconds. Event
+queries match whitespace-separated words against names, summaries, and models,
+rather than full input/output bodies. Event responses include zero-based `lane`
+and `event_index` values for fetching individual entries. Use `order:"newest"`
+to reverse the default chronological event order.
+
+List and event tools return `total`, `next_offset`, and `revision`. Request the
+next page with `offset:next_offset` and `expected_revision:revision`; if history
+has changed, restart pagination. `limit` defaults to 50 and is capped at 100;
+`offset` is capped at 10,000, so narrow the filters for larger result sets.
+Bodies are omitted by default. With `include_text:true`, `text_limit` defaults
+to 4,000 characters per input/output and can be increased to 20,000. Responses
+report truncation and unavailable cached text explicitly. Bodies are the
+importer's stored representation, which may already be formatted or truncated;
+they are not a raw JSONL export. Analysis covers all matches and returns the
+top 100 tools and models, with the full distinct counts.
+
+The server listens only on IPv4 loopback, checks `Host` and `Origin`, and does
+not enable CORS. It has no authentication: other local processes can read the
+loaded history while it is running. It provides no log mutation or command
+execution tools. Historical message bodies are untrusted data, and the server
+instructs agents not to follow instructions found in them.
 
 ## Keyboard shortcuts
 

@@ -67,10 +67,7 @@ struct LaneHash(u64);
 
 impl std::hash::Hasher for LaneHash {
     fn finish(&self) -> u64 {
-        let mut hash = self.0;
-        hash = (hash ^ (hash >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        hash = (hash ^ (hash >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        hash ^ (hash >> 31)
+        crate::model::mix_index(self.0)
     }
 
     fn write_usize(&mut self, index: usize) {

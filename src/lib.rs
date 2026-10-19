@@ -9,6 +9,7 @@ pub mod jsmock;
 pub mod layout;
 pub mod loader;
 pub mod model;
+pub mod mcp;
 pub mod patch;
 pub mod paths;
 pub mod pricing;

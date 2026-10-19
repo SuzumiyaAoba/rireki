@@ -94,6 +94,11 @@ impl Rireki {
                 |t, w, cx| t.show_statistics(w, cx),
             ))
             .child(div().flex_1())
+            .child(self.nav_item("nav-mcp", Icon::Plug, "MCP サーバー", "", self.popover == Some(Popover::Mcp), cx, |t, _, _| {
+                t.popover = if t.popover == Some(Popover::Mcp) { None } else { Some(Popover::Mcp) };
+            }).relative().when(self.mcp_server.is_some(), |d| d.child(
+                div().absolute().right(px(14.0)).top(px(6.0)).size(px(7.0)).rounded_full().bg(c(theme::LIVE))
+            )))
             .child(self.nav_item("nav-help", Icon::Keyboard, "キー操作", "?", help, cx, |t, _, _| {
                 t.popover = if t.popover == Some(Popover::Help) { None } else { Some(Popover::Help) };
             }))
