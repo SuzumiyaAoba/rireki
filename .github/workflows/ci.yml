@@ -38,7 +38,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-build
       - name: Test without GUI dependencies
-        run: cargo test --locked --no-default-features
+        run: cargo test --locked --no-default-features --all-targets
       - name: Test the application
         run: cargo test --locked --all-targets
       - name: Check Rust lints

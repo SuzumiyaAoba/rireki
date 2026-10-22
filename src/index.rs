@@ -6,7 +6,7 @@
 //!   更新が止まれば次の同期で安定側に移る。
 //!
 //! このモジュールは探索・取り込みと指紋の更新を調整する。非同期保存は `writer`、
-//! 解析状態の容量管理は `live_cache`、Store とスナップショットの更新は `view` が担当する。
+//! 解析状態の容量管理は `live_cache`、Store とスナップショットの更新は [`crate::history`] が担当する。
 
 use std::collections::HashMap;
 
@@ -21,11 +21,11 @@ use crate::model::Loaded;
 mod live_cache;
 #[cfg(test)]
 mod tests;
-mod view;
 mod writer;
 
 use live_cache::{BatchBudget, LiveCache};
-pub use view::{Delta, ViewLoader};
+// 既存の利用側との互換性を保つ。新しいフロントエンドは history::History を使う。
+pub use crate::history::{Delta, History as ViewLoader};
 use writer::{Completion, Writer};
 
 /// これより新しく更新されたファイルはリアルタイム扱い

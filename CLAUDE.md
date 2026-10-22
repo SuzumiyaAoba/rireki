@@ -31,7 +31,8 @@ cargo run --release -- --bench-parse manifest.json --measure-memory  # macOS: �
 scripts/bundle.sh           # リリースビルドから target/release/rireki.app を作る（assets/app-icon のアイコンと Info.plist）
 cargo clippy                # lint
 cargo test                  # GUI を含むテスト
-cargo test --lib --no-default-features  # GUI の依存を外してコアだけをテスト
+cargo test --no-default-features  # GUI の依存を外してコア・CLI・統合テストを実行
+cargo run --no-default-features -- --stats  # GUI の依存なしで統計コマンドを実行
 ```
 
 `.cargo/config.toml` で linker / CC を `/usr/bin/cc` に固定している（Nix の cc が libiconv を見つけられないため）。変更しないこと。
@@ -40,20 +41,22 @@ cargo test --lib --no-default-features  # GUI の依存を外してコアだけ�
 
 ## アーキテクチャ
 
-`src/lib.rs` が GUI に依存しないコアの入口。`model` / `loader` / `db` / `index` / `search` / `pricing` / `jsmock` / `layout` に加え、`statistics` / `detail` / `patch` / `histogram` / `view_index` / `time` / `mcp` を公開する。`src/cli.rs` が画面を開かない計測・統計コマンドを振り分け、`src/main.rs` は GUI の起動を担当する。`main.rs` と `app/` はこのライブラリを参照し、GPUI の状態・入力・描画・背景タスクの起動と結果反映を管理する。コアから `app` / `theme` / `icons` / GPUI を参照しない。通常起動は既定の `gui` feature、コアの利用・検証は `--no-default-features`。
+`src/lib.rs` が GUI に依存しないコアの入口。`history` / `catalog` / `model` / `loader` / `db` / `index` / `search` / `pricing` / `jsmock` / `layout` に加え、`statistics` / `detail` / `patch` / `histogram` / `view_index` / `time` / `mcp` を公開する。`src/cli.rs` が画面を開かない計測・統計コマンドを振り分け、`src/main.rs` は feature に応じて GUI を起動する。`main.rs` と `app/` はこのライブラリを参照し、GPUI の状態・入力・描画・背景タスクの起動と結果反映を管理する。コアから `app` / `theme` / `icons` / GPUI を参照しない。通常起動は既定の `gui` feature、コア・CLI の利用と検証は `--no-default-features`。TUI の画面と入力は未実装。
+
+- **history.rs / catalog.rs** — `History` が索引・Store を所有し、キャッシュ読み込みと差分取り込みを行う。`ingest` は64ファイルごとに進捗と Snapshot を返し、破棄すると未処理分を次回の探索へ残す。GUI は一つの `process` を背景で実行して反映を待つ。実行器・タイマー・選択・描画は各フロントエンドの責務。`Catalog` は source で絞る scope、cwd も絞る order、scope ごとのプロジェクトを返す。`SourceFilter` の保存形式は従来どおり。`index::ViewLoader` は `History` の互換名。
 
 - **statistics.rs / statistics/cache.rs** — 統計の期間（7 / 30 / 90 日・全期間）・結果型と、セッションの版を弱参照で識別する集計キャッシュ。直前の同じ長さの期間の合計、読み込み元ごとの列（全期間は 92 日を超えると週、371 日を超えると月ごと）、曜日 × 時刻のマスと曜日・時ごとの合計（セッションは重ねずに数える）、ツール名ごとの呼び出しと失敗も集める。日付と時は各日の午前 0 時の表とレーン内のカーソルで求め、境界の直前が前日・境界が当日にならない日（曖昧な午前 0 時など）があればイベントごとに変換する。テストは全イベントを日時変換する参照実装と比べる。GUI は同じキャッシュを保持し、背景で実行する。集計キャッシュの詳細は `docs/perf.md`。
 - **detail.rs / detail/** — `detail.rs` は選択範囲と結果型の入口。`loading.rs` は本文の遅延読み込み・集計キャッシュ・キャンセル、`content.rs` は保存状態をまたぐ本文復元と JS・コマンド整形、`files.rs` は差分とファイル履歴、`summary.rs` は選択とセッションの集計を担当する。色やアイコンを含めず、名前ごとの先頭イベント位置を返す。GUI はそのイベントの表示を決める。キャンセル確認と本文の表示上限を維持する。
 - **detail/analysis.rs** — 選択範囲全体の分析とメタデータのJSON出力。検索語は名前・要約・モデルをまたいで照合する。小文字化は名前から順に行い、前のフィールドで一致すれば後の処理を省く。各イベント内で必要になった要約・モデルだけを一度作る。料金は同じモデルが続く間だけ共有し、P95は全件のソートをせず必要な順位の値を選ぶ。使用量・料金の加算順と同順位の並びを維持する。
 - **model.rs / loader.rs / db.rs** — 公開 API は各ルートで再公開し、型と処理の実体は責務別の子モジュールへ置く。 イベント名は `Arc<str>` で共有する。ログのパースはファイルごと、索引の並列読み込みはID範囲ごとに同じ名前を再利用し、メタデータの複製とGPUIの表示でも共有する。DBの値と保存形式は変更しない。要約と呼び出しIDも同様に共有する。読み取りの詳細は `docs/perf.md`。
 - **text.rs / model::Event::text** — 安定ログの保存待ちの本文はファイルごとの圧縮データを共有し、成功したコミット後にDBの行IDへ置き換える。イベント本文を取得するときは `Event::text()` を使用する。`Event::text_ref` は行IDと保存状態を一つの領域に収め、通常のDB読み込みでもイベントのサイズを増やさない。
-- **index.rs / index/** — `index.rs` は探索・取り込み・保存指紋の調整、`writer.rs` は非同期保存と完了通知・終了処理、`live_cache.rs` はライブ解析状態の容量と保持順・並列回収上限、`view.rs` は Store への反映と Snapshot の公開を担当する。公開 API は `index` から再公開する。保存待ちの指紋は保存済みと区別し、成功した書き込みだけを保存済みにする。失敗時は次の探索で再試行し、古い保存完了が新しい版やリアルタイムの指紋を書き換えない。安定ログは並列ワーカー内でファイルごとにパース・圧縮・本文解放まで連続して行い、未圧縮本文の一時保持を作業中のファイルに限定する。画面反映とDB書き込みは64ファイル単位を維持する。
+- **index.rs / index/** — `index.rs` は探索・取り込み・保存指紋の調整、`writer.rs` は非同期保存と完了通知・終了処理、`live_cache.rs` はライブ解析状態の容量と保持順・並列回収上限、`history.rs` は Store への反映と Snapshot の公開を担当する。低水準の探索・解析 API は `index` から公開する。保存待ちの指紋は保存済みと区別し、成功した書き込みだけを保存済みにする。失敗時は次の探索で再試行し、古い保存完了が新しい版やリアルタイムの指紋を書き換えない。安定ログは並列ワーカー内でファイルごとにパース・圧縮・本文解放まで連続して行い、未圧縮本文の一時保持を作業中のファイルに限定する。画面反映とDB書き込みは64ファイル単位を維持する。
 - **search.rs** — 初回の検索索引の長さ計算・連結・小文字化は256イベントごとに中断を確認する。中断した途中の索引は公開せず、完成したセッションの版だけを再利用する。候補の保持と名前の共有の詳細は `docs/perf.md`。
 - **perf.rs / perf/** — コアの公開 API を直接使う CLI の計測。画面用のモジュールを経由しない。`perf/ingest.rs` に固定ログの取り込みと往復検証、`fingerprint.rs` に内容ハッシュ、`verification.rs` にログの照合、`db.rs` に読み取り計測、`view.rs` に表示順と起動元探索の計測を置く。取り込みの比較用の全件パースと内容照合は取り込み時間の外で行い、Storeの共有された版からも保存後の本文とイベントの対応を検証する。
 
 各モジュールの性能上の不変条件と `--profile-*` の計測内容は `docs/perf.md` にまとめている。該当モジュールを変更するときは先に読み、記載の不変条件を維持して計測で比較すること。
 
-データの流れ: 背景の `index::ViewLoader` が索引 DB の読み込み、`Indexer::plan` / `process`、`model::Store::replace` と描画用の索引化を行う。画面と検索は `model::Snapshot`（`Arc<Session>` の集合）を受け取り、更新前の版は読み終わるまで保つ。3 秒ごとにリアルタイムファイルの変更を探索し、変更されたログを照合・差分解析する。
+データの流れ: 背景の `history::History` が索引 DB の読み込み、`Indexer::plan` / `process`、`model::Store::replace` と描画用の索引化を行う。画面と検索は `model::Snapshot`（`Arc<Session>` の集合）を受け取り、更新前の版は読み終わるまで保つ。3 秒ごとにリアルタイムファイルの変更を探索し、変更されたログを照合・差分解析する。
 
 - **index.rs / loader/live.rs** — ファイルを「安定」（最終更新から `LIVE_SECS` 以上経過）と「リアルタイム」に分ける。安定ファイルはパース結果を DB に保存し、指紋（mtime + サイズ）が変わるまで読み直さない。リアルタイムでは改行まで確定した行の解析状態を保持する。既読部分の64KiBブロックのXXH3の128bitチェックサムと残りのバイト列を、256KiBの読み出しバッファで照合する。読み出しバッファ内の64KiB区間は直接検証し、短い読み出しだけ作業領域へ連結する。チェックサムの作成も、連続した64KiB区間は直接行う。その後に追記分だけを解析し、書き換え・切り詰めを検出したら全体を読み直す。改行前の最終行は公開版だけに反映し、次回はその行から読み直す。新規の本文と、結果が届いた古い本文を追跡し、256件たまるか更新を読み終えた時点で圧縮して共有する。本文を圧縮するために全イベントを毎回走査しない。公開版は表示に必要なレーン・メタデータ・使用量だけを複製し、解析用マップは保持元に残す。改行前の行を読む分岐には解析状態全体を複製する。生のイベント順と保留中の呼び出し・累計使用量を保持し、ソートとClaudeのmessage.id単位の使用量反映は公開版で行う。Claudeの各サブエージェントも個別に保持し、メタデータは毎回読み直す。解析状態は保守的な容量見積もりで合計64MiBを上限とし、古いものから破棄する。並列解析で回収待ちの状態も1バッチ64MiBまでに制限する（処理中の一時領域や画面が保持する版は別）。削除されたファイルは次の探索で保持対象から外す。上限を超える単一ログは更新ごとに全体解析へ戻る。更新が止まると保持した状態で最終版を作って安定側へ移り、共有済みの圧縮本文は再圧縮せずDBへ渡す。`Indexer::open_with_live_cache(false)` / `ViewLoader::open_with_live_cache(false)` で同じ更新・保存経路を全体解析と比較できる。
 - **db.rs** — `db.rs` は公開型と保存先の入口とし、`db/connection.rs` に接続とスキーマ、`codec.rs` に保存値の変換、`write.rs` に書き込みとコミット後の本文更新、`read.rs` に索引の復元と本文取得を置く。`packing.rs` は本文の圧縮と保存状態、`events.rs` はイベントの並列読み取りと要約共有、`js_cache.rs` は JS 整形キャッシュを担当する。索引 DB (`~/Library/Caches/rireki/index.db`, SQLite/rusqlite)。`files` / `items` / `lanes` / `events` / `texts`。起動時は `events` だけを ID 範囲で分割して並列に読み、大きな input / output (`texts`) は詳細表示のときに `Event::row()` で引く。`texts` は lz4 圧縮して別ファイル `texts.db` に置く（同じファイルだと `events` のページが散らばり起動が遅くなる）。書き込みは `Indexer` の専用スレッドで行い、次のチャンクのパースと重ねる。パース結果やスキーマを変えたら `VERSION` を上げる（DB が作り直される）。

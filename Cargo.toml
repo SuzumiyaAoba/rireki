@@ -7,7 +7,6 @@ rust-version = "1.95"
 [[bin]]
 name = "rireki"
 path = "src/main.rs"
-required-features = ["gui"]
 
 [features]
 default = ["gui"]

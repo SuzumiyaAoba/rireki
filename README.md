@@ -279,11 +279,29 @@ cargo clippy
 cargo test
 ```
 
-The core library handles log parsing, indexing, search, statistics, and detail loading without depending on GPUI. To test it without the GUI dependencies:
+The core library handles log parsing, indexing, search, statistics, and detail loading without depending on GPUI. The CLI also builds without GUI dependencies:
 
 ```sh
-cargo test --lib --no-default-features
+cargo build --no-default-features
+cargo run --no-default-features -- --help
+cargo run --no-default-features -- --stats
 ```
+
+This build needs Rust and the native tools used by the core dependencies, but no GPUI windowing or GPU libraries. Running it without a command prints an error; the default build still opens the GUI. A TUI is not yet implemented.
+
+To test the core, CLI, and integration workflows without the GUI dependencies:
+
+```sh
+cargo test --locked --no-default-features
+```
+
+### Shared frontend APIs
+
+Use this package as a library with `default-features = false` when adding a TUI or another frontend. `history::History` owns the index and store: call `load_cached()` once, then `plan()` and `ingest(tasks)` to process changes. Each batch returns progress, a shared `model::Snapshot`, and the touched session indices. Dropping the ingestion iterator stops before the next batch; a later `plan()` rediscovers unprocessed files. `plan_in()` accepts explicit Claude and Codex log roots, and `History::with_indexer(Indexer::in_memory(true))` supports workflows without a persistent index.
+
+`catalog::Catalog::new(&snapshot, source, cwd)` supplies the session order and project list. Pass the same snapshot and its indices to `search`, `detail::DetailLoader`, `statistics`, and `mcp`. Keep a snapshot alive while displaying its results so live updates do not mix session versions. The existing `index::ViewLoader` name remains available as an alias for `History`.
+
+Frontends own their event loops, background execution, polling, selection, and rendering. `history::POLL_INTERVAL` is the shared three-second polling interval. The GUI uses `History::process()` one batch at a time on GPUI's executor; a synchronous CLI or TUI worker can iterate over `History::ingest()` directly. See the `history` module documentation and `tests/history.rs` for complete loading and query examples.
 
 To load the local index, ingest changed logs, and print session, event, and tool-call counts without opening a window:
 

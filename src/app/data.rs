@@ -1,8 +1,8 @@
 //! 履歴更新の反映と、表示対象・プロジェクト・トラックの抽出。
 
 use super::{
-    Context, Delta, DetailTab, HashMap, HashSet, MIN_BLOCK, Prefs, Project, Rireki, Row, Source,
-    SourceFilter, Track, TrackIndex, base_name, is_live, lane_flags, prefs, track_index,
+    Context, Delta, DetailTab, HashMap, HashSet, MIN_BLOCK, Prefs, Rireki, Row, Source,
+    Track, TrackIndex, base_name, is_live, lane_flags, prefs, track_index,
     view_index,
 };
 
@@ -121,32 +121,10 @@ impl Rireki {
 
     pub(super) fn rebuild_order(&mut self) {
         let started = self.profile.as_ref().map(|_| std::time::Instant::now());
-        let scope: Vec<usize> = (0..self.store.sessions.len())
-            .filter(|&i| self.store.visible(i))
-            .filter(|&i| match (self.source, self.store.sessions[i].source) {
-                (SourceFilter::All, _) => true,
-                (SourceFilter::Claude, s) => s == Source::Claude,
-                (SourceFilter::Codex, s) => s == Source::Codex,
-            })
-            .collect();
-        let mut order: Vec<usize> = scope
-            .iter()
-            .copied()
-            .filter(|&i| {
-                self.focus
-                    .as_ref()
-                    .is_none_or(|f| *f == self.store.sessions[i].cwd)
-            })
-            .collect();
-        // 新しいセッションほど上に並べる
-        order.sort_by(|&a, &b| {
-            self.store.sessions[b]
-                .start
-                .total_cmp(&self.store.sessions[a].start)
-        });
-        self.projects = self.projects_of(&scope);
-        self.scope = scope;
-        self.order = order;
+        let catalog = rireki::catalog::Catalog::new(&self.store, self.source, self.focus.as_deref());
+        self.projects = catalog.projects;
+        self.scope = catalog.scope;
+        self.order = catalog.order;
         self.order_extent.set(None);
         self.exec_parent = self.find_exec_parents();
         self.track_index = TrackIndex::new(&self.order, &self.exec_parent);
@@ -159,42 +137,6 @@ impl Rireki {
                 "visible":self.order.len(), "links":self.exec_parent.len()})
             );
         }
-    }
-
-    /// セッションをプロジェクトごとにまとめる（最近作業した順）
-    pub(super) fn projects_of(&self, scope: &[usize]) -> Vec<Project> {
-        let mut by: HashMap<&str, (usize, f64)> = HashMap::new();
-        for &si in scope {
-            let s = &self.store.sessions[si];
-            let e = by.entry(s.cwd.as_str()).or_insert((0, f64::NEG_INFINITY));
-            e.0 += 1;
-            e.1 = e.1.max(s.end);
-        }
-        let mut names: HashMap<&str, usize> = HashMap::new();
-        for cwd in by.keys() {
-            *names.entry(base_name(cwd)).or_default() += 1;
-        }
-        let mut out: Vec<Project> = by
-            .iter()
-            .map(|(&cwd, &(sessions, last))| {
-                let base = base_name(cwd);
-                let name = if names[base] > 1 {
-                    // 同じ名前のディレクトリが複数あるときは親ディレクトリで見分ける
-                    let parent = rireki::paths::parent_name(cwd);
-                    format!("{base} — {parent}")
-                } else {
-                    base.to_string()
-                };
-                Project {
-                    cwd: cwd.to_string(),
-                    name,
-                    sessions,
-                    last,
-                }
-            })
-            .collect();
-        out.sort_by(|a, b| b.last.total_cmp(&a.last));
-        out
     }
 
     pub(super) fn find_live_sources(&self) -> (bool, bool) {

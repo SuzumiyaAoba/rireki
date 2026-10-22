@@ -3,7 +3,7 @@
 use super::{
     Arc, AtomicU64, Bounds, Cell, Context, DetailList, DetailLoader, DetailView, FileList, HashSet,
     Local, MAX_SIDEBAR_W, MIN_DETAIL_W, MIN_PANE_W, MIN_SIDEBAR_W, Mode, Mutex, POLL, Point, Rc,
-    RefCell, Rireki, ScrollHandle, SidebarView, Snapshot, TextInput, ViewLoader, Window, calendar,
+    RefCell, Rireki, ScrollHandle, SidebarView, Snapshot, TextInput, History, Window, calendar,
     cost, detail, index, now, point, prefs, profile, px, sidebar, statistics,
 };
 use gpui::prelude::*;
@@ -49,11 +49,11 @@ impl Rireki {
             let bg = cx.background_executor().clone();
             // 1. 索引 DB から安定した履歴を読む
             let indexer = bg
-                .spawn(async { Arc::new(Mutex::new(ViewLoader::open())) })
+                .spawn(async { Arc::new(Mutex::new(History::open())) })
                 .await;
             let ix = indexer.clone();
             let stable = bg
-                .spawn(async move { ix.lock().unwrap().load_stable() })
+                .spawn(async move { ix.lock().unwrap().load_cached().delta })
                 .await;
             let alive = this
                 .update(cx, |app, cx| {
@@ -93,6 +93,8 @@ impl Rireki {
                         "ms":planned.elapsed().as_secs_f64()*1000.0})
                     );
                 }
+                // GUI は一つのバッチを反映してから次を背景へ渡す。
+                // スレッドを受信待ちで占有せず、画面終了時には未処理分を破棄する。
                 let mut done = 0;
                 let mut tasks = tasks.into_iter().peekable();
                 while tasks.peek().is_some() {

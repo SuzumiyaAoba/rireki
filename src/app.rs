@@ -50,12 +50,14 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use crate::index::{self, Delta, ViewLoader};
+use crate::index;
+use rireki::history::{Delta, History, POLL_INTERVAL as POLL};
 use crate::input::TextInput;
 use crate::layout::Granularity;
 use crate::model::{Session, Snapshot, Source};
 use crate::prefs::{self, DetailTab, Mode, Prefs, SourceFilter};
 use crate::theme::{self, c};
+use rireki::catalog::Project;
 
 use detail::{DetailList, DetailView, FileList, RowFilter};
 use crate::detail::{DetailCache, DetailLoader, Selection, EVENT_LIMIT as DETAIL_MAX};
@@ -99,8 +101,6 @@ const HANDLE_W: f32 = 6.0;
 const ROW_H: f32 = 24.0;
 const HOUR_LABEL_W: f32 = 52.0;
 const MIN_BLOCK: f32 = 3.0;
-/// リアルタイムファイルの変更を確認する間隔
-const POLL: std::time::Duration = std::time::Duration::from_secs(3);
 
 struct Track {
     session: usize,
@@ -178,16 +178,6 @@ enum Popover {
     Range,
     /// localhost の MCP サーバーを起動・停止する
     Mcp,
-}
-
-/// サイドバーに並べるプロジェクト（作業ディレクトリ）
-struct Project {
-    cwd: String,
-    /// 表示名。同じ名前のディレクトリが複数あれば親ディレクトリを添える
-    name: String,
-    sessions: usize,
-    /// 最後に作業した時刻
-    last: f64,
 }
 
 /// ミニマップのキャッシュのキー (期間の始め, 終わり, 本数, data_gen)

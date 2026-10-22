@@ -1,40 +1,69 @@
 #![cfg_attr(
-    all(target_os = "windows", not(debug_assertions), not(test)),
+    all(
+        feature = "gui",
+        target_os = "windows",
+        not(debug_assertions),
+        not(test)
+    ),
     windows_subsystem = "windows"
 )]
 
+#[cfg(feature = "gui")]
 mod app;
 mod cli;
+#[cfg(feature = "gui")]
 mod icons;
+#[cfg(feature = "gui")]
 mod input;
 mod perf;
+#[cfg(feature = "gui")]
 mod pinch;
+#[cfg(feature = "gui")]
 mod platform;
+#[cfg(feature = "gui")]
 mod prefs;
+#[cfg(feature = "gui")]
 mod theme;
 
+#[cfg(feature = "gui")]
+use rireki::{cost_timeline, jsmock, mcp, patch, pricing};
 use rireki::{
-    cost_timeline, db, detail, histogram, index, jsmock, layout, loader, mcp, model, patch,
-    pricing, search, statistics, time, view_index,
+    db, detail, histogram, index, layout, loader, model, search, statistics, time, view_index,
 };
 
+#[cfg(feature = "gui")]
 use gpui::{
     App, Application, Bounds, Focusable, TitlebarOptions, WindowBounds, WindowOptions, point,
     prelude::*, px, size,
 };
 
+#[cfg(feature = "gui")]
 static PROCESS_STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 fn main() {
+    #[cfg(feature = "gui")]
     PROCESS_STARTED.set(std::time::Instant::now()).unwrap();
     let args: Vec<_> = std::env::args().collect();
-    #[cfg(target_os = "windows")]
+    #[cfg(all(feature = "gui", target_os = "windows"))]
     if args.len() > 1 {
         platform::attach_parent_console();
     }
     if cli::run(&args) {
         return;
     }
+    #[cfg(feature = "gui")]
+    run_gui(&args);
+    #[cfg(not(feature = "gui"))]
+    {
+        eprintln!(
+            "このバイナリには GUI が含まれていません。--stats または --help を指定してください。GUI を使うには gui feature を有効にしてビルドしてください。"
+        );
+        std::process::exit(1);
+    }
+}
+
+#[cfg(feature = "gui")]
+fn run_gui(args: &[String]) {
     let profile_ui = args.iter().any(|a| a == "--profile-ui");
     if args.iter().any(|a| {
         matches!(

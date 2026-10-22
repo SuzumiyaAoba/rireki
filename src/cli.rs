@@ -1,11 +1,13 @@
 //! ウィンドウを開かずに動く計測・統計コマンドの振り分け。
 
-use crate::{db, index, model, perf};
+use crate::{db, model, perf};
+use rireki::history::History;
 use std::path::Path;
 
 /// CLI コマンドを実行したときは true を返す。画面計測は GUI の起動側で扱う。
 pub(super) fn run(args: &[String]) -> bool {
     match args.get(1).map(String::as_str) {
+        Some("--help" | "-h") => print_help(),
         Some("--bench-parse") => perf::parse(required_path(args, 2, "manifest を指定してください")),
         Some("--bench-search") => {
             perf::search(required_path(args, 2, "索引 DB を指定してください"))
@@ -43,6 +45,33 @@ pub(super) fn run(args: &[String]) -> bool {
     true
 }
 
+fn print_help() {
+    println!(
+        "rireki — セッション履歴の閲覧・集計\n\n\
+使い方: rireki [コマンド]\n\n\
+  --help, -h                   このヘルプを表示\n\
+  --stats                      履歴を取り込み、統計を表示\n\
+  --bench [索引DB]             読み込み・検索・集計を計測\n\
+  --bench-parse <manifest>      ログ解析を計測\n\
+  --bench-search <索引DB>       検索を計測\n\
+  --bench-db <索引DB>           索引DBの読み込みを計測\n\
+  --bench-details <索引DB> <本文DB>  本文の読み込みを計測\n\
+  --bench-summary <索引DB>      本文の集計を計測\n\
+  --bench-range <索引DB>        表示範囲の集計を計測\n\
+  --bench-statistics <索引DB>   統計の集計を計測\n\
+  --bench-discover [Claudeルート Codexルート]  ログ探索を計測\n\
+  --bench-view [索引DB]         表示用の索引を計測\n\
+  --bench-ingest <manifest>     ログの取り込みを計測\n\
+  --verify-logs                 ログの整合性を検証"
+    );
+    #[cfg(target_os = "macos")]
+    println!("  --bench-db-memory <索引DB>    索引DBのメモリー使用量を計測");
+    #[cfg(feature = "gui")]
+    println!("\nコマンドなしで GUI を起動します。画面計測には --profile-ui を指定します。");
+    #[cfg(not(feature = "gui"))]
+    println!("\nGUI を含まないビルドです。GUI を使うには gui feature を有効にしてください。");
+}
+
 fn required_path<'a>(args: &'a [String], index: usize, message: &str) -> &'a Path {
     Path::new(args.get(index).expect(message))
 }
@@ -50,18 +79,16 @@ fn required_path<'a>(args: &'a [String], index: usize, message: &str) -> &'a Pat
 /// GUI を起動せずに、索引 DB の読み込みと差分取り込みを行って結果を表示する
 fn print_stats() {
     let t = std::time::Instant::now();
-    let mut ix = index::Indexer::open();
-    let mut store = model::Store::default();
-    let stable = ix.load_stable();
-    let n_stable = stable.len();
-    store.replace(stable.into_iter().map(|u| (u.origin, u.items)));
+    let mut history = History::open();
+    let cached = history.load_cached();
+    let n_stable = cached.files;
+    drop(cached);
     let t_db = t.elapsed();
-    let tasks = ix.plan();
+    let tasks = history.plan();
     let n_live = tasks.iter().filter(|t| t.live).count();
     let n_tasks = tasks.len();
-    for chunk in tasks.chunks(index::CHUNK) {
-        store.replace(ix.process(chunk).into_iter().map(|u| (u.origin, u.items)));
-    }
+    for _ in history.ingest(tasks) {}
+    let store = history.snapshot();
     let visible: Vec<_> = (0..store.sessions.len())
         .filter(|&i| store.visible(i))
         .map(|i| &store.sessions[i])

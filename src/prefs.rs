@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::layout::Granularity;
+pub use rireki::catalog::SourceFilter;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -14,15 +15,6 @@ pub enum Mode {
     /// 月（日ごとのセッション一覧）
     Month,
     Timeline,
-}
-
-/// 表示するセッションの読み込み元
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceFilter {
-    All,
-    Claude,
-    Codex,
 }
 
 /// 詳細パネルのタブ
