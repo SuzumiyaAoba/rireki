@@ -15,7 +15,8 @@ The app's interface is currently in Japanese.
 - **File history:** Review edited files, change summaries, and diffs for individual edits.
 - **Usage and analysis:** Explore token usage, estimated API costs, tool activity, and trends over 7 days, 30 days, 90 days, or all history.
 - **Live updates:** Refresh active logs every three seconds and index completed logs locally for faster startup.
-- **Local MCP server:** Start and stop a read-only Streamable HTTP server from the GUI so coding agents can search, retrieve, and analyze the same history.
+- **Terminal UI:** Use timelines, calendars, statistics, event analysis, file diffs, replay, and MCP from an interactive terminal with `--tui`.
+- **Local MCP server:** Start and stop a read-only Streamable HTTP server from either interface so coding agents can search, retrieve, and analyze the same history.
 
 ## Build and run
 
@@ -117,7 +118,7 @@ The release contains these assets, where `<tag>` is the version tag:
 - `rireki-<tag>-aarch64-apple-darwin.zip` and `rireki-<tag>-x86_64-apple-darwin.zip`: the icon-equipped `rireki.app` bundle for each architecture.
 - `rireki-<tag>-aarch64-apple-darwin.dmg` and `rireki-<tag>-x86_64-apple-darwin.dmg`: disk images containing `rireki.app` and a link to `/Applications`. Open the DMG and drag the app into Applications to install it.
 - `rireki-<tag>-x86_64-unknown-linux-gnu.tar.gz`: the Linux executable, built on Ubuntu 22.04. Extract it and run `./rireki` in an X11 or Wayland desktop session. Install the runtime libraries listed below when they are not already provided by your desktop.
-- `rireki-<tag>-x86_64-pc-windows-msvc.zip`: the Windows executable. Extract it and run `rireki.exe`.
+- `rireki-<tag>-x86_64-pc-windows-msvc.zip`: the Windows executables. Extract it and run `rireki.exe` for the GUI or `rireki-tui.exe` from a terminal for the TUI.
 - `SHA256SUMS`: SHA-256 checksums for all release assets.
 
 Linux releases need glibc 2.35 or newer, a Vulkan driver, and the following runtime packages on Ubuntu / Debian:
@@ -158,6 +159,8 @@ for the URL and client configuration. The default endpoint is
 `http://127.0.0.1:47821/mcp`; you can change the port before starting if it is
 already in use. Use **サーバーを停止** (Stop server) to stop it. Closing the panel
 keeps the server running; exiting rireki stops it. Startup is always manual.
+In the TUI, press `F7`, then `Enter` to start or stop the server; `e` edits the
+port, `y` copies the client configuration, and `u` copies the URL.
 
 For a client that accepts `mcpServers` configuration:
 
@@ -216,7 +219,82 @@ loaded history while it is running. It provides no log mutation or command
 execution tools. Historical message bodies are untrusted data, and the server
 instructs agents not to follow instructions found in them.
 
-## Keyboard shortcuts
+## Terminal UI
+
+Start the terminal interface from an interactive terminal:
+
+```sh
+cargo run --release -- --tui
+```
+
+On Windows, run the console executable `rireki-tui.exe` included in the release ZIP. From source, use `cargo run --release --bin rireki-tui`. It takes the TUI options directly, without `--tui`. The GUI release executable `rireki.exe` does not support interactive TUI mode because Windows shells do not wait for GUI executables to exit.
+
+To build and run it without GPUI or GPU/windowing dependencies:
+
+```sh
+cargo run --release --no-default-features --features tui -- --tui
+```
+
+The default build includes both interfaces and opens the GUI when run without arguments. A TUI-only build opens the TUI without arguments. `--stats` and the other CLI commands remain available in all builds.
+
+The terminal screens use the same history, search, detail, analysis, pricing, and statistics core as the GUI. The main screens are:
+
+| Key | Screen | Features |
+| --- | --- | --- |
+| `F1` | History | Session and event search, source/project filters, all subagent lanes, event ranges, and detail panels |
+| `F2` | Timeline | Event lanes or directory groups, automatic/tool/turn/call grouping, zoom, date ranges, activity minimap, and API cost buckets |
+| `F3` / `F4` / `F5` | Day / week / month | Activity intervals, session counts, time spent, date navigation, and selection into the timeline or details |
+| `F6` | Statistics | 7/30/90 days or all history; tokens, estimated costs, turns, sessions, tools, previous-period comparisons, trends, time of day, sources, models, projects, and tools |
+| `F7` | MCP | Start/stop the local server, edit its port, and copy connection details |
+| `F8` | Settings | Pane visibility and proportions, source/project filters, active sessions, and display defaults |
+
+The detail panel has six tabs: session overview (`1`), conversation history (`2`), changed files and diffs (`3`), event analysis (`4`), replay (`5`), and event body (`6`). It includes token/cache/reasoning counts, model costs, tool outcomes and durations, parent/child agent navigation, resume-command copying, and the location of the source log. Analysis supports kind, outcome, name, text, and sort filters, plus JSON copying and export. Replay supports pause, speed changes, rewind, and following newly revealed events.
+
+Graphs use terminal cells, bars, sparklines, and tables. The statistics time-of-day view is a weekday/hour heatmap with exact cell and aggregate values; the GUI's circular chart is represented by this grid. Keyboard selection replaces hovering and dragging. On narrow terminals, the focused history pane fills the available space; statistics tables can scroll horizontally.
+
+| Context | Key | Action |
+| --- | --- | --- |
+| All screens | `s`, `p`, `P` | Cycle source, cycle project, or search and select a project |
+| All screens | `Ctrl+F`, `Ctrl+R` | Search history from any screen or refresh logs |
+| All screens | `Ctrl+L`, `B` | Toggle active-session filtering or the history sidebar |
+| All screens | `Shift+Enter` | Toggle full-screen details |
+| All screens | `Alt+[` / `Alt+]` | Go back / forward through viewed selections |
+| All screens | `?`, `q` / `Ctrl+C` | Show full keyboard help or quit; `q` remains text during input |
+| History | `Tab` / `Shift+Tab` | Move between sessions, events, and details |
+| Lists and details | Arrows / `j` / `k`, `PageUp` / `PageDown`, `Home` / `End` | Select, scroll, or move to an edge |
+| History | `/`, `Esc`, `r` | Search, cancel/clear search or return, refresh logs |
+| History events | `v`, `a` / `I` | Mark a range's start/end in one lane, or open the entire lane |
+| Details | `1`–`6`, `Enter` | Switch detail tab or open the selected event, lane, or file |
+| Details | `t`, `f`, `n`, `o`, `/`, `0` | Filter kind, outcome, name, sort order, or text; reset filters |
+| Details | `[` / `]`, `b`, `d`, `u` | Switch lane, open the parent call, child agent, or preceding user instruction |
+| Details | `x`, `z`, `l`, `,` / `.` | Expand text/diffs, toggle raw display, line numbers, or event pages |
+| Details | `y` / `Y`, `e`, `c`, `C`, `g` | Copy input/selected content or output, export analysis JSON, copy resume command or session ID, show the log in the file manager |
+| Replay | `Space`, `+` / `-`, `R` | Play/pause, change speed, rewind |
+| Timeline/calendar | `h` / `l`, `+` / `-`, `t`, `L`, `0` | Move period, zoom, show today, latest activity, or all history |
+| Timeline/calendar | `g`, `Alt+1`–`Alt+6` | Enter a date/range or use a recent-period preset |
+| Timeline/calendar | `c`, `o`, `a`, `v`, `Space` | Switch event/cost view, lane/directory grouping, event granularity, visible-range filtering, or project collapse |
+| Timeline/calendar | `<` / `>`, `z`, `Enter` | Select a block, zoom to it, or open details |
+| Calendar | `u`, `Enter` | Toggle project active-time totals and return to the selected project’s activity |
+| Statistics | `[` / `]`, `m` / `M`, `Tab` / `Shift+Tab` | Change period, metric, or statistics tab |
+| Statistics | `Enter` | Open the selected trend period, filter a project, or inspect a cost bucket's API call |
+| Statistics | `h` / `l`, `Alt+Left` / `Alt+Right` | Scroll tables horizontally; in hour/cost views plain arrows select cells |
+| Statistics API costs | `+` / `-`, `H` / `L`, `0`, `d`, `v`, `Space` | Zoom, move time range, reset range, aggregate directories, filter visible sessions, expand/collapse |
+
+The date input accepts `YYYY-MM-DD`, inclusive ranges such as `2026-10-01..2026-10-22`, `1h`, `6h`, `24h`, `7d`, `30d`, `90d`, or `all`. Search matches session titles, directories, and IDs, and event names and summaries. Analysis text filters also match model names. History refreshes every three seconds in the background. Detail bodies retain the core's 6,000-character limit per input/output; metadata analysis and file history cover the full selected range, and individual events can be opened beyond the range detail cache's first 300 bodies.
+
+Display settings are saved separately from GUI preferences, in `tui.json` under the application's configuration directory (`RIREKI_CONFIG_DIR` overrides it). Both interfaces use the same model prices from `prices.json`. Clipboard actions use the system clipboard where available, with an OSC 52 terminal fallback. Analysis JSON export asks for a filename and does not overwrite an existing file. These actions copy or save recorded data; copying a resume command does not execute it.
+
+Use `--tui --help` for the terminal options. To browse separate log directories, specify both roots:
+
+```sh
+cargo run --no-default-features --features tui -- --tui \
+  --claude-root /path/to/claude/projects \
+  --codex-root /path/to/codex/sessions
+```
+
+Explicit roots are loaded in memory without reading or updating the default index or TUI preferences. Terminal mode requires interactive standard input and output; use `--stats` for redirected output. Exiting restores the original terminal screen and input mode, and stops the MCP server if one was started.
+
+## GUI keyboard shortcuts
 
 `Mod` means **Cmd on macOS** and **Ctrl on Linux / Windows**. The app's hints and shortcut help show the keys for the current OS.
 
@@ -287,17 +365,18 @@ cargo run --no-default-features -- --help
 cargo run --no-default-features -- --stats
 ```
 
-This build needs Rust and the native tools used by the core dependencies, but no GPUI windowing or GPU libraries. Running it without a command prints an error; the default build still opens the GUI. A TUI is not yet implemented.
+This build needs Rust and the native tools used by the core dependencies, but no GPUI windowing or GPU libraries. Running it without a command prints an error; enable `--features tui` to include the terminal interface.
 
 To test the core, CLI, and integration workflows without the GUI dependencies:
 
 ```sh
 cargo test --locked --no-default-features
+cargo test --locked --no-default-features --features tui --all-targets
 ```
 
 ### Shared frontend APIs
 
-Use this package as a library with `default-features = false` when adding a TUI or another frontend. `history::History` owns the index and store: call `load_cached()` once, then `plan()` and `ingest(tasks)` to process changes. Each batch returns progress, a shared `model::Snapshot`, and the touched session indices. Dropping the ingestion iterator stops before the next batch; a later `plan()` rediscovers unprocessed files. `plan_in()` accepts explicit Claude and Codex log roots, and `History::with_indexer(Indexer::in_memory(true))` supports workflows without a persistent index.
+Use this package as a library with `default-features = false` when adding another frontend. `history::History` owns the index and store: call `load_cached()` once, then `plan()` and `ingest(tasks)` to process changes. Each batch returns progress, a shared `model::Snapshot`, and the touched session indices. Dropping the ingestion iterator stops before the next batch; a later `plan()` rediscovers unprocessed files. `plan_in()` accepts explicit Claude and Codex log roots, and `History::with_indexer(Indexer::in_memory(true))` supports workflows without a persistent index.
 
 `catalog::Catalog::new(&snapshot, source, cwd)` supplies the session order and project list. Pass the same snapshot and its indices to `search`, `detail::DetailLoader`, `statistics`, and `mcp`. Keep a snapshot alive while displaying its results so live updates do not mix session versions. The existing `index::ViewLoader` name remains available as an alias for `History`.
 

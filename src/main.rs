@@ -24,7 +24,11 @@ mod platform;
 mod prefs;
 #[cfg(feature = "gui")]
 mod theme;
+#[cfg(feature = "tui")]
+mod tui;
 
+#[cfg(feature = "tui")]
+use rireki::{catalog, history};
 #[cfg(feature = "gui")]
 use rireki::{cost_timeline, jsmock, mcp, patch, pricing};
 use rireki::{
@@ -48,15 +52,53 @@ fn main() {
     if args.len() > 1 {
         platform::attach_parent_console();
     }
+    if args.get(1).is_some_and(|arg| arg == "--tui") {
+        run_tui(&args[2..]);
+        return;
+    }
     if cli::run(&args) {
         return;
     }
     #[cfg(feature = "gui")]
     run_gui(&args);
-    #[cfg(not(feature = "gui"))]
+    #[cfg(all(not(feature = "gui"), feature = "tui"))]
+    run_tui(&args[1..]);
+    #[cfg(not(any(feature = "gui", feature = "tui")))]
     {
         eprintln!(
-            "このバイナリには GUI が含まれていません。--stats または --help を指定してください。GUI を使うには gui feature を有効にしてビルドしてください。"
+            "このバイナリには GUI が含まれていません。--stats または --help を指定してください。GUI には gui feature、TUI には tui feature を有効にしてビルドしてください。"
+        );
+        std::process::exit(1);
+    }
+}
+
+fn run_tui(args: &[String]) {
+    #[cfg(all(
+        feature = "gui",
+        feature = "tui",
+        target_os = "windows",
+        not(debug_assertions),
+        not(test)
+    ))]
+    if !args
+        .first()
+        .is_some_and(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        eprintln!(
+            "Windows の端末では rireki-tui.exe を使ってください（--tui は不要です）。GUI 用の rireki.exe は呼び出したシェルが終了を待ちません。"
+        );
+        std::process::exit(1);
+    }
+    #[cfg(feature = "tui")]
+    if let Err(error) = tui::run(args) {
+        eprintln!("TUI を起動できません: {error}");
+        std::process::exit(1);
+    }
+    #[cfg(not(feature = "tui"))]
+    {
+        let _ = args;
+        eprintln!(
+            "このバイナリには TUI が含まれていません。tui feature を有効にしてビルドしてください（cargo build --no-default-features --features tui）。"
         );
         std::process::exit(1);
     }

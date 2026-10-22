@@ -50,6 +50,7 @@ fn print_help() {
         "rireki — セッション履歴の閲覧・集計\n\n\
 使い方: rireki [コマンド]\n\n\
   --help, -h                   このヘルプを表示\n\
+  --tui                        ターミナルで履歴を閲覧（詳細は --tui --help）\n\
   --stats                      履歴を取り込み、統計を表示\n\
   --bench [索引DB]             読み込み・検索・集計を計測\n\
   --bench-parse <manifest>      ログ解析を計測\n\
@@ -68,8 +69,17 @@ fn print_help() {
     println!("  --bench-db-memory <索引DB>    索引DBのメモリー使用量を計測");
     #[cfg(feature = "gui")]
     println!("\nコマンドなしで GUI を起動します。画面計測には --profile-ui を指定します。");
-    #[cfg(not(feature = "gui"))]
-    println!("\nGUI を含まないビルドです。GUI を使うには gui feature を有効にしてください。");
+    #[cfg(all(not(feature = "gui"), feature = "tui"))]
+    println!(
+        "\nコマンドなしで TUI を起動します。GUI を使うには gui feature を有効にしてください。"
+    );
+    #[cfg(not(any(feature = "gui", feature = "tui")))]
+    println!("\nGUI / TUI を含まないビルドです。--stats などのコマンドを指定してください。");
+    #[cfg(not(feature = "tui"))]
+    println!("このビルドに TUI は含まれていません。tui feature を有効にしてください。");
+    println!("GUI 依存なしで TUI をビルド: cargo build --no-default-features --features tui");
+    #[cfg(all(feature = "tui", target_os = "windows"))]
+    println!("Windows の端末では rireki-tui.exe を実行してください（--tui は不要です）。");
 }
 
 fn required_path<'a>(args: &'a [String], index: usize, message: &str) -> &'a Path {

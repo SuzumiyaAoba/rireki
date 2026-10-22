@@ -41,8 +41,14 @@ cargo run --no-default-features -- --stats  # GUI の依存なしで統計コマ
 
 ## アーキテクチャ
 
-`src/lib.rs` が GUI に依存しないコアの入口。`history` / `catalog` / `model` / `loader` / `db` / `index` / `search` / `pricing` / `jsmock` / `layout` に加え、`statistics` / `detail` / `patch` / `histogram` / `view_index` / `time` / `mcp` を公開する。`src/cli.rs` が画面を開かない計測・統計コマンドを振り分け、`src/main.rs` は feature に応じて GUI を起動する。`main.rs` と `app/` はこのライブラリを参照し、GPUI の状態・入力・描画・背景タスクの起動と結果反映を管理する。コアから `app` / `theme` / `icons` / GPUI を参照しない。通常起動は既定の `gui` feature、コア・CLI の利用と検証は `--no-default-features`。TUI の画面と入力は未実装。
+`src/lib.rs` が GUI に依存しないコアの入口。`history` / `catalog` / `model` / `loader` / `db` / `index` / `search` / `pricing` / `jsmock` / `layout` に加え、`statistics` / `detail` / `patch` / `histogram` / `view_index` / `time` / `mcp` を公開する。`src/cli.rs` が画面を開かない計測・統計コマンドを振り分け、`src/main.rs` はコマンドと feature に応じて GUI または TUI を起動する。`main.rs` と `app/` はこのライブラリを参照し、GPUI の状態・入力・描画・背景タスクの起動と結果反映を管理する。コアから `app` / `theme` / `icons` / GPUI を参照しない。既定の feature は `gui` と `tui`。無引数で GUI、`--tui` で端末 UI を起動する。コア・CLI の利用と検証は `--no-default-features`、TUI 単独構成は `--no-default-features --features tui`（無引数でも端末 UI）。`src/tui_main.rs` はコンソール専用の `rireki-tui` バイナリで、Windows ではこちらを使う。
 
+- **tui.rs / tui/** — Ratatui / Crossterm による端末フロントエンド。F1〜F8 で履歴・タイムライン・日/週/月カレンダー・統計・MCP・設定を切り替える。`state.rs` はセッションとイベントの選択・検索・読み込み元/プロジェクト/進行中の絞り込み、`worker.rs` は History による取り込みと検索の背景実行、`view.rs` は履歴ペインの描画を担う。
+  - `workspace.rs` は画面間の選択と閲覧履歴、詳細の範囲選択、要求世代、設定の保存・復元、MCP 操作、クリップボード/保存ダイアログを統合する。`operations.rs` は DetailLoader、分析、統計、API 料金、MCP を背景で処理し、種類ごとに最新要求と結果だけを保持する。古い計算結果は世代で破棄する。
+  - `temporal.rs` はイベント/API 料金の時間軸、レーン/ディレクトリ集約、日/週/月カレンダー、稼働時間、期間入力、ズーム、ミニマップと詳細への移動を担当する。イベント集約・親子関係・料金は共通コアを利用する。
+  - `metrics.rs` は期間・指標を切り替える統計とAPI料金の表示モデル。`statistics::Cache` / `cost_timeline::Cache` を背景で呼び、トークン内訳・前期比・稼働日平均・読み込み元/モデル/プロジェクト/ツール・推移・曜日×時刻の表と期間の詳細移動を提供する。グラフは端末の棒・濃淡・表に置き換え、数値はセル選択や横スクロールで読める。
+  - `inspect.rs` は概要・履歴・変更ファイル・分析・再生・本文の詳細タブと操作、`inspect/render.rs` は表示内容、`inspect/rich.rs` は Markdown・コード・差分・ANSI・Unicode 折り返しを担当する。分析は全選択範囲、本文は共通コアの上限内で読み、範囲の300件以降も個別イベントを開ける。`effects.rs` はコピー・JSON保存・ログの場所の表示を行い、ログ由来の文字列をシェルとして実行しない。
+  - `terminal.rs` は raw mode・代替画面・貼り付けモードの復元を担う。TUI の設定はGUIとは別の `tui.json`（`RIREKI_CONFIG_DIR` 対応）へ保存する。明示ログルートはメモリー上で扱い、既定索引と通常のTUI設定を読み書きしない。MCPの公開データは絞り込み前の履歴全体で、起動は手動、終了時に停止する。
 - **history.rs / catalog.rs** — `History` が索引・Store を所有し、キャッシュ読み込みと差分取り込みを行う。`ingest` は64ファイルごとに進捗と Snapshot を返し、破棄すると未処理分を次回の探索へ残す。GUI は一つの `process` を背景で実行して反映を待つ。実行器・タイマー・選択・描画は各フロントエンドの責務。`Catalog` は source で絞る scope、cwd も絞る order、scope ごとのプロジェクトを返す。`SourceFilter` の保存形式は従来どおり。`index::ViewLoader` は `History` の互換名。
 
 - **statistics.rs / statistics/cache.rs** — 統計の期間（7 / 30 / 90 日・全期間）・結果型と、セッションの版を弱参照で識別する集計キャッシュ。直前の同じ長さの期間の合計、読み込み元ごとの列（全期間は 92 日を超えると週、371 日を超えると月ごと）、曜日 × 時刻のマスと曜日・時ごとの合計（セッションは重ねずに数える）、ツール名ごとの呼び出しと失敗も集める。日付と時は各日の午前 0 時の表とレーン内のカーソルで求め、境界の直前が前日・境界が当日にならない日（曖昧な午前 0 時など）があればイベントごとに変換する。テストは全イベントを日時変換する参照実装と比べる。GUI は同じキャッシュを保持し、背景で実行する。集計キャッシュの詳細は `docs/perf.md`。

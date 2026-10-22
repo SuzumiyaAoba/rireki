@@ -125,7 +125,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path target/release/rireki.exe -DestinationPath "dist/rireki-$env:RELEASE_TAG-$env:RELEASE_TARGET.zip"
+          Compress-Archive -Path target/release/rireki.exe, target/release/rireki-tui.exe -DestinationPath "dist/rireki-$env:RELEASE_TAG-$env:RELEASE_TARGET.zip"
 
       - name: Upload release archives
         uses: actions/upload-artifact@v7
