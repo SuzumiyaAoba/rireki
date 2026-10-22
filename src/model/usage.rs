@@ -148,14 +148,20 @@ impl UsageSum {
         out
     }
 
+    /// キャッシュを含む入力全体。
+    #[inline]
+    pub fn input_total(&self) -> u64 {
+        self.input + self.cache_read + self.cache_write
+    }
+
     #[inline]
     pub fn total(&self) -> u64 {
-        self.input + self.cache_read + self.cache_write + self.output
+        self.input_total() + self.output
     }
 
     /// 入力トークン数で重み付けしたキャッシュヒット率。
     pub fn cache_hit_rate(&self) -> Option<f64> {
-        let input = self.input + self.cache_read + self.cache_write;
+        let input = self.input_total();
         (input > 0).then(|| self.cache_read as f64 / input as f64)
     }
 }

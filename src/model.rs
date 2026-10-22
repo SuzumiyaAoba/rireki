@@ -1,12 +1,15 @@
 //! GUI と保存形式に依存しない履歴モデル。公開型はこのモジュールから再公開する。
 
 mod event;
+mod format;
 mod hashing;
 mod session;
 mod store;
 mod usage;
 
 pub use event::{Event, Kind, Source, Stats, Status, pending_text_bytes};
+pub use format::{one_line, truncate};
+pub(crate) use format::clip;
 pub use hashing::SessionIndexHasher;
 pub(crate) use hashing::mix_index;
 pub use session::{Lane, Session};
@@ -16,44 +19,6 @@ pub use crate::text::{EventText, TextRef};
 
 #[cfg(test)]
 use std::sync::Arc;
-
-pub fn truncate(s: &str, max: usize) -> String {
-    let Some((end, _)) = s.char_indices().nth(max) else {
-        return s.to_string();
-    };
-    let mut out = String::with_capacity(end + '…'.len_utf8());
-    out.push_str(&s[..end]);
-    out.push('…');
-    out
-}
-
-pub fn one_line(s: &str, max: usize) -> String {
-    let mut out = String::with_capacity(s.len().min(max.saturating_mul(4).saturating_add(3)));
-    let mut count = 0;
-    let mut space = false;
-    for c in s.chars() {
-        if c.is_whitespace() {
-            space |= !out.is_empty();
-            continue;
-        }
-        if space {
-            if count == max {
-                out.push('…');
-                return out;
-            }
-            out.push(' ');
-            count += 1;
-            space = false;
-        }
-        if count == max {
-            out.push('…');
-            return out;
-        }
-        out.push(c);
-        count += 1;
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {

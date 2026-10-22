@@ -2,12 +2,12 @@
 
 use std::cell::RefCell;
 
-use gpui::{AnyElement, ClickEvent, Context, ListAlignment, ListOffset, ListState, Window, div, list, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, ClipboardItem, Context, Div, ListAlignment, ListOffset, ListState, Stateful, Window, div, list, prelude::*, px};
 
-use super::{Rireki, RowFilter, Selection, badge, cache_hit_stat, fmt_dur, fmt_n, is_live, label, local, stat, usage_cost_label};
-use crate::app::widgets::Marquee;
+use super::{Rireki, RowFilter, Selection, resume_command, rich, tilde, badge, cache_hit_stat, fmt_dur, fmt_n, is_live, label, local, stat, usage_cost_label};
+use crate::app::widgets::{Marquee, tip};
 use crate::icons::{self, Icon};
-use crate::model::one_line;
+use crate::model::{Source, one_line};
 use crate::theme::{self, c};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -299,6 +299,194 @@ impl Rireki {
                 .child(self.overview_information(sel, cx))
                 .into_any_element(),
         }
+    }
+}
+
+impl Rireki {
+    /// 概要末尾の基本情報と再開・ログの操作。モデルはメインレーンの属性を表示する。
+    pub(super) fn overview_information(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
+        let s = self.detail_session(sel);
+        let lane = &s.lanes[0];
+        let meta = |k: &'static str, v: AnyElement| {
+            div()
+                .flex()
+                .items_start()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(76.0))
+                        .flex_none()
+                        .text_color(c(theme::SUBTLE))
+                        .child(k),
+                )
+                .child(div().flex_1().min_w_0().child(v))
+        };
+        let model = match (lane.model.is_empty(), lane.effort.is_empty()) {
+            (true, true) => None,
+            (false, true) => Some(lane.model.clone()),
+            (true, false) => Some(lane.effort.clone()),
+            (false, false) => Some(format!("{} {}", lane.model, lane.effort)),
+        };
+        let version = (!s.version.is_empty()).then(|| match s.source {
+            Source::Claude => format!("Claude Code {}", s.version),
+            Source::Codex => format!("Codex CLI {}", s.version),
+        });
+        let session = sel.session;
+        let resume = resume_command(s);
+        let resumed = self.copied == Some("copy-resume");
+        let origin = s
+            .lanes
+            .first()
+            .map(|l| l.origin.clone())
+            .unwrap_or_default();
+        let main_n = s.lanes[0].events.len();
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap_1p5()
+            .child(
+                self.action_button(
+                    "resume",
+                    if resumed { Icon::Check } else { Icon::Terminal },
+                    if resumed {
+                        "コピーしました"
+                    } else {
+                        "再開コマンドをコピー"
+                    },
+                )
+                .tooltip(tip(resume.clone(), None))
+                .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(resume.clone()));
+                    t.flash_copied("copy-resume", cx);
+                })),
+            )
+            .when(main_n > 0, |d| {
+                d.child(
+                    self.action_button("all-events", Icon::Layers, "全イベントを一覧")
+                        .tooltip(tip("メインのレーン全体を選ぶ", None))
+                        .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
+                            t.open_lane_filtered(session, 0, None, w, cx)
+                        })),
+                )
+            })
+            .when(!origin.is_empty(), |d| {
+                d.child(
+                    self.action_button("reveal-log", Icon::FolderOpen, "ログを Finder で表示")
+                        .tooltip(tip(origin.clone(), None))
+                        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                            cx.reveal_path(std::path::Path::new(&origin));
+                        })),
+                )
+            });
+        let section = |name: &'static str| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .pt_2()
+                .border_t_1()
+                .border_color(c(theme::BORDER))
+                .child(label(name))
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                section("基本情報").child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .text_xs()
+                        .when_some(model, |d, m| {
+                            d.child(meta("モデル", div().child(m).into_any_element()))
+                        })
+                        .when(!s.branch.is_empty(), |d| {
+                            d.child(meta(
+                                "ブランチ",
+                                div().child(s.branch.clone()).into_any_element(),
+                            ))
+                        })
+                        .child(meta(
+                            "ディレクトリ",
+                            div().child(tilde(&s.cwd)).into_any_element(),
+                        ))
+                        .when(self.expanded.contains("overview-meta"), |d| {
+                            d.child(meta(
+                                "セッション",
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .font_family(rich::MONO)
+                                            .child(s.id.clone()),
+                                    )
+                                    .child(
+                                        self.copy_button("copy-id", s.id.clone(), cx).flex_none(),
+                                    )
+                                    .into_any_element(),
+                            ))
+                        })
+                        .when(self.expanded.contains("overview-meta"), |d| {
+                            d.when_some(version, |d, v| {
+                                d.child(meta("バージョン", div().child(v).into_any_element()))
+                            })
+                        })
+                        .when(s.headless, |d| {
+                            d.child(meta("起動", div().child("非対話").into_any_element()))
+                        }),
+                ),
+            )
+            .child(self.icon_button(
+                "overview-meta-toggle",
+                Some(Icon::ChevronDown),
+                if self.expanded.contains("overview-meta") {
+                    "詳細情報を閉じる"
+                } else {
+                    "ID・バージョンを表示"
+                },
+                false,
+                cx,
+                |t, _, cx| {
+                    if !t.expanded.remove("overview-meta") {
+                        t.expanded.insert("overview-meta");
+                    }
+                    t.overview_list.invalidate_information();
+                    t.detail_changed(cx);
+                },
+            ))
+            .child(actions)
+    }
+
+    fn action_button(&self, id: &'static str, icon: Icon, label: &'static str) -> Stateful<Div> {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(c(theme::BORDER))
+            .bg(c(theme::PANEL))
+            .text_xs()
+            .cursor_pointer()
+            .hover(|s| s.bg(c(theme::HOVER)))
+            .child(icons::icon(
+                icon,
+                if icon == Icon::Check {
+                    theme::OK
+                } else {
+                    theme::MUTED
+                },
+            ))
+            .child(label)
     }
 }
 

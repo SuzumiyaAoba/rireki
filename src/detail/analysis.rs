@@ -162,15 +162,10 @@ impl Analysis {
             {
                 continue;
             }
-            if !words.is_empty() {
-                let name = e.name.to_lowercase();
-                let mut summary = None;
-                let mut model = None;
-                if !words.iter().all(|word| name.contains(word)
-                    || summary.get_or_insert_with(|| e.summary.to_lowercase()).contains(word)
-                    || model.get_or_insert_with(|| e.model.as_deref().unwrap_or("").to_lowercase()).contains(word)) {
-                    continue;
-                }
+            if !crate::search::matches_words(&words, [
+                &e.name, &e.summary, e.model.as_deref().unwrap_or(""),
+            ]) {
+                continue;
             }
             out.indices.push(i);
             if !e.usage.is_empty() {
@@ -184,8 +179,7 @@ impl Analysis {
                     }
                 };
                 out.usage.add_priced(&e.usage, price);
-                out.peak_context = out.peak_context.max(e.usage.input as u64
-                    + e.usage.cache_read as u64 + e.usage.cache_write as u64);
+                out.peak_context = out.peak_context.max(e.usage.input_total());
                 let name = model.unwrap_or("");
                 let index = *models.entry(name).or_insert_with(|| {
                     out.models.push((name.to_owned(), UsageSum::default()));

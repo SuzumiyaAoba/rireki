@@ -1,6 +1,7 @@
 //! イベント行の並列読み取りと、レーン・要約の共有。
 
-use super::{kind_of, read_conn, status_of};
+use super::codec::{kind_of, status_of};
+use super::connection::read_conn;
 use crate::model::{Event, Usage};
 use rusqlite::Connection;
 use std::path::PathBuf;

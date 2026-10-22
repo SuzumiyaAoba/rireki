@@ -4,6 +4,9 @@
 //! 以後は更新されたセッションだけ作り直す）、memchr の memmem で走査する。ASCII の小文字化は
 //! バイト長を変えないので、一致した位置をそのまま元の文字列の位置として使える。
 
+mod metadata;
+pub(crate) use metadata::matches_words;
+
 use memchr::memmem;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::db::Db;
 use crate::detail::analysis::duration;
-use crate::model::{Event, EventText, Kind, Session, Snapshot, Source, Stats, Status, UsageSum};
+use crate::model::{clip, Event, EventText, Kind, Session, Snapshot, Source, Stats, Status, UsageSum};
 
 pub(super) const MAX_LIMIT: usize = 100;
 pub(super) const MAX_OFFSET: usize = 10_000;
@@ -114,16 +114,9 @@ impl Args {
                     status(e.status) == v
                 }
             })
-            && (words.is_empty() || {
-                let haystack = format!(
-                    "{}\n{}\n{}",
-                    e.name,
-                    e.summary,
-                    e.model.as_deref().unwrap_or("")
-                )
-                .to_lowercase();
-                words.iter().all(|word| haystack.contains(word))
-            })
+            && crate::search::matches_words(words, [
+                &e.name, &e.summary, e.model.as_deref().unwrap_or(""),
+            ])
     }
 }
 
@@ -227,12 +220,7 @@ fn list_sessions(sessions: &[(usize, &std::sync::Arc<Session>)], args: &Args) ->
     let words: Vec<_> = query.split_whitespace().collect();
     let mut matches: Vec<_> = sessions
         .iter()
-        .filter(|(_, s)| {
-            words.is_empty() || {
-                let text = format!("{}\n{}\n{}", s.title, s.cwd, s.id).to_lowercase();
-                words.iter().all(|w| text.contains(w))
-            }
-        })
+        .filter(|(_, s)| crate::search::matches_words(&words, [&s.title, &s.cwd, &s.id]))
         .collect();
     matches.sort_by(|(_, a), (_, b)| b.start.total_cmp(&a.start).then_with(|| a.id.cmp(&b.id)));
     let total = matches.len();
@@ -352,13 +340,6 @@ fn events(
         value
     }).collect();
     Ok(page("events", items, total, args))
-}
-
-fn clip(text: &str, limit: usize) -> (&str, bool) {
-    match text.char_indices().nth(limit) {
-        Some((end, _)) => (&text[..end], true),
-        None => (text, false),
-    }
 }
 
 fn event_text(e: &Event, reader: Option<&Db>) -> Option<(String, String)> {
