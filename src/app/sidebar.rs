@@ -51,8 +51,8 @@ impl Rireki {
             (None, SourceFilter::Claude) => "Claude Code の履歴を検索".to_string(),
             (None, SourceFilter::Codex) => "Codex の履歴を検索".to_string(),
         };
-        self.search_input.update(cx, |i, _| i.set_placeholder(placeholder));
-        let body = if self.results.is_some() { self.search_results(window, cx) } else { self.navigator(window, cx) };
+        self.search_state.input.update(cx, |i, _| i.set_placeholder(placeholder));
+        let body = if self.search_state.results.is_some() { self.search_results(window, cx) } else { self.navigator(window, cx) };
         if let Some(started) = started {
             println!("{}", serde_json::json!({"ui_profile":"sidebar_build", "built":self.navigator_rendered.get(),
                 "ms":started.elapsed().as_secs_f64()*1000.0}));
@@ -72,9 +72,9 @@ impl Rireki {
     }
 
     fn search_box(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let focused = self.search_input.focus_handle(cx).is_focused(window);
-        let empty = self.query.is_empty();
-        let input = self.search_input.clone();
+        let focused = self.search_state.input.focus_handle(cx).is_focused(window);
+        let empty = self.search_state.query.is_empty();
+        let input = self.search_state.input.clone();
         div()
             .h(px(HEADER_H))
             .flex_none()
@@ -120,8 +120,8 @@ impl Rireki {
                     })
                     .when(empty && !focused, |d| d.child(kbd(crate::platform::shortcut("⌘K", "Ctrl+K"))))
                     .on_click(cx.listener(|t, _: &ClickEvent, window, cx| {
-                        if !t.search_input.focus_handle(cx).is_focused(window) {
-                            window.focus(&t.search_input.focus_handle(cx));
+                        if !t.search_state.input.focus_handle(cx).is_focused(window) {
+                            window.focus(&t.search_state.input.focus_handle(cx));
                         }
                     })),
             )
@@ -400,7 +400,7 @@ impl Rireki {
 
     /// 検索結果の i 番目の項目が、スクロール領域の何番目の子か（`search_results` の並びと合わせる）
     pub(super) fn result_row(&self, i: usize) -> usize {
-        let Some(r) = &self.results else { return 0 };
+        let Some(r) = &self.search_state.results else { return 0 };
         let ns = r.sessions.len();
         // 先頭は件数の行
         let mut row = 1 + usize::from(ns > 0);
@@ -412,21 +412,14 @@ impl Rireki {
     }
 
     fn search_results(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(r) = &self.results else { return div().into_any_element() };
+        let Some(r) = &self.search_state.results else { return div().into_any_element() };
         let count = 1 + r.sessions.len() + r.events.len()
             + usize::from(!r.sessions.is_empty()) + usize::from(!r.events.is_empty())
             + usize::from(r.is_empty());
-        let key = (self.search_gen.load(super::Ordering::Relaxed), count, self.pane_full_widths(window).0.to_bits());
-        let old = self.result_list_key.replace(key);
-        if (old.0, old.1) != (key.0, key.1) {
-            self.result_list.reset(count);
-        } else if old.2 != key.2 {
-            // 折り返しで高さが変わる。現在の項目を保ち、画面外の高さも測り直す
-            self.result_list.splice(0..count, count);
-        }
-        let terms: Vec<String> = self.query.split_whitespace().map(|t| t.to_ascii_lowercase()).collect();
+        self.search_state.prepare_list(count, self.pane_full_widths(window).0);
+        let terms: Vec<String> = self.search_state.query.split_whitespace().map(|t| t.to_ascii_lowercase()).collect();
         let weak = cx.weak_entity();
-        gpui::list(self.result_list.clone(), move |row, _, cx| {
+        gpui::list(self.search_state.list.clone(), move |row, _, cx| {
             weak.upgrade().map_or_else(|| div().into_any_element(), |app| {
                 app.update(cx, |app, cx| {
                     div().w_full().flex().flex_col().child(app.search_result_item(row, &terms, cx)).into_any_element()
@@ -436,11 +429,11 @@ impl Rireki {
     }
 
     fn search_result_item(&self, row: usize, terms: &[String], cx: &mut Context<Self>) -> AnyElement {
-        let Some(r) = &self.results else { return div().into_any_element() };
+        let Some(r) = &self.search_state.results else { return div().into_any_element() };
         let ns = r.sessions.len();
         if row == 0 {
             let filtered = self.focus.is_some() || self.source != SourceFilter::All;
-            let summary = if self.searching { "検索中…".to_string() }
+            let summary = if self.search_state.searching { "検索中…".to_string() }
                 else if r.is_empty() { "一致する履歴はありません".to_string() }
                 else if r.total > r.events.len() {
                     format!("{} 件（新しい {} 件を表示）", r.sessions.len() + r.total, r.events.len())
@@ -581,14 +574,14 @@ impl Rireki {
     /// 検索結果をクリックで開く。入力欄にフォーカスを戻し、続けて ↑↓ で選べるようにする
     fn click_result(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.open_result(i, window, cx);
-        window.focus(&self.search_input.focus_handle(cx));
+        window.focus(&self.search_state.input.focus_handle(cx));
     }
 
     /// 検索結果の 1 項目の外枠。キーボードで選んでいる項目は左に線を引く
     fn result_row_frame(&self, i: usize) -> Stateful<Div> {
-        let cursor = self.result_cursor == i;
+        let cursor = self.search_state.cursor == i;
         let selected = self.selected.is_some_and(|sel| {
-            let r = self.results.as_ref();
+            let r = self.search_state.results.as_ref();
             let ns = r.map_or(0, |r| r.sessions.len());
             match r {
                 Some(r) if i < ns => sel.session == r.sessions[i] && sel.lane == 0,

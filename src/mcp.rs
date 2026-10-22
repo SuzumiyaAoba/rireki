@@ -2,6 +2,7 @@
 //! GUI のスナップショットを共有し、索引の読み込みやログの更新を重複実行しない。
 
 mod schema;
+mod query;
 mod tools;
 mod protocol;
 mod transport;

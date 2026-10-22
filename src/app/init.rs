@@ -2,10 +2,9 @@
 
 use super::{
     Arc, AtomicU64, Bounds, Cell, Context, DetailList, DetailLoader, DetailView, FileList, HashSet,
-    InputEvent, Local, MAX_SIDEBAR_W, MIN_DETAIL_W, MIN_PANE_W, MIN_SIDEBAR_W, Mode, Mutex,
-    Ordering, POLL, Point, Rc, RefCell, Rireki, SEARCH_DELAY, ScrollHandle, SidebarView, Snapshot,
-    TextInput, ViewLoader, Window, calendar, cost, detail, index, now, point, prefs, profile, px,
-    search, sidebar, statistics,
+    Local, MAX_SIDEBAR_W, MIN_DETAIL_W, MIN_PANE_W, MIN_SIDEBAR_W, Mode, Mutex, POLL, Point, Rc,
+    RefCell, Rireki, ScrollHandle, SidebarView, Snapshot, TextInput, ViewLoader, Window, calendar,
+    cost, detail, index, now, point, prefs, profile, px, sidebar, statistics,
 };
 use gpui::prelude::*;
 
@@ -142,39 +141,7 @@ impl Rireki {
         })
         .detach();
 
-        let search_input = cx.new(|cx| TextInput::new("セッションやツール呼び出しを検索", cx));
-        // 打鍵のたびではなく、入力が少し止まってから検索する
-        cx.subscribe(&search_input, |this, input, _: &InputEvent, cx| {
-            let q = input.read(cx).text().trim().to_string();
-            if q == this.query {
-                return;
-            }
-            this.query = q;
-            let generation = this.search_gen.fetch_add(1, Ordering::Relaxed) + 1;
-            this.search_task = None;
-            this.results = (!this.query.is_empty()).then(search::Results::default);
-            this.searching = !this.query.is_empty();
-            this.sidebar_changed(cx);
-            if this.query.is_empty() {
-                this.run_search(cx);
-                return;
-            }
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(SEARCH_DELAY).await;
-                let _ = this.update(cx, |t, cx| {
-                    if t.search_gen.load(Ordering::Relaxed) == generation {
-                        t.result_cursor = 0;
-                        t.sidebar_scroll.set_offset(point(px(0.0), px(0.0)));
-                        t.navigator_list
-                            .state
-                            .scroll_to(gpui::ListOffset::default());
-                        t.run_search(cx);
-                    }
-                });
-            })
-            .detach();
-        })
-        .detach();
+        let search_state = super::search_controller::State::new(cx);
 
         let p = prefs::load();
         let today = Local::now().date_naive();
@@ -220,21 +187,12 @@ impl Rireki {
             detail_follow: false,
             detail_following: false,
             focus_handle,
-            search_input,
-            search: Arc::new(Mutex::new(search::Index::default())),
-            search_task: None,
-            searching: false,
-            query: String::new(),
-            results: None,
-            result_cursor: 0,
-            search_gen: Arc::new(AtomicU64::new(0)),
+            search_state,
             sidebar_view,
             sidebar_scroll: ScrollHandle::new(),
             navigator_rendered: Cell::new(0),
             navigator_virtual: Cell::new(false),
             navigator_list: sidebar::NavigatorList::new(),
-            result_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
-            result_list_key: Cell::new((0, 0, 0)),
             detail_view,
             detail_cache: None,
             detail_snapshot: None,

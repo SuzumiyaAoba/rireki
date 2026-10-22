@@ -1,6 +1,6 @@
 //! MCP ツール定義の単一レジストリ。スキーマは起動中に一度だけ構築する。
 
-use super::tools::{MAX_LIMIT, MAX_OFFSET};
+use super::query::{MAX_LIMIT, MAX_OFFSET};
 use serde_json::{Value, json};
 use std::sync::LazyLock;
 

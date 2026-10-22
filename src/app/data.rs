@@ -60,7 +60,7 @@ impl Rireki {
         }
         self.layout_cache.get_mut().invalidate(&touched);
         self.rebuild_order();
-        if !self.query.is_empty() {
+        if !self.search_state.query.is_empty() {
             self.refresh_results(cx);
         }
         // 選択中のセッションが更新されたら、範囲を確かめて詳細を作り直す
@@ -98,7 +98,7 @@ impl Rireki {
         self.sidebar_changed(cx);
         // 触れた番号を背景へ渡し、旧版の本文と検索索引の解放も UI スレッドで行わない。
         let touched_count = touched.len();
-        let search = self.search.clone();
+        let search = self.search_state.index();
         cx.background_executor()
             .spawn(async move {
                 search.lock().unwrap().invalidate_versions(

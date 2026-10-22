@@ -1,124 +1,16 @@
 //! MCP の読み取り専用履歴 API。GUI の絞り込みから独立した同一スナップショットを使う。
 
+use super::query::{Args, Order, kind, source, status};
 pub(super) use super::schema::definitions;
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::db::Db;
 use crate::detail::analysis::duration;
-use crate::model::{clip, Event, EventText, Kind, Session, Snapshot, Source, Stats, Status, UsageSum};
-
-pub(super) const MAX_LIMIT: usize = 100;
-pub(super) const MAX_OFFSET: usize = 10_000;
-
-#[derive(Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Order {
-    #[default]
-    Oldest,
-    Newest,
-}
-
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct Args {
-    query: String,
-    source: Option<String>,
-    cwd: Option<String>,
-    session_id: Option<String>,
-    after: Option<f64>,
-    before: Option<f64>,
-    lane: Option<usize>,
-    event_index: Option<usize>,
-    kind: Option<String>,
-    status: Option<String>,
-    offset: usize,
-    limit: Option<usize>,
-    order: Order,
-    include_text: bool,
-    text_limit: Option<usize>,
-    expected_revision: Option<u64>,
-}
-
-impl Args {
-    fn validate(&self) -> Result<(), String> {
-        if self.event_index.is_some() && self.lane.is_none() {
-            return Err("event_index requires lane".into());
-        }
-        if self.limit.is_some_and(|v| !(1..=MAX_LIMIT).contains(&v)) || self.offset > MAX_OFFSET {
-            return Err("limit must be 1..100 and offset must be 0..10000".into());
-        }
-        if self.text_limit.is_some_and(|v| !(1..=20_000).contains(&v)) {
-            return Err("text_limit must be 1..20000 characters per input/output".into());
-        }
-        if self.query.chars().count() > 4096 {
-            return Err("query must be at most 4096 characters".into());
-        }
-        if self.after.zip(self.before).is_some_and(|(a, b)| a > b) {
-            return Err("after must be <= before (Unix seconds)".into());
-        }
-        for (value, allowed, field) in [
-            (self.source.as_deref(), &["claude", "codex"][..], "source"),
-            (
-                self.kind.as_deref(),
-                &["user", "assistant", "thinking", "tool", "agent"][..],
-                "kind",
-            ),
-            (
-                self.status.as_deref(),
-                &[
-                    "ok",
-                    "error",
-                    "rejected",
-                    "interrupted",
-                    "pending",
-                    "failed",
-                ][..],
-                "status",
-            ),
-        ] {
-            if value.is_some_and(|v| !allowed.contains(&v)) {
-                return Err(format!(
-                    "invalid {field}; expected one of {}",
-                    allowed.join(", ")
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn limit(&self) -> usize {
-        self.limit.unwrap_or(50)
-    }
-
-    fn session_matches(&self, s: &Session) -> bool {
-        self.session_id.as_deref().is_none_or(|id| s.id == id)
-            && self.source.as_deref().is_none_or(|v| source(s.source) == v)
-            && self.cwd.as_deref().is_none_or(|v| s.cwd == v)
-            && self.after.is_none_or(|v| s.end >= v)
-            && self.before.is_none_or(|v| s.start <= v)
-    }
-
-    fn event_matches(&self, e: &Event, words: &[&str]) -> bool {
-        self.after.is_none_or(|v| e.start >= v)
-            && self.before.is_none_or(|v| e.start <= v)
-            && self.kind.as_deref().is_none_or(|v| kind(e.kind) == v)
-            && self.status.as_deref().is_none_or(|v| {
-                if v == "failed" {
-                    e.status.failed()
-                } else {
-                    status(e.status) == v
-                }
-            })
-            && crate::search::matches_words(words, [
-                &e.name, &e.summary, e.model.as_deref().unwrap_or(""),
-            ])
-    }
-}
+use crate::model::{Event, EventText, Session, Snapshot, Stats, Status, UsageSum, clip};
 
 pub(super) fn call(
     snapshot: &Snapshot,
@@ -180,33 +72,6 @@ pub(super) fn call(
     };
     result["revision"] = json!(revision);
     Ok(result)
-}
-
-fn source(s: Source) -> &'static str {
-    match s {
-        Source::Claude => "claude",
-        Source::Codex => "codex",
-    }
-}
-
-fn kind(k: Kind) -> &'static str {
-    match k {
-        Kind::User => "user",
-        Kind::Assistant => "assistant",
-        Kind::Thinking => "thinking",
-        Kind::Tool => "tool",
-        Kind::Agent => "agent",
-    }
-}
-
-fn status(s: Status) -> &'static str {
-    match s {
-        Status::Ok => "ok",
-        Status::Error => "error",
-        Status::Rejected => "rejected",
-        Status::Interrupted => "interrupted",
-        Status::Pending => "pending",
-    }
 }
 
 fn session(s: &Session) -> Value {
@@ -291,27 +156,19 @@ fn events(
     let keep = args.offset + args.limit();
     let mut total = 0;
     for &(si, s) in sessions {
-        for (li, lane) in s.lanes.iter().enumerate() {
-            if args.lane.is_some_and(|v| v != li) {
-                continue;
-            }
-            for (ei, e) in lane.events.iter().enumerate() {
-                if args.event_index.is_some_and(|v| v != ei) || !args.event_matches(e, &words) {
-                    continue;
-                }
-                total += 1;
-                let rank = Rank {
-                    start: e.start,
-                    si,
-                    li,
-                    ei,
-                    newest: matches!(args.order, Order::Newest),
-                };
-                if heap.len() < keep {
-                    heap.push(rank);
-                } else if heap.peek().is_some_and(|worst| rank < *worst) {
-                    *heap.peek_mut().unwrap() = rank;
-                }
+        for (li, ei, e) in args.matching_events(s, &words) {
+            total += 1;
+            let rank = Rank {
+                start: e.start,
+                si,
+                li,
+                ei,
+                newest: matches!(args.order, Order::Newest),
+            };
+            if heap.len() < keep {
+                heap.push(rank);
+            } else if heap.peek().is_some_and(|worst| rank < *worst) {
+                *heap.peek_mut().unwrap() = rank;
             }
         }
     }
@@ -383,33 +240,25 @@ fn analyze(sessions: &[(usize, &std::sync::Arc<Session>)], args: &Args) -> Value
     let mut session_count = 0;
     for &(_, s) in sessions {
         let before = count;
-        for (li, lane) in s.lanes.iter().enumerate() {
-            if args.lane.is_some_and(|v| v != li) {
-                continue;
+        for (_, _, e) in args.matching_events(s, &words) {
+            count += 1;
+            stats.add(e);
+            tokens.add(&e.usage, e.model.as_deref());
+            if !e.usage.is_empty() {
+                models
+                    .entry(e.model.as_deref().unwrap_or("unknown"))
+                    .or_default()
+                    .add(&e.usage, e.model.as_deref());
             }
-            for (ei, e) in lane.events.iter().enumerate() {
-                if args.event_index.is_some_and(|v| v != ei) || !args.event_matches(e, &words) {
-                    continue;
-                }
-                count += 1;
-                stats.add(e);
-                tokens.add(&e.usage, e.model.as_deref());
-                if !e.usage.is_empty() {
-                    models
-                        .entry(e.model.as_deref().unwrap_or("unknown"))
-                        .or_default()
-                        .add(&e.usage, e.model.as_deref());
-                }
-                if e.kind.is_tool() {
-                    let tool = tools.entry(&e.name).or_default();
-                    tool.calls += 1;
-                    tool.failed += usize::from(e.status.failed());
-                    tool.pending += usize::from(e.status == Status::Pending);
-                    if e.status != Status::Pending {
-                        let seconds = duration(e);
-                        tool.seconds += seconds;
-                        tool.max_seconds = tool.max_seconds.max(seconds);
-                    }
+            if e.kind.is_tool() {
+                let tool = tools.entry(&e.name).or_default();
+                tool.calls += 1;
+                tool.failed += usize::from(e.status.failed());
+                tool.pending += usize::from(e.status == Status::Pending);
+                if e.status != Status::Pending {
+                    let seconds = duration(e);
+                    tool.seconds += seconds;
+                    tool.max_seconds = tool.max_seconds.max(seconds);
                 }
             }
         }

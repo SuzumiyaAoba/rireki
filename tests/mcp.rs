@@ -345,6 +345,39 @@ fn analysis_counts_all_lanes_and_respects_event_filters() {
 }
 
 #[test]
+fn search_and_analysis_share_filters_across_sessions_and_lanes() {
+    let server = Server::start(history(), 0).unwrap();
+    for (filters, expected) in [
+        (json!({}), 5),
+        (json!({"source":"codex"}), 4),
+        (json!({"cwd":"/projects/other"}), 1),
+        (json!({"kind":"tool","after":20,"before":25}), 2),
+        (json!({"status":"failed"}), 1),
+        (json!({"status":"pending","lane":1}), 1),
+        (json!({"lane":0,"event_index":2}), 1),
+        (json!({"query":"ASSISTANT unknown-MODEL"}), 1),
+        (json!({"query":"missing"}), 0),
+    ] {
+        let mut arguments = json!({"query":"日本語"});
+        arguments
+            .as_object_mut()
+            .unwrap()
+            .extend(filters.as_object().unwrap().clone());
+        let events = call(&server, "search_events", arguments.clone());
+        let analysis = call(&server, "analyze_history", arguments.clone());
+        assert_eq!(events["total"], expected, "{arguments}");
+        assert_eq!(analysis["events"], expected, "{arguments}");
+        let sessions: std::collections::HashSet<_> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["session_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(analysis["sessions"], sessions.len(), "{arguments}");
+    }
+}
+
+#[test]
 fn live_snapshot_updates_and_revision_mismatches() {
     let server = Server::start(Snapshot::default(), 0).unwrap();
     let initial = call(&server, "list_sessions", json!({}));

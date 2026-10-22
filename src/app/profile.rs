@@ -509,8 +509,8 @@ impl Rireki {
                 summary(stage, "foreground_interval", &mut gaps);
                 let _ = this.update_in(cx, |app, window, _| {
                     println!("{}", serde_json::json!({"ui_profile":"state", "stage":stage,
-                        "query_set":!app.query.is_empty(), "results":app.results.as_ref().map(|r| r.total),
-                        "detail_ready":app.detail_cache.is_some(), "painted_blocks":app.hits.len(), "active":window.is_window_active(), "cursor":app.result_cursor,
+                        "query_set":!app.search_state.query.is_empty(), "results":app.search_state.results.as_ref().map(|r| r.total),
+                        "detail_ready":app.detail_cache.is_some(), "painted_blocks":app.hits.len(), "active":window.is_window_active(), "cursor":app.search_state.cursor,
                         "detail":app.detail_profile_state(), "statistics":app.statistics_profile_state()}));
                 });
                 println!("{}", serde_json::json!({"ui_profile":"stage_end","stage":stage}));
@@ -545,7 +545,7 @@ impl Rireki {
         if step == 0 {
             window.activate_window();
             cx.activate(true);
-            self.search_input.update(cx, |input, cx| input.set_text("", cx));
+            self.search_state.input.update(cx, |input, cx| input.set_text("", cx));
             self.close_detail(cx);
             self.detail_t = 0.0;
             self.mode = Mode::Timeline;
@@ -769,7 +769,7 @@ impl Rireki {
                 self.gran = Granularity::Call;
             }
             "search_cold" | "search_warm" | "search_navigation" if step == 1 => {
-                self.search_input.update(cx, |input, cx| input.set_text("cargo", cx));
+                self.search_state.input.update(cx, |input, cx| input.set_text("cargo", cx));
             }
             "search_navigation" if step >= 40 => self.move_cursor(1, cx),
             "selection" if step == 0 => {
@@ -1006,7 +1006,7 @@ impl Rireki {
         if step == 0 {
             window.activate_window();
             cx.activate(true);
-            self.search_input.update(cx, |input, cx| input.set_text("", cx));
+            self.search_state.input.update(cx, |input, cx| input.set_text("", cx));
             self.close_detail(cx);
             self.detail_t = 0.0;
             self.mode = Mode::Timeline;
@@ -1075,7 +1075,7 @@ impl Rireki {
         if step == 0 {
             window.activate_window();
             cx.activate(true);
-            self.search_input.update(cx, |input, cx| input.set_text("", cx));
+            self.search_state.input.update(cx, |input, cx| input.set_text("", cx));
             self.close_detail(cx);
             self.detail_t = 0.0;
             self.sidebar_open = false;
@@ -1129,7 +1129,7 @@ impl Rireki {
         if step == 0 {
             window.activate_window();
             cx.activate(true);
-            self.search_input.update(cx, |input, cx| input.set_text("", cx));
+            self.search_state.input.update(cx, |input, cx| input.set_text("", cx));
             self.close_detail(cx);
             self.detail_t = 0.0;
             self.mode = Mode::Timeline;

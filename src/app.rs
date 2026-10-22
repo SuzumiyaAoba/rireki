@@ -51,11 +51,10 @@ use std::sync::{
 };
 
 use crate::index::{self, Delta, ViewLoader};
-use crate::input::{InputEvent, TextInput};
+use crate::input::TextInput;
 use crate::layout::Granularity;
 use crate::model::{Session, Snapshot, Source};
 use crate::prefs::{self, DetailTab, Mode, Prefs, SourceFilter};
-use crate::search;
 use crate::theme::{self, c};
 
 use detail::{DetailList, DetailView, FileList, RowFilter};
@@ -100,10 +99,6 @@ const HANDLE_W: f32 = 6.0;
 const ROW_H: f32 = 24.0;
 const HOUR_LABEL_W: f32 = 52.0;
 const MIN_BLOCK: f32 = 3.0;
-/// 検索結果に並べるイベント数の上限
-const SEARCH_LIMIT: usize = 300;
-/// 入力が止まってから検索するまでの待ち時間
-const SEARCH_DELAY: std::time::Duration = std::time::Duration::from_millis(120);
 /// リアルタイムファイルの変更を確認する間隔
 const POLL: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -226,25 +221,12 @@ pub struct Rireki {
     detail_follow: bool,
     detail_following: bool,
     focus_handle: FocusHandle,
-    search_input: Entity<TextInput>,
-    search: Arc<Mutex<search::Index>>,
-    search_task: Option<gpui::Task<()>>,
-    searching: bool,
-    /// 前後の空白を除いた検索語
-    query: String,
-    /// 検索結果。検索語が空なら None
-    results: Option<search::Results>,
-    /// 検索結果のうち、キーボードで選んでいる項目
-    result_cursor: usize,
-    /// 検索語を変えるたびに増やす。待っている間に次の入力があった検索は捨てる
-    search_gen: Arc<AtomicU64>,
+    search_state: search_controller::State,
     sidebar_view: Entity<SidebarView>,
     sidebar_scroll: ScrollHandle,
     navigator_rendered: Cell<usize>,
     navigator_virtual: Cell<bool>,
     navigator_list: sidebar::NavigatorList,
-    result_list: gpui::ListState,
-    result_list_key: Cell<(u64, usize, u32)>,
     detail_view: Entity<DetailView>,
     detail_cache: Option<DetailCache>,
     /// 表示中の詳細と同じ版のセッションと、読み込み完了時の世代
@@ -383,7 +365,8 @@ impl Focusable for Rireki {
 impl Drop for Rireki {
     fn drop(&mut self) {
         self.detail_gen.fetch_add(1, Ordering::Relaxed);
-        self.search_gen.fetch_add(1, Ordering::Relaxed);
+        // サーバー停止や各キャッシュの解放を待たずに背景検索を中断する。
+        self.search_state.cancel();
     }
 }
 
@@ -567,7 +550,7 @@ impl Render for Rireki {
             .on_action(cx.listener(|t, _: &SearchUp, _, cx| t.move_cursor(-1, cx)))
             .on_action(cx.listener(|t, _: &SearchDown, _, cx| t.move_cursor(1, cx)))
             .on_action(cx.listener(|t, _: &SearchConfirm, window, cx| {
-                let i = t.result_cursor;
+                let i = t.search_state.cursor;
                 t.open_result(i, window, cx);
             }))
             .on_action(cx.listener(|t, _: &SearchCancel, window, cx| t.cancel_search(window, cx)))

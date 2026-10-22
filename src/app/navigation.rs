@@ -48,7 +48,7 @@ impl Rireki {
     pub(super) fn set_source(&mut self, s: SourceFilter, cx: &mut Context<Self>) {
         self.source = s;
         self.rebuild_order();
-        if !self.query.is_empty() {
+        if !self.search_state.query.is_empty() {
             self.refresh_results(cx);
         }
         self.row_scroll = 0.0;
@@ -59,7 +59,7 @@ impl Rireki {
     pub(super) fn set_focus(&mut self, f: Option<String>, cx: &mut Context<Self>) {
         self.focus = f;
         self.rebuild_order();
-        if !self.query.is_empty() {
+        if !self.search_state.query.is_empty() {
             self.refresh_results(cx);
         }
         self.row_scroll = 0.0;

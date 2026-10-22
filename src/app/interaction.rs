@@ -248,7 +248,7 @@ impl Rireki {
             cx.notify();
         } else if self.selected.is_some() {
             self.close_detail(cx);
-        } else if !self.query.is_empty() {
+        } else if !self.search_state.query.is_empty() {
             self.clear_search(cx);
         } else {
             window.focus(&self.focus_handle);
@@ -258,7 +258,7 @@ impl Rireki {
     pub(super) fn cancel_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.popover.take().is_some() {
             cx.notify();
-        } else if self.search_input.read(cx).text().is_empty() {
+        } else if self.search_state.input.read(cx).text().is_empty() {
             window.focus(&self.focus_handle);
             self.sidebar_changed(cx);
         } else {
