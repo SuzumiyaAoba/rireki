@@ -59,7 +59,7 @@ use crate::prefs::{self, DetailTab, Mode, Prefs, SourceFilter};
 use crate::theme::{self, c};
 use rireki::catalog::Project;
 
-use detail::{DetailList, DetailView, FileList, RowFilter};
+use detail::{DetailContentView, DetailList, DetailView, FileList, RowFilter};
 use crate::detail::{DetailCache, DetailLoader, Selection, EVENT_LIMIT as DETAIL_MAX};
 use crate::time::{local, midnight};
 use crate::view_index;
@@ -86,7 +86,7 @@ const HEADER_H: f32 = 46.0;
 const FOOTER_H: f32 = 26.0;
 /// タイムラインの上のミニマップの高さ
 const MINIMAP_H: f32 = 30.0;
-const AXIS_H: f32 = 30.0;
+const AXIS_H: f32 = 40.0;
 /// 境界ドラッグで変えられる幅の下限
 const MIN_PANE_W: f32 = 160.0;
 const MIN_SIDEBAR_W: f32 = 200.0;
@@ -98,7 +98,7 @@ const PANE_ANIM_SECS: f32 = 0.18;
 const MAIN_MIN_W: f32 = 360.0;
 /// 境界のつまみの幅
 const HANDLE_W: f32 = 6.0;
-const ROW_H: f32 = 24.0;
+const ROW_H: f32 = 32.0;
 const HOUR_LABEL_W: f32 = 52.0;
 const MIN_BLOCK: f32 = 3.0;
 
@@ -150,6 +150,7 @@ struct BlockPaint {
     selected: bool,
     hovered: bool,
     label: Option<gpui::SharedString>,
+    duration: Option<gpui::SharedString>,
 }
 
 struct Drag {
@@ -218,9 +219,14 @@ pub struct Rireki {
     navigator_virtual: Cell<bool>,
     navigator_list: sidebar::NavigatorList,
     detail_view: Entity<DetailView>,
+    detail_content_view: Entity<DetailContentView>,
     detail_cache: Option<DetailCache>,
     /// 表示中の詳細と同じ版のセッションと、読み込み完了時の世代
     detail_snapshot: Option<(Arc<Session>, u64)>,
+    /// 選択範囲の内容が変わった世代。セッション全体の更新とは分けて一覧の計測を再利用する。
+    detail_selection_gen: u64,
+    /// 最後に描いた本文の進行中状態。分の更新だけでは本文を無効化しない。
+    detail_live: Cell<Option<bool>>,
     /// exec の詳細を整形結果ではなく JS 本文で表示する
     show_raw: bool,
     /// 詳細パネルのイベント一覧の絞り込み（選択が変わると解除する）
@@ -338,6 +344,11 @@ pub struct Rireki {
 impl Rireki {
 
     fn detail_changed(&self, cx: &mut Context<Self>) {
+        self.detail_content_view.update(cx, |_, cx| cx.notify());
+        self.detail_header_changed(cx);
+    }
+
+    fn detail_header_changed(&self, cx: &mut Context<Self>) {
         self.detail_view.update(cx, |_, cx| cx.notify());
     }
 
@@ -441,16 +452,15 @@ impl Render for Rireki {
             );
         }
         if fullscreen {
-            panel = panel.child(AnyView::from(self.detail_view.clone())
-                .cached(StyleRefinement::default().w(px(self.detail_content_width(window))).h_full().flex_none()));
+            panel = panel.child(div().w(px(self.detail_content_width(window))).h_full().flex_none()
+                .child(self.detail_view.clone()));
         } else {
             panel = panel.child(main_col);
         }
         if detail_shown {
             panel = panel.child(
                 div().w(px(detail_w)).h_full().flex_none().overflow_hidden().child(
-                    AnyView::from(self.detail_view.clone())
-                        .cached(StyleRefinement::default().w(px(detail_full)).h_full().flex_none()),
+                    div().w(px(detail_full)).h_full().flex_none().child(self.detail_view.clone()),
                 ),
             );
         }

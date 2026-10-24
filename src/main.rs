@@ -116,6 +116,7 @@ fn run_gui(args: &[String]) {
                 | "--profile-render"
                 | "--profile-eager-files"
                 | "--profile-detail"
+                | "--profile-detail-updates"
                 | "--profile-analysis"
                 | "--profile-rich"
                 | "--profile-files"

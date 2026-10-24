@@ -4,7 +4,7 @@ use super::{
     Arc, AtomicU64, Bounds, Cell, Context, DetailList, DetailLoader, DetailView, FileList, HashSet,
     Local, MAX_SIDEBAR_W, MIN_DETAIL_W, MIN_PANE_W, MIN_SIDEBAR_W, Mode, Mutex, POLL, Point, Rc,
     RefCell, Rireki, ScrollHandle, SidebarView, Snapshot, TextInput, History, Window, calendar,
-    cost, detail, index, now, point, prefs, profile, px, sidebar, statistics,
+    cost, detail, index, now, point, prefs, profile, px, sidebar, statistics, DetailContentView,
 };
 use gpui::prelude::*;
 
@@ -130,7 +130,7 @@ impl Rireki {
                             }
                             app.live_sources = app.find_live_sources();
                             app.sidebar_changed(cx);
-                            app.detail_changed(cx);
+                            if app.detail_live_changed() { app.detail_changed(cx); }
                             cx.notify();
                         })
                         .is_ok();
@@ -149,6 +149,7 @@ impl Rireki {
         let today = Local::now().date_naive();
         let weak = cx.weak_entity();
         let detail_view = cx.new(|_| DetailView { app: weak.clone() });
+        let detail_content_view = cx.new(|_| DetailContentView { app: weak.clone() });
         let sidebar_view = cx.new(|_| SidebarView { app: weak });
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
@@ -196,8 +197,11 @@ impl Rireki {
             navigator_virtual: Cell::new(false),
             navigator_list: sidebar::NavigatorList::new(),
             detail_view,
+            detail_content_view,
             detail_cache: None,
             detail_snapshot: None,
+            detail_selection_gen: 0,
+            detail_live: Cell::new(None),
             show_raw: false,
             row_filter: None,
             expanded: HashSet::new(),

@@ -4,6 +4,49 @@ use super::{Context, DetailRow, Rireki, RowFilter, Window};
 use std::sync::atomic::Ordering;
 
 impl Rireki {
+    /// 本文の再描画回数を実際の GPUI 描画で検証する（通常幅と全画面）。
+    pub(in crate::app) fn detail_profile_update_step(&mut self, stage: &str, step: usize, cx: &mut Context<Self>) {
+        if matches!(step, 18 | 58) {
+            let checkpoint = (self.profile.as_ref().unwrap().detail_renders.get(),
+                self.shown_selection_generation(), self.shown_detail_generation());
+            self.profile.as_mut().unwrap().detail_update_checkpoint = Some(checkpoint);
+        }
+        if matches!(step, 20 | 60) {
+            if stage == "detail_update_follow" {
+                self.profile_append(10, cx);
+            } else {
+                let sel = self.selected.unwrap();
+                let target = if stage == "detail_update_unrelated" {
+                    (0..self.store.sessions.len()).find(|&i| i != sel.session && !self.store.sessions[i].lanes[0].events.is_empty()).unwrap()
+                } else { sel.session };
+                let mut snapshot = self.store.clone();
+                let session = std::sync::Arc::make_mut(&mut snapshot.sessions[target]);
+                let events = &mut session.lanes[0].events;
+                if matches!(stage, "detail_update_append" | "detail_update_fullscreen") {
+                    let mut event = events.last().unwrap().clone();
+                    event.start += 1.0;
+                    event.end += 1.0;
+                    events.push(event);
+                } else {
+                    let index = if stage == "detail_update_selected" { sel.first } else { events.len() - 1 };
+                    events[index].output = format!("updated at {step}");
+                }
+                session.finalize();
+                self.apply(rireki::history::Delta { snapshot, touched: vec![target] }, cx);
+            }
+        }
+        if matches!(step, 39 | 79) {
+            let (renders, selection_generation, session_generation) = self.profile.as_ref().unwrap().detail_update_checkpoint.unwrap();
+            let rendered = self.profile.as_ref().unwrap().detail_renders.get() - renders;
+            let changed = matches!(stage, "detail_update_selected" | "detail_update_follow");
+            assert_eq!(rendered > 0, changed || stage == "detail_update_overview", "unexpected body renders in {stage}: {rendered}");
+            assert_eq!(self.shown_selection_generation() != selection_generation, changed, "selection cache invalidated in {stage}");
+            assert_eq!(self.shown_detail_generation() != session_generation, stage != "detail_update_unrelated", "snapshot not updated in {stage}");
+            println!("{}", serde_json::json!({"ui_profile":"detail_update_check", "stage":stage,
+                "body_renders":rendered, "selection_changed":changed}));
+        }
+    }
+
     pub(in crate::app) fn detail_profile_open_file(&mut self, cx: &mut Context<Self>) {
         self.file_open = self
             .detail_cache
@@ -39,6 +82,7 @@ impl Rireki {
             if let Some((_, shown)) = &mut self.detail_snapshot {
                 *shown = generation;
             }
+            self.detail_selection_gen = generation;
             self.detail_changed(cx);
         }
     }
@@ -78,6 +122,8 @@ impl Rireki {
             Some((file.events.len(), rows))
         });
         serde_json::json!({
+            "body_renders":self.profile.as_ref().map(|p| p.detail_renders.get()),
+            "selection_generation":self.shown_selection_generation(),
             "list_count":self.detail_list.state.item_count(), "rendered":self.detail_list.rendered.get(),
             "item_ix":offset.item_ix, "offset_px":f32::from(offset.offset_in_item), "top_event":top_event,
             "at_bottom":self.detail_at_bottom(), "tab":format!("{:?}", self.detail_tab),

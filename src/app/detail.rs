@@ -14,13 +14,14 @@ use gpui::{
 
 use super::rich;
 use super::widgets::{Marquee, dot, event_icon, project_tile, tip};
-use super::{DETAIL_MAX, HEADER_H, INNER_RADIUS, Rireki, Selection, fmt_dur, fmt_n, is_live, local, tilde};
+use super::{DETAIL_MAX, HEADER_H, INNER_RADIUS, Rireki, Selection, StyleRefinement, fmt_dur, fmt_n, is_live, local, tilde};
 use crate::icons::{self, Icon};
 use crate::model::{Event, Kind, Session, Source, Status, Usage, UsageSum, one_line};
 
 mod controller;
 mod list;
 mod loading;
+mod invalidation;
 mod profile;
 mod event;
 mod file_render;
@@ -40,9 +41,23 @@ use files::{FILE_MAX, FileListKey, FileRow, PER_EDIT};
 use crate::prefs::DetailTab;
 use crate::theme::{self, c};
 
-/// 詳細パネル。選択が変わったときだけ描き直すよう、別ビューとしてキャッシュする
+/// 詳細パネルの枠と見出し。本文は独立したビューとして再利用する。
 pub struct DetailView {
     pub(super) app: WeakEntity<Rireki>,
+}
+
+pub(super) struct DetailContentView {
+    pub(super) app: WeakEntity<Rireki>,
+}
+
+impl Render for DetailContentView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let content = match self.app.upgrade() {
+            Some(app) => app.update(cx, |app, cx| app.detail_content(window, cx)),
+            None => div().into_any_element(),
+        };
+        div().size_full().flex().flex_col().child(content)
+    }
 }
 
 impl Render for DetailView {
@@ -146,7 +161,7 @@ fn detail_tab_index(tab: DetailTab) -> usize {
 }
 
 impl Rireki {
-    pub(super) fn detail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn detail(&self, _: &Window, cx: &mut Context<Self>) -> AnyElement {
         let panel = div().id("detail-panel").size_full().flex().flex_col()
             .when(self.detail_fullscreen, |d| d.rounded(px(INNER_RADIUS)))
             .when(!self.detail_fullscreen, |d| d.rounded_r(px(INNER_RADIUS)).border_l_1())
@@ -154,14 +169,33 @@ impl Rireki {
             .on_scroll_wheel(cx.listener(|app, _: &gpui::ScrollWheelEvent, _, _| app.cancel_detail_follow()));
         let Some(sel) = self.shown_detail_selection() else { return panel.into_any_element(); };
         let files = self.cache(sel).map_or(0, |d| d.files.len());
-        let tab = self.detail_tab;
         let panel = panel.child(self.detail_header(sel, cx)).child(self.context_bar(sel, cx))
-            .child(self.detail_tabs(sel, tab, files, cx)).child(self.detail_scope(sel, cx));
-        if self.cache(sel).is_none() {
-            return panel.child(div().p_3().text_xs().text_color(c(theme::MUTED))
-                .child("詳細を読み込み中…")).into_any_element();
+            .child(self.detail_tabs(sel, self.detail_tab, files, cx)).child(self.detail_scope(sel, cx))
+            .when(self.detail_tab == DetailTab::Events && self.cache(sel).is_some(), |d| {
+                d.child(div().flex_none().px_3().pt_3().flex().flex_col().gap_2()
+                    .child(self.history_heading(sel, cx))
+                    .when(sel.first == sel.last, |d| d.child(self.replay_controls(sel, cx)))
+                    .when(sel.first != sel.last && self.replay.is_some(), |d| d.child(self.event_list_header(sel, cx))))
+            });
+        // 親を cached にすると、見出しの更新時に GPUI が子も強制描画してしまう。
+        // 本文だけを独立してキャッシュし、件数などの更新では再利用する。
+        panel.child(gpui::AnyView::from(self.detail_content_view.clone()).cached(
+            StyleRefinement::default().w_full().flex_1().min_h_0(),
+        )).into_any_element()
+    }
+
+    fn detail_content(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(profile) = &self.profile {
+            profile.detail_renders.set(profile.detail_renders.get() + 1);
         }
-        let content = match tab {
+        let Some(sel) = self.shown_detail_selection() else { return div().into_any_element(); };
+        let files = self.cache(sel).map_or(0, |d| d.files.len());
+        if self.cache(sel).is_none() {
+            return div().p_3().text_xs().text_color(c(theme::MUTED))
+                .child("詳細を読み込み中…").into_any_element();
+        }
+        self.detail_live.set(Some(is_live(self.detail_session(sel).end)));
+        match self.detail_tab {
             DetailTab::Session => self.overview_view(sel, window, cx),
             DetailTab::Analysis => self.analysis_view(sel, cx),
             DetailTab::Files if files == 0 => div().p_3().text_xs().text_color(c(theme::MUTED))
@@ -170,17 +204,13 @@ impl Rireki {
                 .child(self.files_list(sel, self.cache(sel).unwrap(), window, cx)).into_any_element(),
             DetailTab::Events if sel.first == sel.last => div().id("detail-scroll")
                 .track_scroll(&self.detail_scroll).flex_1().min_h_0().overflow_y_scroll()
-                .p_3().flex().flex_col().gap_3().child(self.history_heading(sel, cx))
-                .child(self.replay_controls(sel, cx)).child(self.event_view(sel, cx)).into_any_element(),
+                .p_3().flex().flex_col().gap_3().child(self.event_view(sel, cx)).into_any_element(),
             DetailTab::Events => {
                 let events = self.event_list(sel, window, cx);
                 div().flex_1().min_h_0().p_3().flex().flex_col().gap_2()
-                    .child(self.history_heading(sel, cx))
-                    .when(self.replay.is_some(), |d| d.child(self.event_list_header(sel, cx)))
                     .child(events).into_any_element()
             }
-        };
-        panel.child(content).into_any_element()
+        }
     }
 
     /// 対象はタブを切り替えても常に読める位置に示す。
@@ -347,6 +377,17 @@ impl Rireki {
             || self.detail_gen.load(super::Ordering::Relaxed),
             |(_, generation)| *generation,
         )
+    }
+
+    pub(super) fn shown_selection_generation(&self) -> u64 {
+        if self.detail_cache.is_some() { self.detail_selection_gen } else {
+            self.detail_gen.load(super::Ordering::Relaxed)
+        }
+    }
+
+    pub(super) fn detail_live_changed(&self) -> bool {
+        self.detail_live.get().is_some_and(|before| self.shown_detail_selection()
+            .is_some_and(|sel| before != is_live(self.detail_session(sel).end)))
     }
 
     /// 共通見出しにはセッションと選択の履歴、表示操作を置く。

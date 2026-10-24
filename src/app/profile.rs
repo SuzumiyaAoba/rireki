@@ -58,6 +58,8 @@ pub(super) fn cpu_delta_ms(start: Option<u64>) -> Option<f64> {
 
 #[derive(Default)]
 pub(super) struct State {
+    pub(super) detail_renders: Cell<u64>,
+    pub(super) detail_update_checkpoint: Option<(u64, u64, u64)>,
     first_frame_queued: bool,
     ready_frame_queued: bool,
     ready_frame: bool,
@@ -173,6 +175,12 @@ const DETAIL_STAGES: [(&str, usize); 10] = [
     ("detail_follow_cancel", 240),
     ("detail_live_scrolled", 240),
     ("detail_refresh", 240),
+];
+const DETAIL_UPDATE_STAGES: [(&str, usize); 7] = [
+    ("detail_update_unrelated", 80), ("detail_update_outside", 80),
+    ("detail_update_append", 80), ("detail_update_selected", 80),
+    ("detail_update_follow", 80), ("detail_update_overview", 80),
+    ("detail_update_fullscreen", 80),
 ];
 const RICH_STAGES: [(&str, usize); 4] = [
     ("detail_file_expand", 240),
@@ -419,6 +427,8 @@ impl Rireki {
                 &FILE_STAGES
             } else if args.iter().any(|arg| arg == "--profile-rich") {
                 &RICH_STAGES
+            } else if args.iter().any(|arg| arg == "--profile-detail-updates") {
+                &DETAIL_UPDATE_STAGES
             } else if args.iter().any(|arg| arg == "--profile-detail") {
                 &DETAIL_STAGES
             } else {
@@ -584,13 +594,14 @@ impl Rireki {
                     session.finalize();
                     self.rebuild_order();
                     si
-                } else if matches!(stage, "detail_panel" | "detail_follow" | "detail_follow_cancel" | "detail_live_scrolled" | "detail_refresh") {
+                } else if stage.starts_with("detail_update_") || matches!(stage, "detail_panel" | "detail_follow" | "detail_follow_cancel" | "detail_live_scrolled" | "detail_refresh") {
                     self.profile_session(anchor)
                 } else {
                     anchor
                 };
                 self.detail_tab = DetailTab::Events;
-                let last = if stage == "detail_diff_rows" {
+                let fixed = stage.starts_with("detail_update_") && stage != "detail_update_follow";
+                let last = if fixed { 4 } else if stage == "detail_diff_rows" {
                     2
                 } else if stage == "detail_long_single" {
                     0
@@ -601,16 +612,19 @@ impl Rireki {
                     Selection {
                         session,
                         lane: 0,
-                        first: if stage == "detail_diff_rows" {2} else {0},
+                        first: if fixed || stage == "detail_diff_rows" {2} else {0},
                         last,
                     },
                     window,
                     cx,
                 );
                 self.detail_t = 1.0;
+                if stage == "detail_update_overview" { self.set_detail_tab(DetailTab::Session, cx); }
+                if stage == "detail_update_fullscreen" { self.toggle_detail_fullscreen(window, cx); }
             }
         }
         match stage {
+            stage if stage.starts_with("detail_update_") => self.detail_profile_update_step(stage, step, cx),
             "detail_panel" => match step {
                 0 => self.set_detail_tab(DetailTab::Session, cx),
                 20 => {
@@ -1396,7 +1410,7 @@ impl Rireki {
         index
     }
 
-    fn profile_append(&mut self, count: usize, cx: &mut Context<Self>) {
+    pub(super) fn profile_append(&mut self, count: usize, cx: &mut Context<Self>) {
         let Some(sel) = self.selected else {
             return;
         };

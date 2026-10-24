@@ -148,7 +148,7 @@ impl Rireki {
         !self.analysis_state.busy
             && self.analysis_state.result.as_ref().is_some_and(|(key, _)| {
                 Some(key.selection) == self.shown_detail_selection()
-                    && key.generation == self.shown_detail_generation()
+                    && key.generation == self.shown_selection_generation()
                     && key.filter == self.analysis_state.filter
                     && key.order == self.analysis_state.order
             })
@@ -222,7 +222,7 @@ impl Rireki {
         };
         let key = Key {
             selection: sel,
-            generation: self.shown_detail_generation(),
+            generation: self.shown_selection_generation(),
             filter: self.analysis_state.filter.clone(),
             order: self.analysis_state.order,
         };

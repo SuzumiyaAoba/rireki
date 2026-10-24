@@ -10,7 +10,7 @@ use super::widgets::{Marquee, event_icon, kbd};
 use super::{Popover, Rireki, fmt_dur, local};
 use crate::icons::{self, Icon};
 use crate::layout::{self, Block, Granularity};
-use crate::model::one_line;
+use crate::model::{Status, one_line};
 use crate::theme::{self, c};
 
 impl Rireki {
@@ -60,6 +60,15 @@ impl Rireki {
         let (color, ic) = (theme::event_color(dom), theme::event_icon(dom));
         let (start, end) = self.sel_range(sel);
         let single = evs.len() == 1;
+        let outcome = if single {
+            match evs[0].status {
+                Status::Error => Some(("失敗", theme::ERR)),
+                Status::Rejected => Some(("拒否", theme::WARN)),
+                Status::Interrupted => Some(("中断", theme::WARN)),
+                Status::Pending => Some(("結果なし", theme::MUTED)),
+                Status::Ok => None,
+            }
+        } else { None };
         let head = if single { evs[0].name.to_string() } else { format!("{} 件", evs.len()) };
         let body: SharedString = if single { evs[0].summary.clone().into() } else { SharedString::default() };
         // まとめたブロックは、多い順に名前ごとの件数を並べる
@@ -97,6 +106,8 @@ impl Rireki {
                     .gap_1p5()
                     .child(event_icon(ic, color, 14.0))
                     .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(color)).child(head))
+                    .when_some(outcome, |d, (label, color)| d.child(div().px_1().rounded_sm()
+                        .bg(c(color).opacity(0.12)).text_color(c(color)).child(label)))
                     .child(div().flex_1())
                     .when(end > start, |d| d.child(div().text_color(c(theme::MUTED)).child(fmt_dur(end - start)))),
             )

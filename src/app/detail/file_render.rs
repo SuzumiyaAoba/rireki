@@ -19,7 +19,7 @@ impl Rireki {
         self.file_list.prepare(
             FileListKey {
                 sel,
-                generation: self.shown_detail_generation(),
+                generation: self.shown_selection_generation(),
                 width: self.detail_content_width(window).to_bits(),
                 open: self.file_open.clone(),
                 all_files: self.expanded.contains("files"),

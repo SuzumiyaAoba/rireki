@@ -21,7 +21,7 @@ impl Rireki {
         self.detail_list.prepare(
             DetailListKey {
                 sel,
-                generation: self.shown_detail_generation(),
+                generation: self.shown_selection_generation(),
                 filter: self.row_filter.clone(),
                 reversed: self.detail_reversed,
                 width: self.detail_content_width(window).to_bits(),

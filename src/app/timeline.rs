@@ -11,10 +11,10 @@ use gpui::{
 };
 
 use super::widgets::{Marquee, project_tile, tip};
-use super::{AXIS_H, BlockPaint, MIN_BLOCK, ROW_H, Rireki, Row, Selection, local, now};
+use super::{AXIS_H, BlockPaint, MIN_BLOCK, ROW_H, Rireki, Row, Selection, fmt_dur, fmt_n, local, now};
 use crate::icons::{self, Icon};
 use crate::layout::{Block, Granularity};
-use crate::model::one_line;
+use crate::model::{Status, one_line};
 use crate::theme::{self, c};
 
 /// ブロックに描くアイコンの大きさと、アイコンを出すブロックの最小幅
@@ -23,6 +23,7 @@ const ICON_MIN_W: f32 = 16.0;
 
 /// 右端の縦のミニマップの幅
 const LANE_MAP_W: f32 = 12.0;
+const BLOCK_INSET: f32 = 6.0;
 
 /// 単色・左寄せ・折り返しと装飾のないブロックのラベルを描く。
 /// GPUI 0.2.2 の paint_line に基づく。Apache-2.0: licenses/GPUI-APACHE-2.0.txt
@@ -30,6 +31,7 @@ fn paint_block_label(
     line: &LineLayout,
     origin: Point<Pixels>,
     line_height: Pixels,
+    color: gpui::Hsla,
     window: &mut Window,
     cx: &mut App,
 ) -> gpui::Result<()> {
@@ -64,7 +66,7 @@ fn paint_block_label(
                             run.font_id,
                             glyph.id,
                             line.font_size,
-                            gpui::black(),
+                            color,
                         )?;
                     }
                 }
@@ -190,7 +192,15 @@ impl Rireki {
                 .borrow_mut()
                 .describe((sel.session, sel.lane), lane, &b, show_text);
         let dom = &lane.events[dominant];
-        let (color, icon) = (theme::event_color(dom), theme::event_icon(dom));
+        let (color, icon) = if !vertical && sel.first == sel.last {
+            match dom.status {
+                Status::Error => (theme::ERR, Icon::X),
+                Status::Rejected | Status::Interrupted => (theme::WARN, Icon::X),
+                _ => (theme::event_color(dom), theme::event_icon(dom)),
+            }
+        } else {
+            (theme::event_color(dom), theme::event_icon(dom))
+        };
         let selected = self.selected.is_some_and(|s| {
             s.session == sel.session
                 && s.lane == sel.lane
@@ -208,6 +218,8 @@ impl Rireki {
             selected,
             hovered: self.hovered == Some(sel),
             label,
+            duration: (!vertical && sel.first == sel.last && w >= 100.0)
+                .then(|| fmt_dur(dom.end - dom.start).into()),
         };
         if let Some((measurements, started)) = measurements.zip(started) {
             let mut value = measurements.get();
@@ -220,6 +232,7 @@ impl Rireki {
     /// ブロックを 1 つの canvas にまとめて描き、当たり判定用に位置を覚えておく
     pub(super) fn blocks_canvas(&mut self, blocks: Vec<BlockPaint>) -> impl IntoElement {
         self.hits = blocks.iter().map(|b| (b.rect, b.sel)).collect();
+        let waterfall = self.mode == crate::prefs::Mode::Timeline;
         let measurements = self.profile.as_ref().and_then(|p| p.measurements.clone());
         let paint_hash = if measurements.is_some() {
             use std::hash::{DefaultHasher, Hash, Hasher};
@@ -230,6 +243,7 @@ impl Rireki {
                 self.store.sessions[block.sel.session].id.hash(&mut hash);
                 (block.sel.lane, block.sel.first, block.sel.last, block.color, block.icon.path(), block.multi, block.selected, block.hovered).hash(&mut hash);
                 block.label.hash(&mut hash);
+                block.duration.hash(&mut hash);
             }
             hash.finish()
         } else { 0 };
@@ -242,13 +256,14 @@ impl Rireki {
                 let font = window.text_style().font();
                 let font_size = window.rem_size() * 0.75;
                 let line_h = px(16.0);
+                let icon_min_w = if waterfall { 22.0 } else { ICON_MIN_W };
                 window.with_content_mask(Some(ContentMask { bounds }), |window| {
                     let rect = |b: &BlockPaint| {
                         let (x, y, w, h) = b.rect;
                         Bounds::new(bounds.origin + point(px(x), px(y)), size(px(w), px(h)))
                     };
                     let plain = |b: &BlockPaint| {
-                        b.label.is_none() && (b.rect.2 < ICON_MIN_W || b.rect.3 < ICON + 2.0)
+                        b.label.is_none() && (b.rect.2 < icon_min_w || b.rect.3 < ICON + 2.0)
                     };
                     let mut first = 0;
                     while first < blocks.len() {
@@ -271,20 +286,27 @@ impl Rireki {
                                     size(px(w), px(h)),
                                 );
                                 let col = c(b.color);
-                                let alpha = if b.hovered {
+                                let alpha = if waterfall && w >= ICON_MIN_W {
+                                    if b.selected { 0.38 } else if b.hovered { 0.32 } else { 0.20 }
+                                } else if b.hovered {
                                     1.0
                                 } else if b.multi {
                                     0.75
                                 } else {
                                     0.9
                                 };
-                                let mut q = fill(r, col.opacity(alpha)).corner_radii(px(2.0));
+                                // 半透明色を地色と合成して不透明にし、重なる呼び出しの文字を透かさない。
+                                let background = if waterfall { c(theme::BG).blend(col.opacity(alpha)) } else { col.opacity(alpha) };
+                                let mut q = fill(r, background)
+                                    .corner_radii(px(if waterfall { 4.0 } else { 2.0 }));
                                 if b.selected {
                                     q = q.border_widths(px(1.5)).border_color(gpui::white());
                                 } else if b.hovered {
                                     q = q
                                         .border_widths(px(1.0))
                                         .border_color(gpui::white().opacity(0.6));
+                                } else if waterfall && w >= ICON_MIN_W {
+                                    q = q.border_widths(px(1.0)).border_color(col.opacity(0.45));
                                 } else if b.multi {
                                     q = q
                                         .border_widths(gpui::Edges {
@@ -294,25 +316,31 @@ impl Rireki {
                                         .border_color(col);
                                 }
                                 window.paint_quad(q);
+                                if waterfall && w >= ICON_MIN_W {
+                                    window.paint_quad(fill(
+                                        Bounds::new(r.origin + point(px(1.0), px(3.0)), size(px(2.0), px(h - 6.0))),
+                                        col,
+                                    ).corner_radii(px(1.0)));
+                                }
                                 // 収まるならアイコンを左端に出し、ラベルはその右に続ける
                                 let mut text_x = 4.0;
-                                if w >= ICON_MIN_W && h >= ICON + 2.0 {
+                                if w >= icon_min_w && h >= ICON + 2.0 {
                                     let top = (h - ICON) / 2.0;
                                     let ib = Bounds::new(
-                                        r.origin + point(px(3.0), px(top)),
+                                        r.origin + point(px(if waterfall { 6.0 } else { 3.0 }), px(top)),
                                         size(px(ICON), px(ICON)),
                                     );
                                     let _ = window.paint_svg(
                                         ib,
                                         b.icon.path().into(),
                                         gpui::TransformationMatrix::unit(),
-                                        gpui::black().opacity(0.8),
+                                        if waterfall { col } else { gpui::black().opacity(0.8) },
                                         cx,
                                     );
-                                    text_x = 3.0 + ICON + 3.0;
+                                    text_x = if waterfall { 6.0 + ICON + 5.0 } else { 3.0 + ICON + 3.0 };
                                 }
                                 let Some(label) = &b.label else { continue };
-                                label_paint = Some((label, r, text_x, h));
+                                label_paint = Some((label, b.duration.as_ref(), r, text_x, h));
                             }
                         };
                         if plain(&blocks[first]) {
@@ -321,11 +349,12 @@ impl Rireki {
                             // SVGの画素丸めを含む範囲で、本体とアイコンをまとめる。
                             window.paint_layer(layer.dilate(px(3.0 / window.scale_factor())), paint);
                         }
-                        if let Some((label, r, text_x, h)) = label_paint {
+                        if let Some((label, duration, r, text_x, h)) = label_paint {
+                            let foreground = if waterfall { c(theme::TEXT) } else { gpui::black() };
                             let run = TextRun {
                                 len: label.len(),
                                 font: font.clone(),
-                                color: gpui::black(),
+                                color: foreground,
                                 background_color: None,
                                 underline: None,
                                 strikethrough: None,
@@ -337,26 +366,44 @@ impl Rireki {
                             let line = window.text_system().layout_line(
                                 label,
                                 font_size,
-                                &[run],
+                                std::slice::from_ref(&run),
                                 None,
                             );
+                            let duration_line = duration.filter(|_| waterfall).map(|text| {
+                                let run = TextRun { len: text.len(), ..run };
+                                window.text_system().layout_line(text, font_size, &[run], None)
+                            });
+                            let reserved = duration_line.as_ref().map_or(px(0.0), |line| line.width + px(12.0));
                             let top = if h > line_h.into() {
                                 (h - f32::from(line_h)) / 2.0
                             } else {
                                 0.0
                             };
                             window.with_content_mask(
-                                Some(ContentMask { bounds: r }),
+                                Some(ContentMask { bounds: Bounds::new(r.origin, size((r.size.width - reserved).max(px(0.0)), r.size.height)) }),
                                 |window| {
                                     let _ = paint_block_label(
                                         &line,
                                         r.origin + point(px(text_x), px(top)),
                                         line_h,
+                                        foreground,
                                         window,
                                         cx,
                                     );
                                 },
                             );
+                            if let Some(line) = duration_line {
+                                window.with_content_mask(Some(ContentMask { bounds: r }), |window| {
+                                    let _ = paint_block_label(
+                                        &line,
+                                        point(r.right() - line.width - px(6.0), r.top() + px(top)),
+                                        line_h,
+                                        foreground.opacity(0.75),
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }
                         }
                         first = end;
                     }
@@ -407,7 +454,10 @@ impl Rireki {
         }
 
         // 時間軸
-        let mut axis = div().relative().h(px(AXIS_H)).w(px(pw)).overflow_hidden();
+        let mut axis = div().relative().h(px(AXIS_H)).w(px(pw)).flex_none().bg(c(theme::PANEL)).overflow_hidden()
+            .child(div().absolute().left(px(8.0)).top(px(2.0)).text_size(px(10.0))
+                .text_color(c(theme::SUBTLE))
+                .child(format!("{} · UTC{}", local(v0).format("%Y/%m/%d"), local(v0).format("%:z"))));
         let mut grid = grid::Grid::default();
         for (t, label, major) in ticks(v0, v1, self.spp) {
             let x = x_of(t);
@@ -418,12 +468,14 @@ impl Rireki {
                 div()
                     .absolute()
                     .left(px(x + 3.0))
-                    .top(px(if major { 2.0 } else { 14.0 }))
+                    .top(px(19.0))
                     .text_xs()
                     .whitespace_nowrap()
                     .text_color(c(if major { theme::TEXT } else { theme::MUTED }))
                     .child(label),
             );
+            axis = axis.child(div().absolute().left(px(x)).bottom_0().w(px(1.0)).h(px(5.0))
+                .bg(c(if major { theme::MUTED } else { theme::BORDER })));
             grid.lines.push((x, if major {
                 0x353b47
             } else {
@@ -437,11 +489,23 @@ impl Rireki {
                 .child(div().absolute().left(px(nx - 3.0)).bottom_0().size(px(7.0)).rounded_full().bg(c(theme::NOW)));
         }
 
-        let mut labels = div().relative().w(px(self.label_w)).h(px(ph)).overflow_hidden();
+        let mut labels = div().relative().w(px(self.label_w)).flex_none().h(px(ph)).bg(c(theme::SIDEBAR)).overflow_hidden();
         let mut plot = div().relative().w(px(pw)).h(px(ph)).overflow_hidden();
         let mut blocks: Vec<BlockPaint> = Vec::new();
         let mut row_y_of_lane = std::collections::HashMap::new();
         let selected = self.selected;
+        // ホバーまたは選択範囲を時間軸まで通して、並列レーンの前後関係を比較できるようにする。
+        if let Some(sel) = self.hovered.or(selected).filter(|&sel| self.valid(sel)) {
+            let (start, end) = self.sel_range(sel);
+            if end >= v0 && start <= v1 {
+                let x = x_of(start).clamp(0.0, pw);
+                let x2 = x_of(end).clamp(0.0, pw);
+                plot = plot.child(div().absolute().left(px(x)).top_0().w(px((x2 - x).max(1.0))).h_full()
+                    .bg(c(theme::ACCENT).opacity(0.04)).border_x_1().border_color(c(theme::ACCENT).opacity(0.3)));
+                axis = axis.child(div().absolute().left(px(x)).bottom_0().w(px((x2 - x).max(2.0)))
+                    .h(px(2.0)).bg(c(theme::ACCENT)));
+            }
+        }
 
         for (row, r) in tracks.iter().enumerate().skip(first_row).take(rows_visible) {
             let y = row as f32 * ROW_H - self.row_scroll;
@@ -463,11 +527,11 @@ impl Rireki {
                             .h(px(ROW_H))
                             .flex()
                             .items_center()
-                            .gap_1p5()
-                            .px_2()
-                            .bg(c(0x1f232b))
+                            .gap_2()
+                            .px_3()
+                            .bg(c(theme::PANEL))
                             .border_t_1()
-                            .border_color(c(0x3a4150))
+                            .border_color(c(theme::BORDER))
                             .when(dim, |d| d.opacity(0.45))
                             .text_xs()
                             .whitespace_nowrap()
@@ -487,7 +551,8 @@ impl Rireki {
                                     .text_color(c(theme::TEXT))
                                     .child(self.project_name(cwd)),
                             )
-                            .child(div().flex_none().text_color(c(theme::SUBTLE)).child(format!("{}", sessions.len())))
+                            .child(div().flex_none().px_1p5().rounded_sm().bg(c(theme::BG))
+                                .text_size(px(10.0)).text_color(c(theme::MUTED)).child(fmt_n(sessions.len())))
                             // 右寄せは ml_auto ではなく詰め物で行う（auto マージンがあると gap が効かない）
                             .child(div().flex_1())
                             .child(
@@ -506,7 +571,7 @@ impl Rireki {
                                         icons::icon(Icon::Filter, if focused { theme::ACCENT } else { theme::MUTED })
                                             .size_3(),
                                     )
-                                    .child(if focused { "解除" } else { "絞り込む" })
+                                    .when(self.label_w >= 240.0, |d| d.child(if focused { "解除" } else { "絞り込む" }))
                                     .tooltip(tip(
                                         if focused {
                                             "プロジェクトの絞り込みを解除"
@@ -538,7 +603,7 @@ impl Rireki {
                                 cx.notify();
                             })),
                     );
-                    grid.rows.push(grid::RowBackground::new(y, ROW_H, c(0x1b1e25)).border_top(c(0x3a4150)));
+                    grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::PANEL)).border_top(c(theme::BORDER)));
                     // 折りたたみ中はグループ内のメインレーンを 1 行に重ねて描く
                     if directory {
                         self.paint_packed_blocks(packed, y, &mut blocks);
@@ -550,13 +615,14 @@ impl Rireki {
                                 let x = x_of(b.start).max(-2.0);
                                 let w = (x_of(b.end).min(pw + 2.0) - x).max(MIN_BLOCK);
                                 let sel = Selection { session: si, lane: 0, first: b.first, last: b.last };
-                                blocks.push(self.block_paint(sel, (x, y + 3.0, w, ROW_H - 6.0), false));
+                                blocks.push(self.block_paint(sel, (x, y + BLOCK_INSET, w, ROW_H - 2.0 * BLOCK_INSET), false));
                             }
                         }
                     }
                     continue;
                 }
                 Row::Packed(packed) => {
+                    grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::BG)).border_top(c(theme::GRID).opacity(0.45)));
                     self.paint_packed_blocks(packed, y, &mut blocks);
                     continue;
                 }
@@ -567,16 +633,17 @@ impl Rireki {
             let lane = &s.lanes[tr.lane];
             let new_session = row > 0 && matches!(&tracks[row - 1], Row::Lane(p) if p.session != tr.session);
             let lane_selected = selected.is_some_and(|sel| sel.session == tr.session && sel.lane == tr.lane);
+            let lane_hovered = self.hovered.is_some_and(|sel| sel.session == tr.session && sel.lane == tr.lane);
 
             let (title, sub) = if tr.lane == 0 {
                 let t = if s.title.is_empty() { "(無題)" } else { s.title.as_str() };
                 (one_line(t, usize::MAX), false)
             } else {
-                (format!("↳ {}", one_line(&lane.name, usize::MAX)), true)
+                (one_line(&lane.name, usize::MAX), true)
             };
             let (badge, badge_color) = icons::source_icon(s.source);
             let (session, lane_i) = (tr.session, tr.lane);
-            let indent = 16.0 + 16.0 * tr.depth as f32;
+            let indent = 20.0 + 16.0 * tr.depth as f32;
             let n = lane.events.len();
             labels = labels.child(
                 div()
@@ -589,10 +656,12 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .px_2()
+                    .px_3()
                     .pl(px(indent))
-                    .when(new_session, |d| d.border_t_1().border_color(c(theme::BORDER)))
+                    .border_t_1()
+                    .border_color(c(if new_session { theme::BORDER } else { theme::GRID }))
                     .when(lane_selected, |d| d.bg(c(theme::ACCENT_BG)))
+                    .when(lane_hovered && !lane_selected, |d| d.bg(c(theme::HOVER)))
                     .when(!tr.active, |d| d.opacity(0.4))
                     .text_xs()
                     .whitespace_nowrap()
@@ -600,6 +669,9 @@ impl Rireki {
                     .cursor_pointer()
                     .hover(|d| d.bg(c(0x232733)))
                     .when(!sub, |d| d.child(icons::icon(badge, badge_color)))
+                    .when(sub, |d| d.child(icons::icon(Icon::Bot, theme::SUB).size_3()))
+                    .children((0..tr.depth).map(|depth| div().absolute().left(px(12.0 + depth as f32 * 16.0))
+                        .top_0().h_full().w(px(1.0)).bg(c(theme::BORDER))))
                     .child(
                         div()
                             .flex_1()
@@ -607,19 +679,35 @@ impl Rireki {
                             .text_color(c(if sub { theme::SUB } else { theme::TEXT }))
                             .child(Marquee::new("title", title)),
                     )
+                    .when(self.label_w >= 240.0, |d| d.child(div().flex_none().text_size(px(10.0))
+                        .text_color(c(theme::SUBTLE)).child(fmt_n(n))))
+                    .when(self.label_w >= 320.0, |d| d.child(div().w(px(54.0)).flex_none().text_right()
+                        .text_size(px(10.0)).text_color(c(theme::MUTED))
+                        .child(lane.range().map_or_else(String::new, |(a, b)| fmt_dur(b - a)))))
+                    .tooltip(tip(format!("{}\n{} 件 · {}", if sub { &lane.name } else { &s.title }, fmt_n(n),
+                        lane.range().map_or_else(String::new, |(a, b)| fmt_dur(b - a))), None))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.navigate(Selection { session, lane: lane_i, first: 0, last: n - 1 }, window, cx);
                     })),
             );
-            if new_session {
-                grid.rows.push(grid::RowBackground::new(y, 1.0, c(theme::BORDER)));
-            }
+            grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::BG).opacity(0.0))
+                .border_top(c(if new_session { theme::BORDER } else { theme::GRID }).opacity(0.65)));
             if !tr.active {
                 // 表示範囲外のレーンはグレーアウトする
                 grid.rows.push(grid::RowBackground::new(y, ROW_H, c(0x000000).opacity(0.18)));
             }
             if lane_selected {
                 grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::ACCENT).opacity(0.07)));
+            } else if lane_hovered {
+                grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::HOVER).opacity(0.6)));
+            }
+            // レーン全体の時間幅を細線で残し、イベント間の待ち時間を読み取れるようにする。
+            if let Some((start, end)) = lane.range().filter(|(start, end)| *end >= v0 && *start <= v1) {
+                let x = x_of(start).clamp(0.0, pw);
+                let x2 = x_of(end).clamp(0.0, pw);
+                plot = plot.child(div().absolute().left(px(x)).top(px(y + ROW_H / 2.0))
+                    .w(px((x2 - x).max(1.0))).h(px(1.0))
+                    .bg(c(if sub { theme::SUB } else { theme::MUTED }).opacity(0.22)));
             }
             let aggregate_started = measurements.as_ref().map(|_| std::time::Instant::now());
             let grouped = self.layout_cache.borrow_mut().aggregate((tr.session, tr.lane), lane, (v0, v1), self.spp, self.gran);
@@ -634,10 +722,11 @@ impl Rireki {
                 let x2 = x_of(b.end).min(pw + 2.0);
                 let w = (x2 - x).max(MIN_BLOCK);
                 let sel = Selection { session: tr.session, lane: tr.lane, first: b.first, last: b.last };
-                blocks.push(self.block_paint(sel, (x, y + 3.0, w, ROW_H - 6.0), false));
+                blocks.push(self.block_paint(sel, (x, y + BLOCK_INSET, w, ROW_H - 2.0 * BLOCK_INSET), false));
             }
         }
-        plot = plot.child(grid).child(self.blocks_canvas(blocks));
+        // 背景はガイドとイベントの下に置く。
+        plot = div().relative().w(px(pw)).h(px(ph)).overflow_hidden().child(grid).child(plot);
 
         // サブエージェントの起動位置から子レーンへの接続線
         let lane_rows = tracks.iter().skip(first_row).take(rows_visible).filter_map(|r| match r {
@@ -658,7 +747,7 @@ impl Rireki {
                 }
             };
             let py = row_y_of_lane.get(&pkey).copied().unwrap_or(-ROW_H);
-            let line = c(0xa77bf3).opacity(0.7);
+            let line = c(theme::SUB).opacity(0.4);
             // 起動位置で親レーンから下ろし、子レーンの先頭まで横に伸ばす
             let x = x_of(t).clamp(0.0, pw - 1.0);
             let top = py + ROW_H / 2.0;
@@ -672,6 +761,7 @@ impl Rireki {
                 plot = plot.child(div().absolute().left(px(x)).top(px(mid)).w(px(x2 - x)).h(px(1.0)).bg(line));
             }
         }
+        plot = plot.child(self.blocks_canvas(blocks));
 
         if tracks.is_empty() {
             plot = plot.child(self.empty_state(cx));
@@ -690,14 +780,26 @@ impl Rireki {
                             .w(px(self.label_w))
                             .h(px(AXIS_H))
                             .flex_none()
-                            .px_2()
+                            .px_3()
                             .flex()
                             .items_center()
+                            .gap_2()
                             .text_xs()
-                            .text_color(c(theme::SUBTLE))
+                            .bg(c(theme::PANEL))
+                            .text_color(c(theme::MUTED))
                             .border_r_1()
                             .border_color(c(theme::BORDER))
-                            .child(if directory { "ディレクトリ" } else { "セッション" }),
+                            .child(icons::icon(if directory { Icon::Folder } else { Icon::Layers }, theme::SUBTLE).size_3())
+                            .child(div().flex_1().min_w_0().truncate().child(if directory {
+                                "ディレクトリ"
+                            } else if self.label_w >= 240.0 {
+                                "セッション / エージェント"
+                            } else {
+                                "セッション"
+                            }))
+                            .when(self.label_w >= 240.0 && !directory, |d| d.child(div().text_size(px(10.0)).child("件数")))
+                            .when(self.label_w >= 320.0 && !directory, |d| d.child(div().w(px(54.0)).text_right()
+                                .text_size(px(10.0)).child("経過時間"))),
                     )
                     .child(axis)
                     .border_b_1()
@@ -722,7 +824,7 @@ impl Rireki {
     ) {
         for b in packed {
             let sel = Selection { session: b.session, lane: 0, first: b.block.first, last: b.block.last };
-            blocks.push(self.block_paint(sel, (b.x, y + 3.0, b.width, ROW_H - 6.0), false));
+            blocks.push(self.block_paint(sel, (b.x, y + BLOCK_INSET, b.width, ROW_H - 2.0 * BLOCK_INSET), false));
         }
     }
 
