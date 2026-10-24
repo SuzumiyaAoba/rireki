@@ -85,7 +85,16 @@ pub(crate) fn pack_file(path: &str, fp: &str, items: &[Loaded]) -> Packed {
             .collect(),
         ..Lane::new("")
     };
-    let mut texts = Vec::new();
+    // 本文はイベントと一対一。保存待ちの間も保持する配列に倍増分の余剰を残さない。
+    let text_count = items
+        .iter()
+        .flat_map(|item| match item {
+            Loaded::Session(s) => s.lanes.as_slice(),
+            Loaded::Child(_, lane) => std::slice::from_ref(lane),
+        })
+        .try_fold(0usize, |count, lane| count.checked_add(lane.events.len()))
+        .expect("本文の件数が上限を超えました");
+    let mut texts = Vec::with_capacity(text_count);
     let items = items
         .iter()
         .map(|item| match item {

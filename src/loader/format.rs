@@ -97,19 +97,23 @@ fn bounded_yaml(v: &Value, limit: usize) -> String {
     let mut chars = 0;
     for (i, line) in yaml_lines(v, limit.saturating_add(1)).enumerate() {
         if i != 0 {
+            if chars == limit {
+                out.push('…');
+                return out;
+            }
             out.push('\n');
             chars += 1;
-            if chars > limit {
-                return truncate(&out, limit);
-            }
         }
-        for c in line.chars() {
-            out.push(c);
-            chars += 1;
-            if chars > limit {
-                return truncate(&out, limit);
-            }
+        // 行単位で連結し、上限のときも生成済み本文を再走査・複製しない。
+        let count = line.chars().count();
+        let remaining = limit - chars;
+        if count > remaining {
+            out.push_str(text_prefix(&line, remaining));
+            out.push('…');
+            return out;
         }
+        out.push_str(&line);
+        chars += count;
     }
     out
 }
@@ -202,14 +206,14 @@ pub(super) fn summarize_input(name: &str, input: &Value) -> String {
     if let Value::Object(map) = input {
         for k in KEYS {
             if let Some(v) = map.get(*k) {
-                let s = match v {
-                    Value::String(s) => s.clone(),
-                    Value::Array(a) => a
+                let s: Cow<'_, str> = match v {
+                    Value::String(s) => Cow::Borrowed(s),
+                    Value::Array(a) => Cow::Owned(a
                         .iter()
                         .filter_map(|x| x.as_str())
                         .collect::<Vec<_>>()
-                        .join(" "),
-                    other => other.to_string(),
+                        .join(" ")),
+                    other => Cow::Owned(other.to_string()),
                 };
                 if !s.is_empty() {
                     return one_line(&s, 160);
@@ -511,6 +515,40 @@ mod tests {
         ] {
             let full = yaml(&value).join("\n");
             assert_eq!(bounded_yaml(&value, MAX_TEXT), truncate(&full, MAX_TEXT));
+        }
+    }
+
+    #[test]
+    fn bounded_yaml_preserves_all_line_boundaries_and_empty_values() {
+        for text in ["", "a", "日本語😀é", "\r\n", "a\n\nb\n", "\n\n"] {
+            let value = serde_json::json!({
+                "": text,
+                "nested": [{"text": text, "empty": []}, {}, null],
+                "array": [text, "", false, 1.25],
+                "tail": {"empty": {}, "text": text}
+            });
+            let full = yaml(&value).join("\n");
+            for limit in 0..=full.chars().count() + 1 {
+                assert_eq!(bounded_yaml(&value, limit), truncate(&full, limit));
+            }
+            assert_eq!(bounded_yaml(&value, usize::MAX), full);
+        }
+    }
+
+    #[test]
+    fn input_summary_preserves_key_priority_and_unicode_limits() {
+        let long = "日本語😀é\t".repeat(10_000);
+        assert_eq!(
+            summarize_input("tool", &serde_json::json!({"command": long})),
+            one_line(&long, 160)
+        );
+        for (value, expected) in [
+            (serde_json::json!({"description":"", "command":" cargo\n test "}), "cargo test"),
+            (serde_json::json!({"description":" \t", "command":"ignored"}), ""),
+            (serde_json::json!({"description":[], "command":["cargo", null, " test "]}), "cargo test"),
+            (serde_json::json!({"description":false, "command":"ignored"}), "false"),
+        ] {
+            assert_eq!(summarize_input("tool", &value), expected);
         }
     }
 

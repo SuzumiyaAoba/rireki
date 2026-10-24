@@ -1,7 +1,7 @@
 //! セッションとレーンの構造、時刻索引、エージェントの親子関係。
 
 use super::{Event, Kind, Source};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub struct Lane {
@@ -72,7 +72,10 @@ pub struct Session {
 impl Session {
     /// レーン構成が変わった後に、描画で使う派生データを作り直す
     pub fn finalize(&mut self) {
+        let (mut references, mut events) = (0, 0);
         for l in &mut self.lanes {
+            references += usize::from(l.spawned_by.is_some());
+            events += l.events.len();
             let (mut m, mut tool) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
             l.cum_end.clear();
             l.cum_tool_end.clear();
@@ -91,12 +94,35 @@ impl Session {
             (f64::INFINITY, f64::NEG_INFINITY),
             |(a, b), (start, end)| (a.min(start), b.max(end)),
         );
-        // 起動元のレーンと時刻を一度の走査で索引化する。子ごとに親の全イベントを探し直さない
+        // 通常は少数のレーンが参照する起動元だけを探す。参照が密な入力は
+        // 一度の辞書挿入で済む全件索引を使い、二つの表の照合費用を避ける。
         let mut owner = HashMap::new();
-        for (li, lane) in self.lanes.iter().enumerate() {
-            for e in &lane.events {
-                if let Some(id) = e.call_id.as_deref() {
-                    owner.entry(id).or_insert((li, e.start));
+        if references > events / 4 {
+            for (li, lane) in self.lanes.iter().enumerate() {
+                for event in &lane.events {
+                    if let Some(id) = event.call_id.as_deref() {
+                        owner.entry(id).or_insert((li, event.start));
+                    }
+                }
+            }
+        } else if references != 0 {
+            let mut needed: HashSet<&str> = self
+                .lanes
+                .iter()
+                .filter_map(|lane| lane.spawned_by.as_deref())
+                .collect();
+            owner.reserve(needed.len());
+            // レーン順・イベント順で最初に見つかった ID だけを採用する。
+            'lanes: for (li, lane) in self.lanes.iter().enumerate() {
+                for event in &lane.events {
+                    if let Some(id) = event.call_id.as_deref()
+                        && needed.remove(id)
+                    {
+                        owner.insert(id, (li, event.start));
+                        if needed.is_empty() {
+                            break 'lanes;
+                        }
+                    }
                 }
             }
         }

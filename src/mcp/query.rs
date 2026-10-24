@@ -100,21 +100,11 @@ impl Args {
         session: &'a Session,
         words: &'a [&'a str],
     ) -> impl Iterator<Item = (usize, usize, &'a Event)> + 'a {
-        session
-            .lanes
-            .iter()
-            .enumerate()
-            .filter(|(li, _)| self.lane.is_none_or(|lane| lane == *li))
-            .flat_map(move |(li, lane)| {
-                lane.events
-                    .iter()
-                    .enumerate()
-                    .filter(move |(ei, e)| {
-                        self.event_index.is_none_or(|index| index == *ei)
-                            && self.event_matches(e, words)
-                    })
-                    .map(move |(ei, e)| (li, ei, e))
-            })
+        selected(&session.lanes, self.lane).flat_map(move |(li, lane)| {
+            selected(&lane.events, self.event_index)
+                .filter(move |(_, e)| self.event_matches(e, words))
+                .map(move |(ei, e)| (li, ei, e))
+        })
     }
 
     fn event_matches(&self, e: &Event, words: &[&str]) -> bool {
@@ -133,6 +123,30 @@ impl Args {
                 [&e.name, &e.summary, e.model.as_deref().unwrap_or("")],
             )
     }
+}
+
+/// 指定した項目だけを直接参照し、元の添字と範囲外の空集合を維持する。
+pub(super) fn selected<T>(items: &[T], index: Option<usize>) -> impl Iterator<Item = (usize, &T)> {
+    let (start, items) = selected_slice(items, index);
+    items
+        .iter()
+        .enumerate()
+        .map(move |(i, item)| (start + i, item))
+}
+
+pub(super) fn selected_slice<T>(items: &[T], index: Option<usize>) -> (usize, &[T]) {
+    let range = selected_range(items.len(), index);
+    (range.start, &items[range])
+}
+
+fn selected_range(len: usize, index: Option<usize>) -> std::ops::Range<usize> {
+    let start = index.unwrap_or(0).min(len);
+    let end = if index.is_some() {
+        start.saturating_add(1).min(len)
+    } else {
+        len
+    };
+    start..end
 }
 
 pub(super) fn source(s: Source) -> &'static str {
@@ -159,5 +173,64 @@ pub(super) fn status(s: Status) -> &'static str {
         Status::Rejected => "rejected",
         Status::Interrupted => "interrupted",
         Status::Pending => "pending",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::fixtures;
+    use crate::model::{Lane, Loaded};
+
+    #[test]
+    fn direct_selection_preserves_indices_filters_and_out_of_range_results() {
+        let mut items = fixtures::items(&[("Read", "", ""), ("Write", "", ""), ("Read", "", "")]);
+        let Loaded::Session(session) = &mut items[0] else {
+            panic!()
+        };
+        session.lanes[0].events[1].status = Status::Rejected;
+        session.lanes[0].events[2].model = Some("MODEL-İ".into());
+        session.lanes.push(Lane::new("empty"));
+        session.lanes.push(session.lanes[0].clone());
+        for lane in [None, Some(0), Some(1), Some(2), Some(3), Some(usize::MAX)] {
+            for event_index in [None, Some(0), Some(1), Some(2), Some(3), Some(usize::MAX)] {
+                for (query, after, status) in [
+                    ("", None, None),
+                    ("read", Some(1.0), None),
+                    ("", None, Some("failed")),
+                    ("model-i\u{307}", None, None),
+                ] {
+                    let args = Args {
+                        lane,
+                        event_index,
+                        after,
+                        status: status.map(str::to_owned),
+                        ..Args::default()
+                    };
+                    let words: Vec<_> = query.split_whitespace().collect();
+                    let expected: Vec<_> = session
+                        .lanes
+                        .iter()
+                        .enumerate()
+                        .filter(|(li, _)| lane.is_none_or(|v| v == *li))
+                        .flat_map(|(li, l)| {
+                            l.events.iter().enumerate().map(move |(ei, e)| (li, ei, e))
+                        })
+                        .filter(|(_, ei, e)| {
+                            event_index.is_none_or(|v| v == *ei) && args.event_matches(e, &words)
+                        })
+                        .map(|(li, ei, _)| (li, ei))
+                        .collect();
+                    let actual: Vec<_> = args
+                        .matching_events(session, &words)
+                        .map(|(li, ei, _)| (li, ei))
+                        .collect();
+                    assert_eq!(
+                        actual, expected,
+                        "lane={lane:?}, event={event_index:?}, query={query}"
+                    );
+                }
+            }
+        }
     }
 }

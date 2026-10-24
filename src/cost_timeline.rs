@@ -523,8 +523,9 @@ mod tests {
                 false,
             )],
         };
-        for bins in [1, 7, 512] {
-            let view = View::new(0.0, 4096.0, bins).unwrap();
+        for bins in [1, 7, MAX_BINS, MAX_BINS + 1] {
+            // 上限を超えた直接構築でも、同じ参照集計・中断確認と一致する。
+            let view = View { start: 0.0, end: 4096.0, bins };
             let mut cache = Cache::default();
             let checks = std::cell::Cell::new(0);
             let summary = cache

@@ -103,10 +103,11 @@ impl Range {
     }
 
     /// 同じ期間か。日付と両端の時刻が同じなら、日の境界は作り直さない
-    fn matches(&self, span: &Span) -> bool {
-        self.span == *span
-            && self.start == midnight(span.from)
-            && self.end == midnight(span.to + Duration::days(1))
+    fn matches(&self, from: NaiveDate, to: NaiveDate) -> bool {
+        // 同じ PeriodCache 内では、列・集約単位・前期間も両端の日付から一意に決まる。
+        self.span.from == from && self.span.to == to
+            && self.start == midnight(from)
+            && self.end == midnight(to + Duration::days(1))
     }
 
     /// 開始時刻の (期間内の日, 時間帯のマス)。`cursor` はレーン内の直前の日で、時刻順に呼ぶと探索を省ける
@@ -602,22 +603,22 @@ impl Cache {
         if !keep_running() {
             return None;
         }
-        let span = Span::new(store, order, period, today);
+        let from = Span::from_date(store, order, period, today);
         let cache = match self.periods.iter().position(|p| p.period == period) {
             Some(index) => {
                 let cache = &mut self.periods[index];
-                if !cache.range.matches(&span) {
+                if !cache.range.matches(from, today) {
                     cache.sessions.clear();
                     cache.names.0.clear();
                     cache.merged_counts = [0; 2];
-                    cache.range = Range::new(span);
+                    cache.range = Range::new(Span::new(from, period, today));
                 }
                 cache
             }
             None => {
                 self.periods.push(PeriodCache {
                     period,
-                    range: Range::new(span),
+                    range: Range::new(Span::new(from, period, today)),
                     sessions: HashMap::default(),
                     hashes: RandomState::new(),
                     names: Names::default(),

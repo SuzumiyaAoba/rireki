@@ -82,17 +82,19 @@ impl Db {
                         i64,
                         &str,
                         i64,
-                        Vec<&Lane>,
+                        &[Lane],
                         Option<&Session>,
                     ) = match item {
                         Loaded::Session(s) => (
                             0,
                             &s.id,
                             source_to_i(s.source),
-                            s.lanes.iter().collect(),
+                            &s.lanes,
                             Some(s),
                         ),
-                        Loaded::Child(parent, lane) => (1, parent, 0, vec![lane], None),
+                        Loaded::Child(parent, lane) => {
+                            (1, parent, 0, std::slice::from_ref(lane), None)
+                        }
                     };
                     let (cwd, title, headless, branch, version) = match s {
                         Some(s) => (

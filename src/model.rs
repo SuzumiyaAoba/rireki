@@ -198,6 +198,69 @@ mod tests {
     }
 
     #[test]
+    fn finalize_clears_removed_spawn_links_and_keeps_unlinked_lane_order() {
+        let mut session = test_session();
+        session.lanes = vec![test_lane("main", 1.0), test_lane("later", 5.0), test_lane("earlier", 3.0)];
+        session.lanes[0].events[0].call_id = Some("spawn".into());
+        session.lanes[1].spawned_by = Some("spawn".into());
+        session.finalize();
+        assert_eq!(session.lanes[1].spawn_t, Some(1.0));
+        session.lanes[1].spawned_by = None;
+        session.finalize();
+        assert_eq!(session.parents, [None, Some(0), Some(0)]);
+        assert_eq!(session.tree, [(0, 0), (2, 1), (1, 1)]);
+        assert!(session.lanes.iter().all(|lane| lane.spawn_t.is_none()));
+        assert_eq!((session.start, session.end), (1.0, 6.0));
+        assert_eq!(session.lanes[1].cum_end, [6.0]);
+
+        session.lanes.truncate(1);
+        session.lanes[0].spawned_by = Some("spawn".into());
+        session.finalize();
+        assert_eq!(session.parents, [None]);
+        assert_eq!(session.tree, [(0, 0)]);
+        assert_eq!(session.lanes[0].spawn_t, Some(1.0));
+        session.lanes[0].spawned_by = None;
+        session.finalize();
+        assert_eq!(session.lanes[0].spawn_t, None);
+        session.lanes.clear();
+        session.finalize();
+        assert!(session.parents.is_empty());
+        assert!(session.tree.is_empty());
+        assert_eq!((session.start, session.end), (f64::INFINITY, f64::NEG_INFINITY));
+    }
+
+    #[test]
+    fn finalize_targeted_owners_match_full_scan_for_duplicate_missing_and_self_links() {
+        for (seed, event_count) in (0..64).flat_map(|seed| [1, 4, 16].map(move |count| (seed, count))) {
+            let mut session = test_session();
+            session.lanes = (0..8).map(|li| {
+                let mut lane = test_lane(&format!("lane-{li}"), li as f64);
+                lane.events = (0..event_count).map(|ei| {
+                    let mut event = lane.events[0].clone();
+                    event.start = (li * 16 + ei) as f64;
+                    event.end = event.start + 1.0;
+                    event.call_id = (ei % 3 != 0).then(|| format!("call-{}", (li * 17 + ei + seed) % 23).into());
+                    event
+                }).collect();
+                lane.spawned_by = (li % 3 != seed % 3).then(|| format!("call-{}", (li * 7 + seed) % 29));
+                lane
+            }).collect();
+            let owners: Vec<_> = session.lanes.iter().map(|lane| {
+                let id = lane.spawned_by.as_deref()?;
+                session.lanes.iter().enumerate().find_map(|(li, lane)| {
+                    lane.events.iter().find(|event| event.call_id.as_deref() == Some(id)).map(|event| (li, event.start))
+                })
+            }).collect();
+            session.finalize();
+            for (li, owner) in owners.into_iter().enumerate() {
+                let parent = if li == 0 { None } else { Some(owner.map(|(index, _)| index).filter(|&index| index != li).unwrap_or(0)) };
+                assert_eq!(session.parents[li], parent, "seed={seed}, lane={li}");
+                assert_eq!(session.lanes[li].spawn_t, owner.filter(|&(index, _)| index == parent.unwrap_or(0)).map(|(_, start)| start));
+            }
+        }
+    }
+
+    #[test]
     fn bounded_text_matches_full_normalization() {
         for text in [
             "",

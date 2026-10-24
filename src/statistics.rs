@@ -277,8 +277,8 @@ struct Span {
 }
 
 impl Span {
-    fn new(store: &Snapshot, order: &[usize], period: Period, today: NaiveDate) -> Self {
-        let from = match period.days() {
+    fn from_date(store: &Snapshot, order: &[usize], period: Period, today: NaiveDate) -> NaiveDate {
+        match period.days() {
             Some(n) => today - Duration::days(n - 1),
             None => {
                 // 最も早い開始時刻だけを日付に変換する。
@@ -293,7 +293,10 @@ impl Span {
                     today
                 }
             }
-        };
+        }
+    }
+
+    fn new(from: NaiveDate, period: Period, today: NaiveDate) -> Self {
         let days = (today - from).num_days() + 1;
         let unit = match period {
             Period::All if days > WEEK_UNIT_MAX => Unit::Month,
@@ -358,7 +361,7 @@ impl Summary {
         use crate::time::midnight;
         use chrono::Timelike;
         use std::collections::HashSet;
-        let span = Span::new(store, order, period, today);
+        let span = Span::new(Span::from_date(store, order, period, today), period, today);
         let (start, end) = (midnight(span.from), midnight(span.to + Duration::days(1)));
         let previous = span.previous.map(|p| (midnight(p), start));
         let mut out = Self::empty(&span, period);
@@ -805,6 +808,32 @@ mod tests {
                 &cache.build(&store, &[0, 1], period, today + Duration::days(1)),
                 &Summary::reference(&store, &[0, 1], period, today + Duration::days(1)),
             );
+        }
+    }
+
+    #[test]
+    fn cached_ranges_follow_scope_day_and_calendar_unit_changes() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+        let store = Snapshot {
+            sessions: [1, 92, 93, 371, 372].into_iter().map(|days| {
+                session(Source::Codex, "/calendar", vec![vec![
+                    event(midnight(today - Duration::days(days - 1)), Kind::User, Usage::default()),
+                    event(midnight(today), Kind::User, Usage::default()),
+                ]])
+            }).collect(),
+        };
+        let mut cache = Cache::default();
+        for day in [today, today + Duration::days(1), today] {
+            for scope in [vec![0, 1], vec![0, 2], vec![0, 3], vec![0, 4], vec![4], vec![], vec![0, 1]] {
+                for period in PERIODS {
+                    for _ in 0..2 {
+                        assert_summary(
+                            &cache.build(&store, &scope, period, day),
+                            &Summary::reference(&store, &scope, period, day),
+                        );
+                    }
+                }
+            }
         }
     }
 
