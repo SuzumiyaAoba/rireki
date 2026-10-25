@@ -6,6 +6,7 @@
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use crate::paths::cache_dir as dir;
 
 mod codec;
 mod connection;
@@ -27,15 +28,6 @@ pub struct Db {
     conn: Connection,
     saved: HashMap<String, std::sync::Weak<crate::text::Texts>>,
     last_event_id: i64,
-}
-
-fn dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("RIREKI_CACHE_DIR") {
-        return PathBuf::from(dir);
-    }
-    let base =
-        dirs::cache_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".cache"));
-    base.join("rireki")
 }
 
 pub fn path() -> PathBuf {

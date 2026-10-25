@@ -1,4 +1,31 @@
-//! ログ内のパスは実行 OS と異なることがあるので、両方の区切り文字を扱う。
+//! アプリの保存先とログ内のパス。ログの区切り文字は実行 OS に依存しない。
+
+use std::path::PathBuf;
+
+/// OS 標準の設定保存先。料金表は既存の設定を参照し、画面計測用の上書きには従わない。
+pub fn default_config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
+        .join("rireki")
+}
+
+/// GUI の設定保存先。環境変数が空でも明示された値をそのまま使う。
+pub fn config_dir() -> PathBuf {
+    std::env::var_os("RIREKI_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_dir)
+}
+
+/// 索引・本文・JS 整形キャッシュの共通保存先。
+pub fn cache_dir() -> PathBuf {
+    std::env::var_os("RIREKI_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::cache_dir()
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".cache"))
+                .join("rireki")
+        })
+}
 
 pub const SEPARATORS: [char; 2] = ['/', '\\'];
 

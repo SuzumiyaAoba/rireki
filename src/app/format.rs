@@ -64,15 +64,7 @@ pub(super) fn when(t: f64) -> String {
 
 /// 3 桁ごとに区切った数
 pub(super) fn fmt_n(n: usize) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out
+    crate::model::format_number(n as u64)
 }
 
 /// ホームディレクトリを `~` にしたパス

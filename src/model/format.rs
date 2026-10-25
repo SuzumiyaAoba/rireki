@@ -1,4 +1,17 @@
-//! Unicode の文字数を保つ省略表示と、空白をまとめた一行表示。
+//! Unicode の文字数を保つ省略表示、一行表示、件数の整形。
+
+/// 符号なし整数を3桁ごとに区切る。表示する単位や短縮表記は呼び出し元で決める。
+pub fn format_number(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
 
 /// 文字の途中で分割せず、上限までの借用文字列と省略の有無を返す。
 pub(crate) fn clip(s: &str, max: usize) -> (&str, bool) {

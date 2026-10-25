@@ -2,7 +2,7 @@
 
 use gpui::{AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, div, point, prelude::*, px, relative};
 
-use super::{Metric, Rireki, card, card_title, cost_label, fmt_tokens, fmt_usd, percent, series, swatch};
+use super::{Metric, MetricFormat, Rireki, card, card_title, cost_label, fmt_tokens, fmt_usd, percent, series, swatch};
 use crate::app::widgets::{project_tile, tip};
 use crate::app::{fmt_n, tilde};
 use crate::icons::{self, Icon};
@@ -73,10 +73,10 @@ impl Rireki {
     pub(super) fn projects_card(&self, s: &Summary, cx: &mut Context<Self>) -> Div {
         let metric = self.statistics_state.metric;
         let mut projects: Vec<(&String, &[Totals; 2], [f64; 2])> =
-            s.projects.iter().map(|(cwd, t)| (cwd, t, [metric.of(&t[0]), metric.of(&t[1])])).collect();
+            s.projects.iter().map(|(cwd, t)| (cwd, t, [metric.total(&t[0]), metric.total(&t[1])])).collect();
         // 集計はトークンの多い順。選んだ指標の多い順に並べ直す（同じなら元の順）
         projects.sort_by(|a, b| (b.2[0] + b.2[1]).total_cmp(&(a.2[0] + a.2[1])));
-        let total = metric.of(&s.total).max(f64::MIN_POSITIVE);
+        let total = metric.total(&s.total).max(f64::MIN_POSITIVE);
         let max = projects.first().map_or(1.0, |p| p.2[0] + p.2[1]).max(f64::MIN_POSITIVE);
         let all = self.statistics_state.all_projects;
         let shown = if all { projects.len() } else { PROJECTS.min(projects.len()) };

@@ -44,6 +44,9 @@ cargo run --no-default-features -- --stats  # GUI の依存なしで統計コマ
 `src/lib.rs` が GUI に依存しないコアの入口。`history` / `catalog` / `model` / `loader` / `db` / `index` / `search` / `pricing` / `jsmock` / `layout` に加え、`statistics` / `detail` / `patch` / `histogram` / `view_index` / `time` / `mcp` を公開する。`src/cli.rs` が画面を開かない計測・統計コマンドを振り分け、`src/main.rs` はコマンドと feature に応じて GUI または TUI を起動する。`main.rs` と `app/` はこのライブラリを参照し、GPUI の状態・入力・描画・背景タスクの起動と結果反映を管理する。コアから `app` / `theme` / `icons` / GPUI を参照しない。既定の feature は `gui` と `tui`。無引数で GUI、`--tui` で端末 UI を起動する。コア・CLI の利用と検証は `--no-default-features`、TUI 単独構成は `--no-default-features --features tui`（無引数でも端末 UI）。`src/tui_main.rs` はコンソール専用の `rireki-tui` バイナリで、Windows ではこちらを使う。
 
 - **tui.rs / tui/** — Ratatui / Crossterm による端末フロントエンド。F1〜F8 で履歴・タイムライン・日/週/月カレンダー・統計・MCP・設定を切り替える。`state.rs` はセッションとイベントの選択・検索・読み込み元/プロジェクト/進行中の絞り込み、`worker.rs` は History による取り込みと検索の背景実行、`view.rs` は履歴ペインの描画を担う。
+  - `state/location.rs` はログの不変属性による選択・閲覧履歴の復元を担当する。`workspace/input.rs` は画面間のキー操作、`render.rs` は枠とダイアログの描画、`persistence.rs` は端末用設定の読み込み・保存を担当し、`workspace.rs` は選択と背景要求の連携に集中する。
+  - `temporal/input.rs` は期間入力と移動、`rows.rs` は時間軸・カレンダーの表示行の構築、`render.rs` は描画を担当する。`metrics/compute.rs` は背景集計、`render.rs` は端末での統計表示を担当する。各画面の回帰テストは同名ディレクトリの `tests.rs` に置く。
+  - 背景計算の種類は `operations/jobs.rs` の `Job` で表し、画面側と実行側の世代を同じ型で参照する。MCP 制御とスナップショット交換は別の要求キーで扱い、計算中の公開・停止を待たせない。要求の優先順と古い結果を破棄する順序は維持する。
   - `workspace.rs` は画面間の選択と閲覧履歴、詳細の範囲選択、要求世代、設定の保存・復元、MCP 操作、クリップボード/保存ダイアログを統合する。`operations.rs` は DetailLoader、分析、統計、API 料金、MCP を背景で処理し、種類ごとに最新要求と結果だけを保持する。古い計算結果は世代で破棄する。
   - `temporal.rs` はイベント/API 料金の時間軸、レーン/ディレクトリ集約、日/週/月カレンダー、稼働時間、期間入力、ズーム、ミニマップと詳細への移動を担当する。イベント集約・親子関係・料金は共通コアを利用する。
   - `metrics.rs` は期間・指標を切り替える統計とAPI料金の表示モデル。`statistics::Cache` / `cost_timeline::Cache` を背景で呼び、トークン内訳・前期比・稼働日平均・読み込み元/モデル/プロジェクト/ツール・推移・曜日×時刻の表と期間の詳細移動を提供する。グラフは端末の棒・濃淡・表に置き換え、数値はセル選択や横スクロールで読める。
@@ -105,6 +108,10 @@ cargo run --no-default-features -- --stats  # GUI の依存なしで統計コマ
 - **icons.rs** — UI アイコン（Lucide）とイベントの種類のアイコン（Iconify の lucide セットから取得した SVG 本体）を埋め込み、`AssetSource` として提供する。
 
 `model/format.rs` は Unicode の文字数による省略と一行表示を提供し、MCP の本文上限にも同じ文字境界を使う。`search/metadata.rs` は詳細分析と MCP の Unicode 語検索を共有する。サイドバー索引の ASCII 小文字化と一致位置の規則は `search.rs` に保つ。
+
+統計の指標は `statistics/metric.rs` の `Metric` を GUI・TUI で共有する。集計値から数値を取り出す規則と指標の意味はここに置き、料金の精度やトークンの短縮表示は各画面の整形処理に残す。`statistics/span.rs` は日付と日・週・月の列境界、`reference.rs` はテスト専用の全件集計、`cache.rs` は実際の集計と再利用を担当する。整数の3桁区切りは `model::format_number` にまとめる。
+
+`paths` はログ内のパス操作に加え、GUI の設定・料金表・DB キャッシュの保存先を管理する。料金表は従来どおり OS 標準の設定先を使い、`RIREKI_CONFIG_DIR` は GUI/TUI の設定先を上書きする。OS の設定先が取得できない場合の TUI 固有のフォールバック（`./rireki`）は `workspace/persistence.rs` に保つ。
 
 コメントや UI 文言は日本語で書かれている。
 

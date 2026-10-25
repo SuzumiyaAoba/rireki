@@ -8,7 +8,7 @@ mod store;
 mod usage;
 
 pub use event::{Event, Kind, Source, Stats, Status, pending_text_bytes};
-pub use format::{one_line, truncate};
+pub use format::{format_number, one_line, truncate};
 pub(crate) use format::clip;
 pub use hashing::SessionIndexHasher;
 pub(crate) use hashing::mix_index;

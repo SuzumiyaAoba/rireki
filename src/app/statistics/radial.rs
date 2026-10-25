@@ -9,7 +9,7 @@ use gpui::{
 };
 
 use super::charts::WEEKDAYS;
-use super::{Hover, Metric, Rireki, card, card_title, percent};
+use super::{Hover, Metric, MetricFormat, Rireki, card, card_title, percent};
 use crate::app::widgets::tip;
 use crate::statistics::{HOURS, Summary};
 use crate::theme::{self, c};
@@ -178,7 +178,7 @@ impl Rireki {
         let metric = self.statistics_state.metric;
         let values: Vec<f64> = s.hours.iter().map(|a| metric.amount(a)).collect();
         let peak = values.iter().copied().fold(0.0, f64::max);
-        let total = metric.of(&s.total);
+        let total = metric.total(&s.total);
         let busiest = values
             .iter()
             .enumerate()

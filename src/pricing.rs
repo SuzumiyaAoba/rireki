@@ -145,8 +145,7 @@ const BUILTIN: &[(&str, Price)] = &[
 ];
 
 pub fn path() -> PathBuf {
-    let base = dirs::config_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"));
-    base.join("rireki").join("prices.json")
+    crate::paths::default_config_dir().join("prices.json")
 }
 
 /// 組み込み + prices.json。ファイルがなければ組み込みの内容で作る（編集用のひな形）

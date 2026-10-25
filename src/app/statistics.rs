@@ -7,9 +7,11 @@
 
 mod charts;
 mod lists;
+mod format;
+use format::{MetricFormat, cost_label, date_range, delta, percent};
 mod profile;
 mod radial;
-use crate::statistics::{Amount, Cache, Period, Summary, Totals};
+use crate::statistics::{Cache, Metric, Period, Summary};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -34,102 +36,6 @@ const PAD: f32 = 20.0;
 const GAP: f32 = 14.0;
 /// 2 列に並べる最小の内容幅
 const WIDE: f32 = 900.0;
-
-/// タイルで選び、推移・時間帯・プロジェクトで表す指標
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Metric {
-    Tokens,
-    Cost,
-    Turns,
-    Sessions,
-    Tools,
-}
-
-impl Metric {
-    const ALL: [Metric; 5] = [Metric::Tokens, Metric::Cost, Metric::Turns, Metric::Sessions, Metric::Tools];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Tokens => "トークン",
-            Self::Cost => "推定料金",
-            Self::Turns => "ターン",
-            Self::Sessions => "セッション",
-            Self::Tools => "ツール呼び出し",
-        }
-    }
-
-    fn help(self) -> &'static str {
-        match self {
-            Self::Tokens => "入力・キャッシュ・出力の合計",
-            Self::Cost => "ログの使用量と料金表による推定（USD）。料金不明のモデルは含まない",
-            Self::Turns => "ユーザーの発話の数",
-            Self::Sessions => "イベントのあるセッションの数。サブエージェントは起動元と合わせて 1 件",
-            Self::Tools => "ツール呼び出し（サブエージェントの起動を含む）の数",
-        }
-    }
-
-    /// 値に添える単位
-    fn unit(self) -> &'static str {
-        match self {
-            Self::Tokens => " トークン",
-            Self::Cost => "",
-            Self::Turns => " ターン",
-            Self::Sessions => " セッション",
-            Self::Tools => " 回",
-        }
-    }
-
-    fn of(self, t: &Totals) -> f64 {
-        match self {
-            Self::Tokens => t.usage.total() as f64,
-            Self::Cost => t.usage.cost,
-            Self::Turns => t.turns as f64,
-            Self::Sessions => t.sessions as f64,
-            Self::Tools => t.tools as f64,
-        }
-    }
-
-    fn amount(self, a: &Amount) -> f64 {
-        match self {
-            Self::Tokens => a.tokens as f64,
-            Self::Cost => a.cost,
-            Self::Turns => a.turns as f64,
-            Self::Sessions => a.sessions as f64,
-            Self::Tools => a.tools as f64,
-        }
-    }
-
-    fn format(self, v: f64) -> String {
-        match self {
-            Self::Tokens => fmt_tokens(v.round() as u64),
-            Self::Cost => fmt_usd(v),
-            _ => fmt_n(v.round() as usize),
-        }
-    }
-
-    /// タイルの大きな数字。料金は 100 ドル以上ならセントを省く
-    fn headline(self, v: f64) -> String {
-        match self {
-            Self::Cost if v >= 100.0 => fmt_usd(v.round()).trim_end_matches(".00").to_string(),
-            _ => self.format(v),
-        }
-    }
-
-    /// 目盛りの短い表示
-    fn tick(self, v: f64) -> String {
-        match self {
-            Self::Cost if v >= 1000.0 => format!("${}", short(v)),
-            Self::Cost if v.fract() == 0.0 => format!("${v:.0}"),
-            Self::Cost => format!("${v:.2}").trim_end_matches('0').to_string(),
-            _ => short(v),
-        }
-    }
-
-    /// 件数を数える指標か（目盛りを整数にする）
-    fn count(self) -> bool {
-        !matches!(self, Self::Cost)
-    }
-}
 
 /// 要求した集計の条件 (data_gen, 期間, 今日)
 type Key = (u64, Period, NaiveDate);
@@ -453,10 +359,10 @@ impl Rireki {
 
     fn metric_tile(&self, metric: Metric, s: &Summary, cx: &mut Context<Self>) -> Stateful<Div> {
         let selected = self.statistics_state.metric == metric;
-        let value = metric.of(&s.total);
+        let value = metric.total(&s.total);
         let comparison = match &s.previous {
             Some(previous) => {
-                let before = metric.of(previous);
+                let before = metric.total(previous);
                 let label = format!("前の{}日間 {}", s.days(), metric.format(before));
                 div()
                     .flex()
@@ -471,7 +377,7 @@ impl Rireki {
             }
         };
         let both = self.source == SourceFilter::All;
-        let split = [metric.of(&s.sources[0]), metric.of(&s.sources[1])];
+        let split = [metric.total(&s.sources[0]), metric.total(&s.sources[1])];
         div()
             .id(ElementId::NamedInteger("statistics-metric".into(), metric as u64))
             .flex()
@@ -623,63 +529,10 @@ fn split_bar(values: [f64; 2]) -> Div {
     )
 }
 
-/// 前の期間との差（▲ 12% / ▼ 3.4% / ±0%）。増減の良し悪しは決めつけない
-fn delta(now: f64, before: f64) -> String {
-    if before <= 0.0 {
-        return if now > 0.0 { "新規".into() } else { "—".into() };
-    }
-    let r = (now - before) / before * 100.0;
-    let digits = if r.abs() < 10.0 { 1 } else { 0 };
-    match r {
-        r if r.abs() < 0.05 => "±0%".into(),
-        r if r > 0.0 => format!("▲ {r:.digits$}%"),
-        r => format!("▼ {:.digits$}%", -r),
-    }
-}
-
-/// 割合（12% / 2.4% / <0.1%）
-fn percent(r: f64) -> String {
-    let p = r * 100.0;
-    match p {
-        p if p <= 0.0 => "0%".into(),
-        p if p < 0.1 => "<0.1%".into(),
-        p if p < 10.0 => format!("{p:.1}%"),
-        p => format!("{p:.0}%"),
-    }
-}
-
-/// 目盛り用の短い数（950 / 1.2k / 35k / 1.5M / 2B）
-fn short(v: f64) -> String {
-    let (n, unit) = match v.abs() {
-        a if a >= 1e9 => (v / 1e9, "B"),
-        a if a >= 1e6 => (v / 1e6, "M"),
-        a if a >= 1e3 => (v / 1e3, "k"),
-        _ => return format!("{}", (v * 100.0).round() / 100.0),
-    };
-    let s = if n.abs() >= 10.0 || n.fract() == 0.0 { format!("{n:.0}") } else { format!("{n:.1}") };
-    format!("{}{unit}", s.trim_end_matches(".0"))
-}
-
-/// 期間の表示（2026/9/6 – 10/5）
-fn date_range(from: NaiveDate, to: NaiveDate) -> String {
-    use chrono::Datelike;
-    if from == to {
-        to.format("%Y/%-m/%-d").to_string()
-    } else if from.year() == to.year() {
-        format!("{} – {}", from.format("%Y/%-m/%-d"), to.format("%-m/%-d"))
-    } else {
-        format!("{} – {}", from.format("%Y/%-m/%-d"), to.format("%Y/%-m/%-d"))
-    }
-}
-
-/// 料金。料金の分かる呼び出しがなければ「—」
-fn cost_label(u: &UsageSum) -> String {
-    if u.calls > u.unpriced { fmt_usd(u.cost) } else { "—".into() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::format::short;
 
     #[test]
     fn empty_usage_has_no_cost_label() {

@@ -1,5 +1,7 @@
+use super::super::view::View;
 use super::*;
 use crate::model::{Event, Kind, Lane, Snapshot, Source, Status};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
 
 fn fixture() -> Arc<Session> {
@@ -106,7 +108,7 @@ fn range_selection_survives_live_insertion_and_history_resolves_identifiers() {
 #[test]
 fn stale_details_are_rejected_and_hidden_targets_clear_filters() {
     let (mut state, mut workspace) = setup();
-    let stale = workspace.generations[0];
+    let stale = workspace.generations[Job::Inspect];
     let selected = Selection {
         session: 0,
         lane: 0,
@@ -127,7 +129,7 @@ fn stale_details_are_rejected_and_hidden_targets_clear_filters() {
     assert!(workspace.inspect_loading);
     workspace.apply(
         operations::Update::Inspect {
-            generation: workspace.generations[0],
+            generation: workspace.generations[Job::Inspect],
             detail: None,
         },
         &mut state,
@@ -317,7 +319,7 @@ fn live_log_changes_invalidate_analysis_exports_until_the_new_result_arrives() {
     .unwrap();
     workspace.apply(
         operations::Update::Analysis {
-            generation: workspace.generations[1],
+            generation: workspace.generations[Job::Analysis],
             analysis: Some(Arc::new(analysis)),
         },
         &mut state,
@@ -349,7 +351,7 @@ fn live_log_changes_invalidate_analysis_exports_until_the_new_result_arrives() {
     .unwrap();
     workspace.apply(
         operations::Update::Analysis {
-            generation: workspace.generations[1],
+            generation: workspace.generations[Job::Analysis],
             analysis: Some(Arc::new(analysis)),
         },
         &mut state,

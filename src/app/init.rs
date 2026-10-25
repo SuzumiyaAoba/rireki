@@ -1,7 +1,7 @@
 //! ビューの初期化と背景での履歴読み込み。
 
 use super::{
-    Arc, AtomicU64, Bounds, Cell, Context, DetailList, DetailLoader, DetailView, FileList, HashSet,
+    AnalysisContentView, Arc, AtomicU64, Bounds, Cell, Context, DetailList, DetailLoader, DetailView, FileList, HashSet,
     Local, MAX_SIDEBAR_W, MIN_DETAIL_W, MIN_PANE_W, MIN_SIDEBAR_W, Mode, Mutex, POLL, Point, Rc,
     RefCell, Rireki, ScrollHandle, SidebarView, Snapshot, TextInput, History, Window, calendar,
     cost, detail, index, now, point, prefs, profile, px, sidebar, statistics, DetailContentView,

@@ -10,7 +10,7 @@ use gpui::{
     prelude::*, px, relative, size,
 };
 
-use super::{HoursView, Hover, Metric, Rireki, card, card_title, percent, series, swatch};
+use super::{HoursView, Hover, Metric, MetricFormat, Rireki, card, card_title, percent, series, swatch};
 use crate::app::header::{Choice, weekday_ja};
 use crate::prefs::SourceFilter;
 use crate::statistics::{Summary, Unit};
@@ -83,7 +83,7 @@ impl Rireki {
         // ポインタを重ねた列の値。重ねていなければ期間の合計を凡例に添える
         let (head, shown) = match hover {
             Some(i) => (Some(bucket_label(s, i)), values[i]),
-            None => (None, [metric.of(&s.sources[0]), metric.of(&s.sources[1])]),
+            None => (None, [metric.total(&s.sources[0]), metric.total(&s.sources[1])]),
         };
         let legend = div()
             .flex_none()
@@ -216,7 +216,7 @@ impl Rireki {
         let values: Vec<f64> = s.hours.iter().map(|a| metric.amount(a)).collect();
         let days = s.by_weekday.map(|a| metric.amount(&a));
         let hours = s.by_hour.map(|a| metric.amount(&a));
-        let total = metric.of(&s.total);
+        let total = metric.total(&s.total);
         let hover = self.statistics_state.hover;
         let name = |i: usize| format!("{}曜 {}時台", WEEKDAYS[i / 24], i % 24);
         let value = |v: f64| {
