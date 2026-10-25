@@ -66,7 +66,7 @@ impl Render for DetailContentView {
 
 impl Render for AnalysisContentView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        match self.app.upgrade() {
+        let content = match self.app.upgrade() {
             Some(app) => app.update(cx, |app, cx| {
                 let Some(sel) = app.shown_detail_selection() else {
                     return div().into_any_element();
@@ -74,7 +74,9 @@ impl Render for AnalysisContentView {
                 app.analysis_view(sel, cx)
             }),
             None => div().into_any_element(),
-        }
+        };
+        // キャッシュしたビューの外枠は flex ではないので、一覧に高さを渡す列をここで作る。
+        div().size_full().flex().flex_col().child(content)
     }
 }
 
