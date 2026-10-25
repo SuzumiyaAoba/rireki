@@ -59,7 +59,7 @@ use crate::prefs::{self, DetailTab, Mode, Prefs, SourceFilter};
 use crate::theme::{self, c};
 use rireki::catalog::Project;
 
-use detail::{DetailContentView, DetailList, DetailView, FileList, RowFilter};
+use detail::{AnalysisContentView, DetailContentView, DetailList, DetailView, FileList, RowFilter};
 use crate::detail::{DetailCache, DetailLoader, Selection, EVENT_LIMIT as DETAIL_MAX};
 use crate::time::{local, midnight};
 use crate::view_index;
@@ -220,6 +220,7 @@ pub struct Rireki {
     navigator_list: sidebar::NavigatorList,
     detail_view: Entity<DetailView>,
     detail_content_view: Entity<DetailContentView>,
+    analysis_content_view: Entity<AnalysisContentView>,
     detail_cache: Option<DetailCache>,
     /// 表示中の詳細と同じ版のセッションと、読み込み完了時の世代
     detail_snapshot: Option<(Arc<Session>, u64)>,

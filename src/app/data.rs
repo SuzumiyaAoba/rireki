@@ -89,6 +89,7 @@ impl Rireki {
             } else {
                 self.cancel_detail_load();
                 self.reset_analysis();
+                self.analysis_content_view.update(cx, |_, cx| cx.notify());
                 self.detail_fullscreen = false;
                 self.selected = None;
                 self.clear_detail_cache(cx);

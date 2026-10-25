@@ -276,9 +276,11 @@ impl Rireki {
                 state.list.reset(result.indices.len() + 1);
                 state.result = Some((key, result));
                 state.busy = false;
+                app.analysis_content_view.update(cx, |_, cx| cx.notify());
                 app.detail_changed(cx);
             });
         }));
+        self.analysis_content_view.update(cx, |_, cx| cx.notify());
         self.detail_changed(cx);
     }
 
@@ -499,6 +501,7 @@ impl Rireki {
             .map(|(s, _)| s.clone())
             .unwrap_or_else(|| self.store.sessions[sel.session].clone());
         self.analysis_state.exporting = true;
+        self.analysis_content_view.update(cx, |_, cx| cx.notify());
         self.analysis_state.export_task = Some(cx.spawn(async move |this, cx| {
             let json = cx
                 .background_executor()
@@ -516,6 +519,7 @@ impl Rireki {
                 app.analysis_state.exporting = false;
                 cx.write_to_clipboard(ClipboardItem::new_string(json));
                 app.flash_copied("analysis-export", cx);
+                app.analysis_content_view.update(cx, |_, cx| cx.notify());
             });
         }));
         self.detail_changed(cx);

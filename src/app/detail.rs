@@ -50,6 +50,10 @@ pub(super) struct DetailContentView {
     pub(super) app: WeakEntity<Rireki>,
 }
 
+pub(super) struct AnalysisContentView {
+    pub(super) app: WeakEntity<Rireki>,
+}
+
 impl Render for DetailContentView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.app.upgrade() {
@@ -57,6 +61,20 @@ impl Render for DetailContentView {
             None => div().into_any_element(),
         };
         div().size_full().flex().flex_col().child(content)
+    }
+}
+
+impl Render for AnalysisContentView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match self.app.upgrade() {
+            Some(app) => app.update(cx, |app, cx| {
+                let Some(sel) = app.shown_detail_selection() else {
+                    return div().into_any_element();
+                };
+                app.analysis_view(sel, cx)
+            }),
+            None => div().into_any_element(),
+        }
     }
 }
 
@@ -197,7 +215,9 @@ impl Rireki {
         self.detail_live.set(Some(is_live(self.detail_session(sel).end)));
         match self.detail_tab {
             DetailTab::Session => self.overview_view(sel, window, cx),
-            DetailTab::Analysis => self.analysis_view(sel, cx),
+            DetailTab::Analysis => gpui::AnyView::from(self.analysis_content_view.clone())
+                .cached(StyleRefinement::default().w_full().flex_1().min_h_0())
+                .into_any_element(),
             DetailTab::Files if files == 0 => div().p_3().text_xs().text_color(c(theme::MUTED))
                 .child("選択範囲に記録されたファイル編集はありません").into_any_element(),
             DetailTab::Files => div().flex_1().min_h_0().p_3().flex().flex_col()
@@ -329,6 +349,9 @@ impl Rireki {
             self.detail_scroll.set_offset(self.detail_scroll_offsets[detail_tab_index(tab)]);
             self.cancel_detail_follow();
             self.persist();
+        }
+        if tab == DetailTab::Analysis {
+            self.analysis_content_view.update(cx, |_, cx| cx.notify());
         }
         self.request_analysis(cx);
         self.detail_changed(cx);

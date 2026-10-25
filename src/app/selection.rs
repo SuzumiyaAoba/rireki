@@ -62,6 +62,7 @@ impl Rireki {
         self.sidebar_changed(cx);
         if self.selected != Some(sel) {
             self.reset_analysis();
+            self.analysis_content_view.update(cx, |_, cx| cx.notify());
             self.row_filter = None;
             self.expanded.clear();
             self.history_expanded.clear();
@@ -136,6 +137,7 @@ impl Rireki {
     pub(super) fn close_detail(&mut self, cx: &mut Context<Self>) {
         self.detail_fullscreen = false;
         self.reset_analysis();
+        self.analysis_content_view.update(cx, |_, cx| cx.notify());
         self.cancel_detail_load();
         if let Some(cur) = self.selected.take() {
             self.push_back(cur);

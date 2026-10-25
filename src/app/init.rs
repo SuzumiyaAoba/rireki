@@ -150,6 +150,7 @@ impl Rireki {
         let weak = cx.weak_entity();
         let detail_view = cx.new(|_| DetailView { app: weak.clone() });
         let detail_content_view = cx.new(|_| DetailContentView { app: weak.clone() });
+        let analysis_content_view = cx.new(|_| AnalysisContentView { app: weak.clone() });
         let sidebar_view = cx.new(|_| SidebarView { app: weak });
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle);
@@ -198,6 +199,7 @@ impl Rireki {
             navigator_list: sidebar::NavigatorList::new(),
             detail_view,
             detail_content_view,
+            analysis_content_view,
             detail_cache: None,
             detail_snapshot: None,
             detail_selection_gen: 0,
