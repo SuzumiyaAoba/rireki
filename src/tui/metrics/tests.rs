@@ -144,6 +144,43 @@ fn period_navigation_drills_down_to_exclusive_local_day_end() {
 }
 
 #[test]
+fn session_ranking_opens_the_session_or_its_first_failure() {
+    let (snapshot, result) = computed(Period::Week);
+    let mut state = State::default();
+    state.apply(result);
+    state.set_tab(Tab::Sessions);
+    assert!(matches!(
+        state.activate(),
+        Action::Session { index: 0, failures: false }
+    ));
+    // m で全指標を一周し、失敗の指標では失敗した呼び出しへ移る
+    let mut seen = Vec::new();
+    for _ in 0..Metric::ALL.len() {
+        state.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+        seen.push(state.metric);
+    }
+    assert_eq!(seen.len(), Metric::ALL.len());
+    assert!(Metric::ALL.iter().all(|m| seen.contains(m)));
+    state.metric = Metric::Failures;
+    assert!(matches!(
+        state.activate(),
+        Action::Session { index: 0, failures: true }
+    ));
+    let selection = session_selection(&snapshot, 0, true).unwrap();
+    let failed = &snapshot.sessions[0].lanes[selection.lane].events[selection.first];
+    assert!(failed.status.failed());
+    assert_eq!((selection.first, selection.last), (selection.first, selection.first));
+    let whole = session_selection(&snapshot, 0, false).unwrap();
+    assert_eq!((whole.lane, whole.first, whole.last), (0, 0, 3));
+    assert!(session_selection(&snapshot, 9, false).is_none());
+    // 失敗の指標ではツールも失敗の多い順にする
+    state.set_tab(Tab::Tools);
+    assert_eq!(state.tool_indices().len(), state.summary.as_ref().unwrap().tools.len());
+    let tool = &state.summary.as_ref().unwrap().tools[state.tool_indices()[0]];
+    assert_eq!(tool.total().errors(), 1);
+}
+
+#[test]
 fn cost_bucket_opens_actual_call_and_zoom_preserves_valid_range() {
     let (_, result) = computed(Period::Week);
     let mut state = State::default();
@@ -235,6 +272,7 @@ fn saved_metrics_preferences_round_trip_and_unicode_columns_keep_graphemes() {
         ("Turns", Metric::Turns),
         ("Sessions", Metric::Sessions),
         ("Tools", Metric::Tools),
+        ("Failures", Metric::Failures),
     ] {
         let settings: Settings =
             serde_json::from_value(serde_json::json!({"metric": saved})).unwrap();

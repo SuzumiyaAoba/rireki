@@ -162,11 +162,21 @@ impl Rireki {
                         .gap_2()
                         .child(stat("経過時間", fmt_dur((s.end - s.start).max(0.0)), None))
                         .child(stat("ターン", fmt_n(summary.total.stats.turns), None))
-                        .child(stat(
-                            "失敗・拒否・中断",
-                            fmt_n(summary.total.stats.failures()),
-                            (summary.total.stats.failures() > 0).then_some(theme::ERR),
-                        ))
+                        .child({
+                            // 統計のセッションの順位と同じく、失敗したイベントだけの履歴へ移る
+                            let failures = summary.total.stats.failures();
+                            let session = sel.session;
+                            stat("失敗・拒否・中断", fmt_n(failures), (failures > 0).then_some(theme::ERR))
+                                .id("overview-failures")
+                                .when(failures > 0, |d| {
+                                    d.cursor_pointer()
+                                        .hover(|s| s.border_color(c(theme::SUBTLE)))
+                                        .tooltip(tip("失敗・拒否・中断したイベントだけを履歴に表示", None))
+                                        .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
+                                            t.open_failures(session, w, cx)
+                                        }))
+                                })
+                        })
                         .child(stat("API換算料金", usage_cost_label(&summary.total.usage), None))
                         .child(cache_hit_stat("overview-cache-hit", &summary.total.usage)),
                 )

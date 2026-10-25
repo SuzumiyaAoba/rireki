@@ -13,7 +13,7 @@ The app's interface is currently in Japanese.
 - **Search and filters:** Find sessions by title, directory, or ID, and events by name or summary. Filter by Claude Code, Codex, project, or visible time range.
 - **Event details:** Inspect tool inputs, outputs, durations, and results, including errors, rejected calls, and interruptions.
 - **File history:** Review edited files, change summaries, and diffs for individual edits.
-- **Usage and analysis:** Explore token usage, estimated API costs, tool activity, and trends over 7 days, 30 days, 90 days, or all history.
+- **Usage and reliability statistics:** Explore tokens, estimated API costs, turns, sessions, tool calls, and failed, rejected, or interrupted tool calls over 7 days, 30 days, 90 days, or all history. Rank projects and sessions by the selected metric, then open a session in the timeline and detail panel; with the failure metric, the detail panel opens filtered to the failed events. Compare tools by call volume, failure breakdown, and median / P95 duration on a shared log scale.
 - **Live updates:** Refresh active logs every three seconds and index completed logs locally for faster startup.
 - **Terminal UI:** Use timelines, calendars, statistics, event analysis, file diffs, replay, and MCP from an interactive terminal with `--tui`.
 - **Local MCP server:** Start and stop a read-only Streamable HTTP server from either interface so coding agents can search, retrieve, and analyze the same history.

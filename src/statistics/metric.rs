@@ -11,15 +11,18 @@ pub enum Metric {
     Turns,
     Sessions,
     Tools,
+    /// 失敗・拒否・中断したツール呼び出し
+    Failures,
 }
 
 impl Metric {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Tokens,
         Self::Cost,
         Self::Turns,
         Self::Sessions,
         Self::Tools,
+        Self::Failures,
     ];
 
     pub fn label(self) -> &'static str {
@@ -29,6 +32,7 @@ impl Metric {
             Self::Turns => "ターン",
             Self::Sessions => "セッション",
             Self::Tools => "ツール呼び出し",
+            Self::Failures => "失敗・拒否・中断",
         }
     }
 
@@ -41,6 +45,9 @@ impl Metric {
                 "イベントのあるセッションの数。サブエージェントは起動元と合わせて 1 件"
             }
             Self::Tools => "ツール呼び出し（サブエージェントの起動を含む）の数",
+            Self::Failures => {
+                "失敗（エラーの結果）・拒否・中断したツール呼び出しの数。結果のない呼び出しは含めない"
+            }
         }
     }
 
@@ -51,6 +58,7 @@ impl Metric {
             Self::Turns => " ターン",
             Self::Sessions => " セッション",
             Self::Tools => " 回",
+            Self::Failures => " 件",
         }
     }
 
@@ -61,6 +69,7 @@ impl Metric {
             Self::Turns => value.turns as f64,
             Self::Sessions => value.sessions as f64,
             Self::Tools => value.tools as f64,
+            Self::Failures => value.failures as f64,
         }
     }
 
@@ -71,6 +80,7 @@ impl Metric {
             Self::Turns => value.turns as f64,
             Self::Sessions => value.sessions as f64,
             Self::Tools => value.tools as f64,
+            Self::Failures => value.failures as f64,
         }
     }
 

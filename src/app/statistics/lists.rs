@@ -1,4 +1,4 @@
-//! 統計の一覧: ツール・プロジェクト・モデルとトークン・読み込み元の比較。棒は読み込み元ごとに積む
+//! 統計の一覧: プロジェクト・モデルとトークン・読み込み元の比較。棒は読み込み元ごとに積む
 
 use gpui::{AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, div, point, prelude::*, px, relative};
 
@@ -7,68 +7,18 @@ use crate::app::widgets::{project_tile, tip};
 use crate::app::{fmt_n, tilde};
 use crate::icons::{self, Icon};
 use crate::model::{Source, UsageSum};
-use crate::statistics::{Summary, Tool, Totals};
+use crate::statistics::{Summary, Totals};
 use crate::theme::{self, c};
 
 /// 一覧に並べる件数。残りは「その他」にまとめる
-const TOOLS: usize = 7;
 const PROJECTS: usize = 9;
 const MODELS: usize = 6;
 /// 数字の列の幅
-const NUM_W: f32 = 64.0;
-const SHARE_W: f32 = 44.0;
+pub(super) const NUM_W: f32 = 64.0;
+pub(super) const SHARE_W: f32 = 44.0;
 const COST_W: f32 = 76.0;
 
 impl Rireki {
-    pub(super) fn tools_card(&self, s: &Summary) -> Div {
-        let calls = |t: &Tool| (t.sources[0].calls + t.sources[1].calls) as f64;
-        let failures = |t: &Tool| t.sources[0].failures + t.sources[1].failures;
-        let rate = |failures: usize, calls: f64| {
-            if failures > 0 { percent(failures as f64 / calls) } else { "—".into() }
-        };
-        let max = s.tools.first().map_or(1.0, calls).max(1.0);
-        let rows = s.tools.iter().take(TOOLS).map(|t| {
-            let (icon, color) =
-                if t.agent { (Icon::Bot, 0xa77bf3) } else { (theme::tool_icon(&t.name), theme::tool_color(&t.name)) };
-            row(
-                icons::icon(icon, color).size(px(14.0)).into_any_element(),
-                t.name.clone(),
-                bar([t.sources[0].calls as f64 / max, t.sources[1].calls as f64 / max]),
-                fmt_n(calls(t) as usize),
-                rate(failures(t), calls(t)),
-                SHARE_W,
-            )
-        });
-        let rest = s.tools.get(TOOLS..).unwrap_or_default();
-        let other = (!rest.is_empty()).then(|| {
-            let n: f64 = rest.iter().map(calls).sum();
-            row(
-                blank(),
-                format!("その他 {} 種類", rest.len()),
-                div(),
-                fmt_n(n as usize),
-                rate(rest.iter().map(failures).sum(), n),
-                SHARE_W,
-            )
-            .text_color(c(theme::MUTED))
-        });
-        let total = &s.total;
-        card()
-            .child(card_title(
-                "ツール",
-                format!(
-                    "{} 回 · 失敗・拒否・中断 {}",
-                    fmt_n(total.tools),
-                    percent(total.failures as f64 / total.tools.max(1) as f64)
-                ),
-            ))
-            .child(if s.tools.is_empty() {
-                empty("この期間にツール呼び出しはありません")
-            } else {
-                list(self.columns("呼び出し", "失敗率", SHARE_W)).children(rows).children(other)
-            })
-    }
-
     /// プロジェクトごとの選んだ指標。押すとそのプロジェクトに絞り込む
     pub(super) fn projects_card(&self, s: &Summary, cx: &mut Context<Self>) -> Div {
         let metric = self.statistics_state.metric;
@@ -241,8 +191,9 @@ impl Rireki {
     /// 読み込み元ごとの合計と平均。割合の帯の数字を表で読む
     pub(super) fn sources_card(&self, s: &Summary, inner: f32) -> Div {
         let shown = self.shown_sources();
-        // 狭いときは平均の列を省く
-        let full = inner >= 760.0;
+        // 狭いときは平均の列を省く。名前の最小幅 90・数値 6 列 × 72・平均 3 列 × 92・間隔 9 × 8 と、
+        // カードの余白と枠 34 が収まる幅で判定する
+        let full = inner >= 904.0;
         let per_turn = |t: &Totals, f: &dyn Fn(f64) -> String, v: f64| {
             if t.turns > 0 { f(v / t.turns as f64) } else { "—".into() }
         };
@@ -333,7 +284,7 @@ impl Rireki {
 
 impl Rireki {
     /// 数字の列の見出し。両方の読み込み元を表示しているときは、棒の色の凡例を左に置く
-    fn columns(&self, value: &'static str, note: &'static str, note_w: f32) -> Div {
+    pub(super) fn columns(&self, value: &'static str, note: &'static str, note_w: f32) -> Div {
         let sources = self.shown_sources();
         div()
             .flex()
@@ -351,7 +302,7 @@ impl Rireki {
 }
 
 /// 列見出しと行を縦に並べる
-fn list(columns: Div) -> Div {
+pub(super) fn list(columns: Div) -> Div {
     div().flex().flex_col().gap_1().child(columns)
 }
 
@@ -393,12 +344,12 @@ fn blank() -> AnyElement {
     div().size(px(14.0)).into_any_element()
 }
 
-fn empty(text: &'static str) -> Div {
+pub(super) fn empty(text: &'static str) -> Div {
     div().text_xs().text_color(c(theme::MUTED)).child(text)
 }
 
 /// 読み込み元ごとに積んだ横棒。長さは一覧の最大に対する割合
-fn bar(parts: [f64; 2]) -> Div {
+pub(super) fn bar(parts: [f64; 2]) -> Div {
     div().w_full().h(px(8.0)).flex().gap(px(2.0)).children(
         parts
             .into_iter()

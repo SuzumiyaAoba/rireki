@@ -1,7 +1,8 @@
 //! 期間ごとにセッションの版を弱参照で識別し、更新されたセッションだけ集計し直す。
 
 use super::*;
-use crate::model::{Event, Kind, Session};
+use super::durations::{BUCKETS, bucket, pack, unpack_into};
+use crate::model::{Event, Kind, Session, Status};
 use crate::time::midnight;
 use chrono::{Datelike, Duration, Local, TimeZone, Timelike};
 use crate::model::Snapshot;
@@ -153,7 +154,7 @@ struct CachedSession {
     total: Totals,
     previous: Totals,
     models: Vec<(Option<Arc<str>>, u64, UsageSum)>,
-    tools: Vec<(Arc<str>, bool, u64, Calls)>,
+    tools: Vec<CachedTool>,
     /// イベントのある列とその量（列の順）
     buckets: Vec<(u32, Amount)>,
     /// イベントのある時間帯のマスとその量
@@ -161,6 +162,65 @@ struct CachedSession {
     /// イベントのある日（期間の最初の日から）
     days: Vec<u32>,
     meta: SessionMeta,
+}
+
+/// セッション内のツールごとの件数と所要時間
+struct CachedTool {
+    name: Arc<str>,
+    agent: bool,
+    hash: u64,
+    calls: Calls,
+    /// 所要時間の最長（秒）と、`pack` で詰めた区間ごとの件数（区間の順）
+    max: f64,
+    durations: Box<[u32]>,
+}
+
+/// セッションを走査する間のツールごとの件数。所要時間の区間は `Scratch` に数える
+#[derive(Default)]
+struct ToolTally {
+    calls: Calls,
+    max: f64,
+}
+
+impl ToolTally {
+    /// 呼び出しを数え、結果があれば所要時間の区間を返す
+    #[inline]
+    fn add(&mut self, e: &Event) -> Option<u8> {
+        let calls = &mut self.calls;
+        calls.calls += 1;
+        match e.status {
+            Status::Pending => {
+                calls.pending += 1;
+                return None;
+            }
+            Status::Ok => {}
+            Status::Error => calls.failures += 1,
+            Status::Rejected => {
+                calls.failures += 1;
+                calls.rejected += 1;
+            }
+            Status::Interrupted => {
+                calls.failures += 1;
+                calls.interrupted += 1;
+            }
+        }
+        // 詳細の分析と同じ経過時間。欠損や不正な値は 0 として数える。
+        let seconds = crate::detail::analysis::duration(e);
+        self.max = self.max.max(seconds);
+        Some(bucket(seconds))
+    }
+}
+
+/// 期間内の結合で、ツールごとの所要時間の区間を連続した領域に数える
+#[derive(Default)]
+struct ToolMerge {
+    sources: [Calls; 2],
+    /// `hist` 内の位置。所要時間がなければ None
+    slot: Option<usize>,
+    /// 件数のある区間の範囲。結合後はこの範囲だけを読む
+    first: u8,
+    last: u8,
+    max: f64,
 }
 
 /// 使用量の有無とパスのハッシュを一語に収め、boolの後の余白を使う。
@@ -333,6 +393,9 @@ struct Scratch {
     touched_buckets: Vec<u32>,
     touched_cells: Vec<u8>,
     touched_days: Vec<u32>,
+    /// セッション内のツールの位置 × 区間の件数と、件数のある位置
+    durations: Vec<u32>,
+    touched_durations: Vec<u32>,
 }
 
 impl Scratch {
@@ -344,7 +407,42 @@ impl Scratch {
             touched_buckets: Vec::new(),
             touched_cells: Vec::new(),
             touched_days: Vec::new(),
+            durations: Vec::new(),
+            touched_durations: Vec::new(),
         }
+    }
+
+    /// セッション内の `slot` 番目のツールの所要時間を数える
+    #[inline]
+    fn add_duration(&mut self, slot: usize, bucket: u8) {
+        let i = slot * BUCKETS + usize::from(bucket);
+        if i >= self.durations.len() {
+            self.durations.resize((slot + 1) * BUCKETS, 0);
+        }
+        let n = &mut self.durations[i];
+        if *n == 0 {
+            self.touched_durations.push(i as u32);
+        }
+        *n = n.saturating_add(1);
+    }
+
+    /// ツールの位置の順に、詰めた区間の件数を取り出して空に戻す
+    fn take_durations(&mut self, slots: usize) -> Vec<Box<[u32]>> {
+        self.touched_durations.sort_unstable();
+        let mut out = Vec::with_capacity(slots);
+        let mut rest = &self.touched_durations[..];
+        for slot in 0..slots {
+            let n = rest.partition_point(|&i| (i as usize) / BUCKETS == slot);
+            let mut packed = Vec::with_capacity(n);
+            for &i in &rest[..n] {
+                let count = std::mem::take(&mut self.durations[i as usize]);
+                pack(&mut packed, (i as usize % BUCKETS) as u8, count);
+            }
+            out.push(packed.into_boxed_slice());
+            rest = &rest[n..];
+        }
+        self.touched_durations.clear();
+        out
     }
 
     #[inline]
@@ -484,7 +582,7 @@ impl CachedSession {
             meta: SessionMeta::default(),
         };
         let mut models: Tally<NameRef<'_, Option<&Arc<str>>>, UsageSum> = Tally::new();
-        let mut tools: Tally<(NameRef<'_, &Arc<str>>, bool), Calls> = Tally::new();
+        let mut tools: Tally<(NameRef<'_, &Arc<str>>, bool), ToolTally> = Tally::new();
         for lane in &session.lanes {
             if let Some((a, b)) = range.previous {
                 let first = lane.events.partition_point(|e| e.start < a);
@@ -533,10 +631,10 @@ impl CachedSession {
                             .merge(&usage);
                         out.meta.record();
                     }
-                    if tool {
-                        let calls = tools.entry((NameRef { text: &e.name, shared: &e.name }, e.kind == Kind::Agent));
-                        calls.calls += 1;
-                        calls.failures += usize::from(failed);
+                    if tool
+                        && let Some(bucket) = tools.entry((NameRef { text: &e.name, shared: &e.name }, e.kind == Kind::Agent)).add(e)
+                    {
+                        scratch.add_duration(tools.last, bucket);
                     }
                     if let Some((day, cell)) = range.locate(e.start, &mut cursor) {
                         let amount = Amount {
@@ -544,6 +642,7 @@ impl CachedSession {
                             cost,
                             turns: u64::from(user),
                             tools: u64::from(tool),
+                            failures: u64::from(failed),
                             sessions: 0,
                         };
                         scratch.add(range.day_bucket[day] as usize, cell, day, &amount);
@@ -562,13 +661,22 @@ impl CachedSession {
                 (m.shared.map(|m| names.get(m, hash)), hash, u)
             })
         );
+        let durations = scratch.take_durations(tools.items.len());
         out.tools.reserve_exact(tools.items.len());
         out.tools.extend(tools
             .items
             .into_iter()
-            .map(|((name, agent), calls)| {
+            .zip(durations)
+            .map(|(((name, agent), tally), durations)| {
                 let hash = hashes.hash_one((name.text, agent));
-                (names.get(name.shared, hash), agent, hash, calls)
+                CachedTool {
+                    name: names.get(name.shared, hash),
+                    agent,
+                    hash,
+                    calls: tally.calls,
+                    max: tally.max,
+                    durations,
+                }
             })
         );
         Some(out)
@@ -674,8 +782,12 @@ impl Cache {
         let mut out = Summary::empty(&range.span, period);
         let mut models: Merged<&str, [UsageSum; 2]> = Merged::with_capacity(usize::from(cache.merged_counts[0]).min(entries[0]));
         let mut projects: Merged<&str, [Totals; 2]> = Merged::default();
-        let mut tools: Merged<(&str, bool), [Calls; 2]> = Merged::with_capacity(usize::from(cache.merged_counts[1]).min(entries[1]));
+        let mut tools: Merged<(&str, bool), ToolMerge> = Merged::with_capacity(usize::from(cache.merged_counts[1]).min(entries[1]));
+        // ツールごとの所要時間の区間。結合したツールの順に BUCKETS ずつ並べる
+        let mut hist: Vec<u32> = Vec::with_capacity(usize::from(cache.merged_counts[1]) * BUCKETS);
         let mut days = vec![false; range.day_bucket.len()];
+        // 表示順の件数で確保し、期間外のセッションの分は結合の後に返す。
+        out.sessions.reserve_exact(order.len());
         for &si in order {
             if !keep_running() {
                 return None;
@@ -691,6 +803,7 @@ impl Cache {
             }
             out.total.merge(&c.total);
             out.sources[src].merge(&c.total);
+            out.sessions.push(SessionRow { index: si, start: session.start, total: c.total.clone() });
             projects
                 .entry(HashedKey { hash: c.meta.project_hash(&session.cwd, hashes), key: session.cwd.as_str() })
                 [src]
@@ -702,11 +815,29 @@ impl Cache {
                     [src]
                     .merge(usage);
             }
-            for (name, agent, hash, calls) in &c.tools {
-                tools
-                    .entry(HashedKey { hash: *hash, key: (name.as_ref(), *agent) })
-                    [src]
-                    .merge(calls);
+            for tool in &c.tools {
+                let sum = tools.entry(HashedKey { hash: tool.hash, key: (tool.name.as_ref(), tool.agent) });
+                sum.sources[src].merge(&tool.calls);
+                if tool.durations.is_empty() {
+                    continue;
+                }
+                // 詰めた値は区間の順なので、両端から件数のある範囲が分かる。
+                let (first, last) = ((tool.durations[0] >> 24) as u8, (tool.durations[tool.durations.len() - 1] >> 24) as u8);
+                let slot = match sum.slot {
+                    Some(slot) => {
+                        sum.first = sum.first.min(first);
+                        sum.last = sum.last.max(last);
+                        slot
+                    }
+                    None => {
+                        hist.resize(hist.len() + BUCKETS, 0);
+                        (sum.first, sum.last) = (first, last);
+                        *sum.slot.insert(hist.len() / BUCKETS - 1)
+                    }
+                };
+                let counts: &mut [u32; BUCKETS] = (&mut hist[slot * BUCKETS..][..BUCKETS]).try_into().unwrap();
+                unpack_into(counts, &tool.durations);
+                sum.max = sum.max.max(tool.max);
             }
             for (bucket, amount) in &c.buckets {
                 out.activity[*bucket as usize].sources[src].merge(amount);
@@ -720,13 +851,20 @@ impl Cache {
             }
         }
         out.active_days = days.iter().filter(|&&d| d).count();
+        out.sessions.shrink_to_fit();
         out.sum_cells();
         cache.merged_counts = [models.rows.len().min(MERGED_RESERVE) as u16,
                                tools.rows.len().min(MERGED_RESERVE) as u16];
         out.finish(
             models.into_iter().map(|(k, v)| (k.key, v)),
             projects.into_iter().map(|(k, v)| (k.key, v)),
-            tools.into_iter().map(|(k, v)| (k.key, v)),
+            tools.into_iter().map(|(k, v)| {
+                let durations = v.slot.map_or_else(Durations::default, |slot| {
+                    let base = slot * BUCKETS;
+                    Durations::from_counts(&hist[base + usize::from(v.first)..=base + usize::from(v.last)], v.first, v.max)
+                });
+                (k.key, ToolSum { sources: v.sources, durations })
+            }),
         );
         Some(out)
     }
@@ -774,7 +912,7 @@ mod tests {
                 (name.clone(), sources.each_ref().map(|s| (s.total(), s.calls, s.unpriced, s.cost.to_bits())))).collect::<Vec<_>>();
             assert_eq!(models(&actual), models(&expected));
             let tools = |s: &Summary| s.tools.iter().map(|tool|
-                (tool.name.clone(), tool.agent, tool.sources.each_ref().map(|s| (s.calls, s.failures)))).collect::<Vec<_>>();
+                (tool.name.clone(), tool.agent, tool.sources, tool.durations.clone())).collect::<Vec<_>>();
             assert_eq!(tools(&actual), tools(&expected));
         }
         let mut cache = Cache::default();

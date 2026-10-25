@@ -111,11 +111,12 @@ fn assert_totals(actual: &Totals, expected: &Totals) {
 
 fn assert_amount(actual: &Amount, expected: &Amount, at: impl std::fmt::Debug) {
     assert_eq!(
-        (actual.tokens, actual.turns, actual.tools, actual.sessions),
+        (actual.tokens, actual.turns, actual.tools, actual.failures, actual.sessions),
         (
             expected.tokens,
             expected.turns,
             expected.tools,
+            expected.failures,
             expected.sessions
         ),
         "{at:?}"
@@ -167,6 +168,12 @@ fn assert_summary(actual: &Summary, expected: &Summary) {
     assert_eq!(actual.tools.len(), expected.tools.len());
     for (a, e) in actual.tools.iter().zip(&expected.tools) {
         assert_eq!((&a.name, a.agent, a.sources), (&e.name, e.agent, e.sources));
+        assert_eq!(a.durations, e.durations, "{}", a.name);
+    }
+    assert_eq!(actual.sessions.len(), expected.sessions.len());
+    for (a, e) in actual.sessions.iter().zip(&expected.sessions) {
+        assert_eq!((a.index, a.start.to_bits()), (e.index, e.start.to_bits()));
+        assert_totals(&a.total, &e.total);
     }
     assert_eq!(actual.activity.len(), expected.activity.len());
     for (a, e) in actual.activity.iter().zip(&expected.activity) {
@@ -335,7 +342,15 @@ fn mixed_history(today: NaiveDate) -> Snapshot {
             }
             if i % 13 == 0 {
                 event.status = Status::Rejected;
+            } else if i % 17 == 0 {
+                event.status = Status::Error;
+            } else if i % 19 == 0 {
+                event.status = Status::Interrupted;
+            } else if i % 23 == 0 {
+                event.status = Status::Pending;
             }
+            // 1ms 未満から数時間まで、区間の境界をまたぐ所要時間
+            event.end = event.start + [0.0, 0.0004, 0.25, 1.5, 61.0, 7200.0][i as usize % 6] * (1.0 + (i % 7) as f64 / 7.0);
             event
         })
         .collect();
@@ -622,7 +637,8 @@ fn aggregates_all_lanes_without_double_counting_sessions_or_reasoning() {
             false,
             Calls {
                 calls: 1,
-                failures: 1
+                failures: 1,
+                ..Calls::default()
             }
         )
     );
@@ -885,17 +901,84 @@ fn tools_are_counted_by_name_kind_and_source() {
         .iter()
         .map(|t| (t.name.as_str(), t.agent, t.sources[0], t.sources[1]))
         .collect();
-    let calls = |calls, failures| Calls { calls, failures };
+    let calls = |calls, failures, rejected, interrupted, pending| Calls {
+        calls,
+        failures,
+        rejected,
+        interrupted,
+        pending,
+    };
     assert_eq!(
         found,
         [
-            ("Bash", false, calls(3, 2), calls(0, 0)),
-            ("Read", false, calls(1, 0), calls(1, 1)),
-            ("Task", true, calls(1, 0), calls(0, 0)),
-            ("spawn_agent", true, calls(0, 0), calls(1, 0)),
+            ("Bash", false, calls(3, 2, 1, 0, 0), calls(0, 0, 0, 0, 0)),
+            ("Read", false, calls(1, 0, 0, 0, 1), calls(1, 1, 0, 1, 0)),
+            ("Task", true, calls(1, 0, 0, 0, 0), calls(0, 0, 0, 0, 0)),
+            ("spawn_agent", true, calls(0, 0, 0, 0, 0), calls(1, 0, 0, 0, 0)),
         ]
     );
+    assert_eq!(s.tools[0].total().errors(), 1);
     assert_eq!((s.total.tools, s.total.failures), (7, 3));
+    // 結果のない Read は所要時間に含めない
+    assert_eq!(s.tools.iter().map(|t| t.durations.count()).collect::<Vec<_>>(), [3, 1, 1, 1]);
+}
+
+#[test]
+fn tool_durations_and_session_rows_follow_the_period_and_outcomes() {
+    let today = NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+    let t = midnight(today) + 3600.0;
+    let timed = |start: f64, status, seconds: f64| {
+        let mut e = tool(start, "Bash", status);
+        e.end = start + seconds;
+        e
+    };
+    let store = Snapshot {
+        sessions: vec![
+            session(
+                Source::Claude,
+                "/a",
+                vec![vec![
+                    // 期間外の呼び出しは数えない
+                    timed(midnight(today - Duration::days(40)), Status::Ok, 9999.0),
+                    timed(t, Status::Ok, 120.0),
+                    timed(t + 200.0, Status::Error, 0.5),
+                    timed(t + 300.0, Status::Pending, 10_000.0),
+                    event(t + 400.0, Kind::User, Usage::default()),
+                ]],
+            ),
+            session(
+                Source::Codex,
+                "/b",
+                vec![vec![event(midnight(today - Duration::days(60)), Kind::User, Usage::default())]],
+            ),
+            session(
+                Source::Codex,
+                "/c",
+                vec![vec![event(t, Kind::User, Usage::default())]],
+            ),
+        ],
+    };
+    for period in PERIODS {
+        let s = Summary::build(&store, &[0, 1, 2], period, today);
+        assert_summary(&s, &Summary::reference(&store, &[0, 1, 2], period, today));
+    }
+    let s = Summary::build(&store, &[0, 1, 2], Period::Week, today);
+    let bash = &s.tools[0].durations;
+    assert_eq!((bash.count(), bash.max()), (2, Some(120.0)));
+    let median = bash.percentile(50).unwrap();
+    assert!((median - 0.5).abs() <= 0.5 * 0.0625, "{median}");
+    // 最後の順位は最長そのもの
+    assert_eq!(bash.percentile(95), Some(120.0));
+    // 期間内にイベントのあるセッションだけを、表示順のまま返す
+    let rows: Vec<_> = s
+        .sessions
+        .iter()
+        .map(|r| (r.index, r.total.turns, r.total.tools, r.total.failures))
+        .collect();
+    assert_eq!(rows, [(0, 1, 3, 1), (2, 1, 0, 0)]);
+    assert_eq!(s.sessions.capacity(), s.sessions.len());
+    let all = Summary::build(&store, &[2, 1, 0], Period::All, today);
+    assert_eq!(all.sessions.iter().map(|r| r.index).collect::<Vec<_>>(), [2, 1, 0]);
 }
 
 #[test]

@@ -1,9 +1,11 @@
 //! 統計画面。本文を読み込まず、集計は背景で行いデータと期間が変わったときだけ更新する
 //!
-//! - 見出し: 期間（7 日・30 日・90 日・全期間）とプロジェクトの絞り込み
-//! - 指標のタイル: 値・前の期間との差・読み込み元の割合。押すと推移・時間帯・プロジェクトの指標が変わる
+//! - 見出し: 期間（7 日・30 日・90 日・全期間）とプロジェクトの絞り込み。下のすべての数字はこの範囲で数える
+//! - 指標のタイル: 値・前の期間との差・読み込み元の割合。押すと推移・時間帯・プロジェクト・セッションの指標が変わる
 //! - 推移と時間帯 (`charts.rs` / `radial.rs`): 読み込み元ごとに積んだ列と、曜日 × 時刻の円形・表形式の濃淡
-//! - 一覧 (`lists.rs`): ツール・プロジェクト・モデル（キャッシュ読込率）と、読み込み元の比較表
+//! - セッション (`sessions.rs`): 選んだ指標の多い順。押すとタイムラインと詳細パネルで開く
+//! - ツール (`tools.rs`): 呼び出し・失敗の内訳・所要時間（中央値と P95 を共通の対数軸に並べる）
+//! - 一覧 (`lists.rs`): プロジェクト・モデル（キャッシュ読込率）と、読み込み元の比較表
 
 mod charts;
 mod lists;
@@ -11,6 +13,8 @@ mod format;
 use format::{MetricFormat, cost_label, date_range, delta, percent};
 mod profile;
 mod radial;
+mod sessions;
+mod tools;
 use crate::statistics::{Cache, Metric, Period, Summary};
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -76,6 +80,8 @@ pub(super) struct State {
     hover: Option<Hover>,
     /// プロジェクトを上位だけでなくすべて並べる
     all_projects: bool,
+    /// セッションを上位だけでなく上限まで並べる
+    all_sessions: bool,
     /// 推移と時間帯を描いた位置（当たり判定用）
     trend_area: charts::Area,
     hours_area: charts::Area,
@@ -99,6 +105,7 @@ impl State {
             generation: Arc::new(AtomicU64::new(0)),
             hover: None,
             all_projects: false,
+            all_sessions: false,
             trend_area: Default::default(),
             hours_area: Default::default(),
             radial_cache: Default::default(),
@@ -337,10 +344,13 @@ impl Rireki {
                     ),
             );
         } else {
+            // 期間・推移 → どこで（プロジェクト）・どのセッションで → いつ・どのモデルで → どのツールで、の順に読む。
+            // プロジェクトを押すと絞り込み、右のセッションの順位もそのプロジェクトに変わる。
             body = body
                 .child(self.trend_card(s, inner, cx))
-                .child(pair(self.hours_card(s, half, cx), self.tools_card(s)))
-                .child(pair(self.projects_card(s, cx), self.models_card(s)))
+                .child(pair(self.projects_card(s, cx), self.sessions_card(s, cx)))
+                .child(pair(self.hours_card(s, half, cx), self.models_card(s)))
+                .child(self.tools_card(s, inner))
                 .child(self.sources_card(s, inner));
         }
         body.child(self.statistics_notes(s))
@@ -348,8 +358,14 @@ impl Rireki {
 
     /// 指標のタイル。選んだ指標を下のグラフと一覧で表す
     fn metric_tiles(&self, s: &Summary, inner: f32, cx: &mut Context<Self>) -> Div {
-        // 5 枚が並ばない幅では 3 枚ずつにする
-        let basis = if inner >= 820.0 { 0.18 } else { 0.3 };
+        // 6 枚が並ばない幅では 3 枚ずつ、さらに狭ければ 2 枚ずつにする
+        let basis = if inner >= 1100.0 {
+            0.15
+        } else if inner >= 560.0 {
+            0.3
+        } else {
+            0.45
+        };
         div().flex().flex_wrap().gap(px(GAP)).children(
             Metric::ALL
                 .into_iter()
@@ -402,26 +418,56 @@ impl Rireki {
             )
             .child(
                 div()
-                    .text_size(px(24.0))
-                    .line_height(px(30.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .whitespace_nowrap()
-                    .child(metric.headline(value)),
+                    .flex()
+                    .items_baseline()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(24.0))
+                            .line_height(px(30.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .whitespace_nowrap()
+                            .child(metric.headline(value)),
+                    )
+                    // 件数だけでは呼び出しの増減と区別できないので、失敗率を添える
+                    .when(metric == Metric::Failures && s.total.tools > 0, |d| {
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(c(theme::MUTED))
+                                .child(format!("呼び出しの {}", percent(value / s.total.tools as f64))),
+                        )
+                    }),
             )
             .child(div().text_xs().child(comparison))
             .when(both && value > 0.0, |d| d.child(split_bar(split).mt_1()))
             .tooltip(tip(
-                if both && value > 0.0 {
-                    format!(
-                        "{}\nClaude {} ({}) · Codex {} ({})",
-                        metric.help(),
-                        metric.format(split[0]),
-                        percent(split[0] / value),
-                        metric.format(split[1]),
-                        percent(split[1] / value)
-                    )
-                } else {
-                    metric.help().to_string()
+                {
+                    let mut text = metric.help().to_string();
+                    if both && value > 0.0 {
+                        text += &format!(
+                            "\nClaude {} ({}) · Codex {} ({})",
+                            metric.format(split[0]),
+                            percent(split[0] / value),
+                            metric.format(split[1]),
+                            percent(split[1] / value)
+                        );
+                    }
+                    if metric == Metric::Failures && value > 0.0 {
+                        let mut calls = crate::statistics::Calls::default();
+                        for tool in &s.tools {
+                            calls.merge(&tool.total());
+                        }
+                        text += &format!(
+                            "\n失敗 {} · 拒否 {} · 中断 {}",
+                            fmt_n(calls.errors()),
+                            fmt_n(calls.rejected),
+                            fmt_n(calls.interrupted)
+                        );
+                    }
+                    text
                 },
                 None,
             ))

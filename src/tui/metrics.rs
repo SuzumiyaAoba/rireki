@@ -27,18 +27,20 @@ pub(super) enum Tab {
     Sources,
     Models,
     Projects,
+    Sessions,
     Tools,
     Costs,
 }
 
 impl Tab {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Overview,
         Self::Trend,
         Self::Hours,
         Self::Sources,
         Self::Models,
         Self::Projects,
+        Self::Sessions,
         Self::Tools,
         Self::Costs,
     ];
@@ -51,6 +53,7 @@ impl Tab {
             Self::Sources => "読み込み元",
             Self::Models => "モデル",
             Self::Projects => "プロジェクト",
+            Self::Sessions => "セッション",
             Self::Tools => "ツール",
             Self::Costs => "API 料金",
         }
@@ -63,6 +66,8 @@ pub(super) enum Action {
     Timeline { start: f64, end: f64 },
     Project(String),
     Event(Selection),
+    /// セッションを開く。`failures` なら失敗・拒否・中断したイベントへ移る
+    Session { index: usize, failures: bool },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -201,14 +206,16 @@ impl State {
                     .iter()
                     .position(|m| *m == self.metric)
                     .unwrap_or(0);
+                let n = Metric::ALL.len();
                 self.metric =
-                    Metric::ALL[(current + if key.code == KeyCode::Char('M') { 4 } else { 1 }) % 5];
+                    Metric::ALL[(current + if key.code == KeyCode::Char('M') { n - 1 } else { 1 }) % n];
                 self.selected = 0;
             }
             KeyCode::Tab | KeyCode::BackTab => {
                 let current = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
+                let n = Tab::ALL.len();
                 self.set_tab(
-                    Tab::ALL[(current + if key.code == KeyCode::BackTab { 7 } else { 1 }) % 8],
+                    Tab::ALL[(current + if key.code == KeyCode::BackTab { n - 1 } else { 1 }) % n],
                 );
             }
             KeyCode::Char('c') => self.set_tab(Tab::Costs),
@@ -336,6 +343,13 @@ impl State {
                 .map_or(Action::None, |&i| {
                     Action::Project(summary.projects[i].0.clone())
                 }),
+            Tab::Sessions => self
+                .session_indices()
+                .get(self.selected)
+                .map_or(Action::None, |&i| Action::Session {
+                    index: summary.sessions[i].index,
+                    failures: self.metric == Metric::Failures,
+                }),
             Tab::Costs => self
                 .selected_cost_bucket()
                 .map_or(Action::None, |b| Action::Event(b.sample)),
@@ -348,13 +362,14 @@ impl State {
             return 0;
         };
         match self.tab {
-            Tab::Overview => 26,
+            Tab::Overview => 4 + Metric::ALL.len() * 2 + 7,
             Tab::Trend => s.activity.len(),
             Tab::Hours => 168,
             Tab::Sources => 3,
             Tab::Models => s.models.len(),
             Tab::Projects => s.projects.len(),
-            Tab::Tools => s.tools.len(),
+            Tab::Sessions => self.session_indices().len(),
+            Tab::Tools => self.tool_indices().len(),
             Tab::Costs => self.cost_rows().len(),
         }
     }
@@ -378,6 +393,33 @@ impl State {
             };
             value(b).total_cmp(&value(a))
         });
+        indices
+    }
+
+    /// 指標の多い順のセッション。値のないセッションは並べず、同じ値なら開始の新しい順にする。
+    /// セッション数の指標はどれも 1 件なので、開始の新しい順になる
+    fn session_indices(&self) -> Vec<usize> {
+        let Some(summary) = &self.summary else {
+            return Vec::new();
+        };
+        let rows = &summary.sessions;
+        let value = |i: usize| self.metric.total(&rows[i].total);
+        let mut indices: Vec<usize> = (0..rows.len()).filter(|&i| value(i) > 0.0).collect();
+        indices.sort_by(|&a, &b| {
+            value(b).total_cmp(&value(a)).then(rows[b].start.total_cmp(&rows[a].start)).then(a.cmp(&b))
+        });
+        indices
+    }
+
+    /// ツールは呼び出しの多い順。失敗の指標では失敗・拒否・中断の多い順にする
+    fn tool_indices(&self) -> Vec<usize> {
+        let Some(summary) = &self.summary else {
+            return Vec::new();
+        };
+        let mut indices: Vec<usize> = (0..summary.tools.len()).collect();
+        if self.metric == Metric::Failures {
+            indices.sort_by_key(|&i| std::cmp::Reverse(summary.tools[i].total().failures));
+        }
         indices
     }
 
@@ -418,6 +460,25 @@ impl State {
         };
         buckets.iter().find(|b| b.index == self.cost_bin)
     }
+}
+
+/// 統計の順位から開くセッションの位置。`failures` なら失敗・拒否・中断の最も多いレーンの最初の失敗、
+/// そうでなければ main レーン全体
+pub(super) fn session_selection(snapshot: &rireki::model::Snapshot, index: usize, failures: bool) -> Option<Selection> {
+    let session = snapshot.sessions.get(index)?;
+    if failures {
+        let failed = |l: &rireki::model::Lane| l.events.iter().filter(|e| e.status.failed()).count();
+        let (lane, l) = session
+            .lanes
+            .iter()
+            .enumerate()
+            .max_by(|a, b| failed(a.1).cmp(&failed(b.1)).then(b.0.cmp(&a.0)))?;
+        if let Some(event) = l.events.iter().position(|e| e.status.failed()) {
+            return Some(Selection { session: index, lane, first: event, last: event });
+        }
+    }
+    let n = session.lanes.first()?.events.len();
+    (n > 0).then(|| Selection { session: index, lane: 0, first: 0, last: n - 1 })
 }
 
 #[derive(Clone, Copy)]

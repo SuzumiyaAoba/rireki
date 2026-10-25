@@ -1,6 +1,7 @@
 //! 統計の端末描画と表示形式。数値の精度・文字幅は端末の規則に従う。
 
 use super::{BINS, CostRow, Metric, Period, State, Summary, Tab, cost_timeline};
+use rireki::statistics::Calls;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -112,6 +113,7 @@ pub(in crate::tui) fn draw(
         Tab::Sources => draw_sources(frame, inner, state, summary),
         Tab::Models => draw_models(frame, inner, state, summary),
         Tab::Projects => draw_projects(frame, inner, state, summary),
+        Tab::Sessions => draw_sessions(frame, inner, state, summary, snapshot),
         Tab::Tools => draw_tools(frame, inner, state, summary),
         Tab::Costs => draw_costs(frame, inner, state, snapshot),
     }
@@ -119,7 +121,7 @@ pub(in crate::tui) fn draw(
 
 fn draw_overview(frame: &mut Frame<'_>, area: Rect, state: &State, summary: &Summary) {
     let mut lines = vec![Line::from(
-        "指標                    今期                  前期比（同じ日数）",
+        "指標                      今期                  前期比（同じ日数）",
     )];
     for metric in Metric::ALL {
         let value = metric.total(&summary.total);
@@ -138,7 +140,7 @@ fn draw_overview(frame: &mut Frame<'_>, area: Rect, state: &State, summary: &Sum
             format!(
                 "{} {} {:>18}   {}",
                 if metric == state.metric { "›" } else { " " },
-                padded(metric.label(), 14),
+                padded(metric.label(), 16),
                 metric.format(value),
                 delta
             ),
@@ -159,10 +161,17 @@ fn draw_overview(frame: &mut Frame<'_>, area: Rect, state: &State, summary: &Sum
     }
     lines.push(Line::from(""));
     lines.extend(usage_lines(&summary.total.usage));
+    let mut calls = Calls::default();
+    for tool in &summary.tools {
+        calls.merge(&tool.total());
+    }
     lines.push(Line::from(format!(
-        "ツール失敗・拒否・中断 {} 回 ({})",
-        number(summary.total.failures as u64),
-        percent(summary.total.failures as f64, summary.total.tools as f64)
+        "ツール呼び出しの失敗 {} · 拒否 {} · 中断 {} ({}) · 結果なし {}",
+        number(calls.errors() as u64),
+        number(calls.rejected as u64),
+        number(calls.interrupted as u64),
+        percent(summary.total.failures as f64, summary.total.tools as f64),
+        number(calls.pending as u64)
     )));
     lines.push(Line::from(format!(
         "稼働 {} / {} 日 · 使用量の記録 {} / {} セッション",
@@ -462,42 +471,108 @@ fn draw_projects(frame: &mut Frame<'_>, area: Rect, state: &State, summary: &Sum
 }
 
 fn draw_tools(frame: &mut Frame<'_>, area: Rect, state: &State, summary: &Summary) {
-    let lines = summary
-        .tools
+    let indices = state.tool_indices();
+    let lines = indices
         .iter()
-        .map(|tool| {
-            let calls = tool.sources[0].calls + tool.sources[1].calls;
-            let failed = tool.sources[0].failures + tool.sources[1].failures;
+        .map(|&i| {
+            let tool = &summary.tools[i];
+            let calls = tool.total();
             Line::from(format!(
-                "{}{} · {} 回 · 失敗 {} ({}) · Claude {} / Codex {}",
+                "{}{} · {} 回 · 失敗・拒否・中断 {} ({}) · 中央値 {} · P95 {}",
                 if tool.agent { "[agent] " } else { "" },
                 safe(&tool.name),
-                number(calls as u64),
-                failed,
-                percent(failed as f64, calls as f64),
-                tool.sources[0].calls,
-                tool.sources[1].calls
+                number(calls.calls as u64),
+                number(calls.failures as u64),
+                percent(calls.failures as f64, calls.calls as f64),
+                time(tool.durations.percentile(50)),
+                time(tool.durations.percentile(95))
             ))
         })
         .collect::<Vec<_>>();
-    let details = summary
-        .tools
+    let details = indices
         .get(state.selected)
+        .map(|&i| &summary.tools[i])
         .map_or_else(Vec::new, |tool| {
+            let calls = tool.total();
             vec![
                 Line::from(format!(
-                    "{} · 失敗には拒否・中断を含みます",
-                    safe(&tool.name)
+                    "{} · Claude {} 回 / Codex {} 回",
+                    safe(&tool.name),
+                    number(tool.sources[0].calls as u64),
+                    number(tool.sources[1].calls as u64)
                 )),
                 Line::from(format!(
-                    "Claude: {} 回 / 失敗 {} · Codex: {} 回 / 失敗 {}",
-                    tool.sources[0].calls,
-                    tool.sources[0].failures,
-                    tool.sources[1].calls,
-                    tool.sources[1].failures
+                    "失敗 {} · 拒否 {} · 中断 {} · 結果なし {}",
+                    number(calls.errors() as u64),
+                    number(calls.rejected as u64),
+                    number(calls.interrupted as u64),
+                    number(calls.pending as u64)
+                )),
+                Line::from(format!(
+                    "所要時間 中央値 {} · P95 {} · 最長 {} (結果のある {} 回、区間分布からの近似値)",
+                    time(tool.durations.percentile(50)),
+                    time(tool.durations.percentile(95)),
+                    time(tool.durations.max()),
+                    number(tool.durations.count())
                 )),
             ]
         });
+    list_with_detail(
+        frame,
+        area,
+        &lines,
+        state.selected,
+        state.horizontal,
+        details,
+    );
+}
+
+fn draw_sessions(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &State,
+    summary: &Summary,
+    snapshot: &Snapshot,
+) {
+    let indices = state.session_indices();
+    let total = state.metric.total(&summary.total);
+    let newest = state.metric == Metric::Sessions;
+    let title = |index: usize| {
+        snapshot.sessions.get(index).map_or_else(String::new, |s| {
+            if s.title.is_empty() { "(無題)".into() } else { safe(&rireki::model::one_line(&s.title, 80)) }
+        })
+    };
+    let lines = indices
+        .iter()
+        .map(|&i| {
+            let row = &summary.sessions[i];
+            let project = snapshot.sessions.get(row.index).map_or("", |s| s.cwd.as_str());
+            let value = state.metric.total(&row.total);
+            Line::from(if newest {
+                format!("{}  {} ターン · {}", title(row.index), number(row.total.turns as u64), safe(project))
+            } else {
+                format!(
+                    "{}  {} ({}) · {}",
+                    title(row.index),
+                    state.metric.format(value),
+                    percent(value, total),
+                    safe(project)
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let details = indices.get(state.selected).map_or_else(Vec::new, |&i| {
+        let t = &summary.sessions[i].total;
+        let mut lines = vec![Line::from(format!(
+            "期間内 {} ターン · ツール {} 回 · 失敗・拒否・中断 {} · Enter:{}",
+            number(t.turns as u64),
+            number(t.tools as u64),
+            number(t.failures as u64),
+            if state.metric == Metric::Failures { "失敗したイベントを開く" } else { "履歴で開く" }
+        ))];
+        lines.extend(usage_lines(&t.usage));
+        lines
+    });
     list_with_detail(
         frame,
         area,
@@ -785,6 +860,22 @@ fn percent(value: f64, total: f64) -> String {
         "—".into()
     } else {
         format!("{:.1}%", value / total * 100.0)
+    }
+}
+
+/// 所要時間。詳細と同じく 1 秒未満はミリ秒、1 分以上は分・秒で表す
+fn time(seconds: Option<f64>) -> String {
+    let Some(s) = seconds else {
+        return "—".into();
+    };
+    if s < 1.0 {
+        format!("{:.0}ms", s * 1000.0)
+    } else if s < 60.0 {
+        format!("{s:.1}s")
+    } else if s < 3600.0 {
+        format!("{}m{:02}s", (s / 60.0) as u64, (s % 60.0) as u64)
+    } else {
+        format!("{}h{:02}m", (s / 3600.0) as u64, ((s % 3600.0) / 60.0) as u64)
     }
 }
 

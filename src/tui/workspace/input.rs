@@ -248,6 +248,11 @@ impl Workspace {
                 }
                 metrics::Action::Project(project) => state.project(Some(project)),
                 metrics::Action::Event(selection) => self.open(selection, state, true),
+                metrics::Action::Session { index, failures } => {
+                    if let Some(selection) = metrics::session_selection(&state.snapshot, index, failures) {
+                        self.open(selection, state, true);
+                    }
+                }
             },
             Page::Mcp => self.mcp_key(key, state),
             Page::Settings => self.settings_key(key, state),

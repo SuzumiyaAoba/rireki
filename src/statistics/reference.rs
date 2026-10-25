@@ -17,6 +17,9 @@ impl Totals {
     }
 }
 
+/// ツールごとの読み込み元別の件数と、結果のある呼び出しの所要時間（秒）
+type ToolCalls = ([Calls; 2], Vec<f64>);
+
 impl Summary {
     /// 二分探索・日付境界の表・キャッシュを使わず、全イベントの日時を変換して数える
     pub(super) fn reference(
@@ -35,7 +38,7 @@ impl Summary {
         let mut out = Self::empty(&span, period);
         let mut models: HashMap<&str, [UsageSum; 2]> = HashMap::new();
         let mut projects: HashMap<&str, [Totals; 2]> = HashMap::new();
-        let mut tools: HashMap<(&str, bool), [Calls; 2]> = HashMap::new();
+        let mut tools: HashMap<(&str, bool), ToolCalls> = HashMap::new();
         let mut days = HashSet::new();
         for &si in order {
             let session = &store.sessions[si];
@@ -67,11 +70,19 @@ impl Summary {
                         .merge(&usage);
                 }
                 if tool {
-                    let calls = &mut tools
+                    use crate::model::Status;
+                    let (sources, seconds) = tools
                         .entry((e.name.as_ref(), e.kind == Kind::Agent))
-                        .or_default()[src];
+                        .or_default();
+                    let calls = &mut sources[src];
                     calls.calls += 1;
                     calls.failures += usize::from(e.status.failed());
+                    calls.rejected += usize::from(e.status == Status::Rejected);
+                    calls.interrupted += usize::from(e.status == Status::Interrupted);
+                    calls.pending += usize::from(e.status == Status::Pending);
+                    if e.status != Status::Pending {
+                        seconds.push(crate::detail::analysis::duration(e));
+                    }
                 }
                 let t = local(e.start);
                 let date = t.date_naive();
@@ -83,6 +94,7 @@ impl Summary {
                     cost: usage.cost,
                     turns: u64::from(e.kind == Kind::User),
                     tools: u64::from(tool),
+                    failures: u64::from(e.status.failed()),
                     sessions: 0,
                 };
                 let bucket = span
@@ -110,13 +122,20 @@ impl Summary {
             if current.sessions > 0 {
                 out.total.merge(&current);
                 out.sources[src].merge(&current);
+                out.sessions.push(SessionRow { index: si, start: session.start, total: current.clone() });
                 projects.entry(&session.cwd).or_default()[src].merge(&current);
                 out.recorded_sessions += usize::from(recorded);
             }
         }
         out.active_days = days.len();
         out.sum_cells();
-        out.finish(models, projects, tools);
+        out.finish(
+            models,
+            projects,
+            tools.into_iter().map(|(key, (sources, seconds))| {
+                (key, ToolSum { sources, durations: Durations::from_seconds(seconds) })
+            }),
+        );
         out
     }
 }

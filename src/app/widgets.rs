@@ -47,6 +47,14 @@ pub(super) fn tip(
     move |_, cx| cx.new(|_| Tip { text: text.clone(), key }).into()
 }
 
+/// 表示するときに本文を作るツールチップ。一覧の行ごとの説明を描画のたびに組み立てない
+pub(super) fn lazy_tip(text: impl Fn() -> String + 'static) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |_, cx| {
+        let text = text().into();
+        cx.new(|_| Tip { text, key: None }).into()
+    }
+}
+
 /// キーの表記（⌘K など）
 pub(super) fn kbd(k: &'static str) -> Div {
     div()

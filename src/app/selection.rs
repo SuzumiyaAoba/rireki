@@ -1,8 +1,8 @@
 //! 詳細の選択、閲覧履歴、選択イベントへの移動。
 
 use super::{
-    Context, DetailTab, Duration, Mode, ROW_H, Rireki, Row, Selection, Source, SourceFilter,
-    Window, calendar, local, midnight, point, px,
+    Context, DetailTab, Duration, Mode, ROW_H, Rireki, Row, RowFilter, Selection, Source,
+    SourceFilter, Window, calendar, local, midnight, point, px,
 };
 use chrono::Datelike;
 
@@ -300,6 +300,24 @@ impl Rireki {
         self.set_detail_tab(DetailTab::Session, cx);
         self.reveal(sel, true, window);
         self.sidebar_changed(cx);
+    }
+
+    /// 失敗・拒否・中断の最も多いレーン（同数なら起動元に近いレーン）を、失敗だけに絞り込んで開く。
+    /// 失敗がなければセッション全体を開く
+    pub(super) fn open_failures(&mut self, si: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let best = self.store.sessions[si]
+            .lanes
+            .iter()
+            .enumerate()
+            .map(|(lane, l)| (l.events.iter().filter(|e| e.status.failed()).count(), lane))
+            .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+        match best {
+            Some((n, lane)) if n > 0 => {
+                self.unhide(si);
+                self.open_lane_filtered(si, lane, Some(RowFilter::Failed), window, cx);
+            }
+            _ => self.open_session(si, window, cx),
+        }
     }
 
     /// 1 つのイベントを選んで表示する

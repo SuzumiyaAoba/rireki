@@ -61,7 +61,8 @@ pub(crate) fn benchmark(store: &Snapshot, order: &[usize], today: NaiveDate) {
             t.iter().for_each(|t| totals_hash(t, &mut h));
         }
         for t in &summary.tools {
-            (&t.name, t.agent, t.sources).hash(&mut h);
+            // 内訳と所要時間を追加する前と比べられるよう、件数と失敗だけを使う。
+            (&t.name, t.agent, t.sources.map(|c| (c.calls, c.failures))).hash(&mut h);
         }
         for a in &summary.activity {
             (a.from, a.to).hash(&mut h);
@@ -73,11 +74,28 @@ pub(crate) fn benchmark(store: &Snapshot, order: &[usize], today: NaiveDate) {
             .iter()
             .chain(&summary.by_hour)
             .for_each(|a| amount_hash(a, &mut h));
+        // 失敗の推移・ツールの内訳と所要時間・セッションごとの集計は別のハッシュにする。
+        let mut detail = DefaultHasher::new();
+        for a in summary.activity.iter().flat_map(|b| &b.sources).chain(&summary.hours)
+            .chain(&summary.by_weekday).chain(&summary.by_hour) {
+            a.failures.hash(&mut detail);
+        }
+        for t in &summary.tools {
+            (&t.name, t.agent, t.sources, t.durations.count()).hash(&mut detail);
+            for p in [50, 95, 100] {
+                t.durations.percentile(p).map(f64::to_bits).hash(&mut detail);
+            }
+        }
+        for row in &summary.sessions {
+            row.index.hash(&mut detail);
+            totals_hash(&row.total, &mut detail);
+        }
         println!(
             "{}",
             serde_json::json!({"period":name,"sessions":summary.total.sessions,
             "turns":summary.total.turns,"tokens":summary.total.usage.total(),
-            "summary_hash":format!("{:016x}",h.finish())})
+            "summary_hash":format!("{:016x}",h.finish()),
+            "detail_hash":format!("{:016x}",detail.finish())})
         );
         crate::perf::measure(&format!("statistics_{name}"), 15, || {
             Summary::build(store, order, period, today)

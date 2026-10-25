@@ -1,12 +1,14 @@
-//! 期間・読み込み元・モデル・プロジェクト・ツール・時間帯ごとの統計。GPUI に依存しない。
+//! 期間・読み込み元・モデル・プロジェクト・セッション・ツール・時間帯ごとの統計。GPUI に依存しない。
 
 mod cache;
+mod durations;
 mod metric;
 #[cfg(test)]
 mod reference;
 mod span;
 
 pub use cache::Cache;
+pub use durations::Durations;
 pub use metric::Metric;
 use span::Span;
 pub use span::{Period, Unit};
@@ -53,6 +55,8 @@ pub struct Amount {
     pub cost: f64,
     pub turns: u64,
     pub tools: u64,
+    /// 失敗・拒否・中断
+    pub failures: u64,
     /// その区間にイベントのあるセッションの数
     pub sessions: u64,
 }
@@ -64,6 +68,7 @@ impl Amount {
         self.cost += other.cost;
         self.turns += other.turns;
         self.tools += other.tools;
+        self.failures += other.failures;
         self.sessions += other.sessions;
     }
 }
@@ -82,6 +87,11 @@ pub struct Calls {
     pub calls: usize,
     /// 失敗・拒否・中断
     pub failures: usize,
+    /// failures のうち、ユーザーが拒否・中断した呼び出し
+    pub rejected: usize,
+    pub interrupted: usize,
+    /// 結果のない呼び出し。所要時間と失敗率の分母には含めない
+    pub pending: usize,
 }
 
 impl Calls {
@@ -89,6 +99,14 @@ impl Calls {
     pub fn merge(&mut self, other: &Self) {
         self.calls += other.calls;
         self.failures += other.failures;
+        self.rejected += other.rejected;
+        self.interrupted += other.interrupted;
+        self.pending += other.pending;
+    }
+
+    /// 失敗（エラーの結果）。拒否・中断を除く
+    pub fn errors(&self) -> usize {
+        self.failures.saturating_sub(self.rejected + self.interrupted)
     }
 }
 
@@ -99,6 +117,27 @@ pub struct Tool {
     pub agent: bool,
     /// 読み込み元ごと（Claude, Codex）
     pub sources: [Calls; 2],
+    /// 結果のある呼び出しの所要時間
+    pub durations: Durations,
+}
+
+impl Tool {
+    /// 読み込み元を合わせた件数
+    pub fn total(&self) -> Calls {
+        let mut calls = self.sources[0];
+        calls.merge(&self.sources[1]);
+        calls
+    }
+}
+
+/// 期間内にイベントのあるセッションの集計
+#[derive(Clone, Debug)]
+pub struct SessionRow {
+    /// Snapshot のセッション番号
+    pub index: usize,
+    /// セッションの開始時刻。順位の同値や新しい順の並べ替えに使う
+    pub start: f64,
+    pub total: Totals,
 }
 
 pub struct Summary {
@@ -117,6 +156,8 @@ pub struct Summary {
     pub projects: Vec<(String, [Totals; 2])>,
     /// 呼び出しの多い順
     pub tools: Vec<Tool>,
+    /// 期間内にイベントのあるセッション。集計に渡した表示順のまま
+    pub sessions: Vec<SessionRow>,
     pub activity: Vec<Bucket>,
     /// 曜日（月曜 = 0）× 時（0〜23）の `HOURS` マス。期間内の日をローカル時間で重ねる
     pub hours: Vec<Amount>,
@@ -147,6 +188,7 @@ impl Summary {
             models: Vec::new(),
             projects: Vec::new(),
             tools: Vec::new(),
+            sessions: Vec::new(),
             activity: span
                 .buckets
                 .iter()
@@ -189,6 +231,7 @@ impl Summary {
                 a.cost += cell.cost;
                 a.turns += cell.turns;
                 a.tools += cell.tools;
+                a.failures += cell.failures;
             }
         }
     }
@@ -198,7 +241,7 @@ impl Summary {
         &mut self,
         models: impl IntoIterator<Item = (&'a str, [UsageSum; 2])>,
         projects: impl IntoIterator<Item = (&'a str, [Totals; 2])>,
-        tools: impl IntoIterator<Item = ((&'a str, bool), [Calls; 2])>,
+        tools: impl IntoIterator<Item = ((&'a str, bool), ToolSum)>,
     ) {
         let tokens = |u: &[UsageSum; 2]| u[0].total() + u[1].total();
         self.models = models.into_iter().map(|(m, u)| (m.to_owned(), u)).collect();
@@ -218,10 +261,11 @@ impl Summary {
             .sort_by(|a, b| key(&b.1).cmp(&key(&a.1)).then_with(|| a.0.cmp(&b.0)));
         self.tools = tools
             .into_iter()
-            .map(|((name, agent), sources)| Tool {
+            .map(|((name, agent), sum)| Tool {
                 name: name.to_owned(),
                 agent,
-                sources,
+                sources: sum.sources,
+                durations: sum.durations,
             })
             .collect();
         self.tools.sort_by(|a, b| {
@@ -232,6 +276,13 @@ impl Summary {
                 .then_with(|| a.agent.cmp(&b.agent))
         });
     }
+}
+
+/// ツールごとの集計の途中経過
+#[derive(Default)]
+struct ToolSum {
+    sources: [Calls; 2],
+    durations: Durations,
 }
 
 #[cfg(test)]
