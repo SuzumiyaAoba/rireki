@@ -4,7 +4,7 @@ use std::cell::RefCell;
 
 use gpui::{AnyElement, ClickEvent, ClipboardItem, Context, Div, ListAlignment, ListOffset, ListState, Stateful, Window, div, list, prelude::*, px};
 
-use super::{Rireki, RowFilter, Selection, resume_command, rich, tilde, badge, cache_hit_stat, fmt_dur, fmt_n, is_live, label, local, stat, usage_cost_label};
+use super::{Rireki, RowFilter, Selection, resume_command, rich, tilde, badge, cache_hit_stat, fmt_dur, fmt_n, label, local, stat, usage_cost_label};
 use crate::app::widgets::{Marquee, tip};
 use crate::icons::{self, Icon};
 use crate::model::{Source, one_line};
@@ -97,14 +97,14 @@ impl Rireki {
             },
         );
         let app = cx.entity().downgrade();
-        list(self.overview_list.state.clone(), move |i, _, cx| {
-            app.update(cx, |app, cx| app.overview_item(sel, i, cx))
-                .unwrap_or_else(|_| div().into_any_element())
-        })
-        .flex_1()
-        .min_h_0()
-        .p_3()
-        .into_any_element()
+        div().flex_1().min_h_0().p_3().flex().flex_col().child(
+            list(self.overview_list.state.clone(), move |i, _, cx| {
+                app.update(cx, |app, cx| app.overview_item(sel, i, cx))
+                    .unwrap_or_else(|_| div().into_any_element())
+            })
+            .flex_1()
+            .min_h_0(),
+        ).into_any_element()
     }
 
     fn overview_item(&self, sel: Selection, index: usize, cx: &mut Context<Self>) -> AnyElement {
@@ -121,67 +121,85 @@ impl Rireki {
         let s = self.detail_session(sel);
         let summary = &self.cache(sel).unwrap().session_summary;
         match row {
-            Row::Intro => div()
-                .w_full()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .pb_3()
-                .child(
-                    div()
-                        .text_base()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(Marquee::new(
-                            "session-title",
-                            if s.title.is_empty() {
-                                "(無題)".to_string()
-                            } else {
-                                one_line(&s.title, usize::MAX)
-                            },
-                        )),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .text_xs()
-                        .text_color(c(theme::MUTED))
-                        .child(self.project_name(&s.cwd))
-                        .child(s.source.label())
-                        .child(badge(
-                            if is_live(s.end) { "進行中" } else { "履歴" },
-                            if is_live(s.end) { theme::LIVE } else { theme::MUTED },
-                        )),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(stat("経過時間", fmt_dur((s.end - s.start).max(0.0)), None))
-                        .child(stat("ターン", fmt_n(summary.total.stats.turns), None))
-                        .child({
-                            // 統計のセッションの順位と同じく、失敗したイベントだけの履歴へ移る
-                            let failures = summary.total.stats.failures();
-                            let session = sel.session;
-                            stat("失敗・拒否・中断", fmt_n(failures), (failures > 0).then_some(theme::ERR))
-                                .id("overview-failures")
-                                .when(failures > 0, |d| {
-                                    d.cursor_pointer()
-                                        .hover(|s| s.border_color(c(theme::SUBTLE)))
-                                        .tooltip(tip("失敗・拒否・中断したイベントだけを履歴に表示", None))
+            Row::Intro => {
+                let failures = summary.total.stats.failures();
+                let session = sel.session;
+                let resume = resume_command(s);
+                let resumed = self.copied == Some("copy-resume");
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .pb_3()
+                    .child(label("セッションの集計"))
+                    // 幅によって最後の項目だけが次の行に残らないよう、関連する数字を行ごとにまとめる。
+                    .child(
+                        div().flex().gap_2()
+                            .child(stat("経過時間", fmt_dur((s.end - s.start).max(0.0)), None))
+                            .child(stat("ターン", fmt_n(summary.total.stats.turns), None))
+                            .child(
+                                stat("失敗等", fmt_n(failures), (failures > 0).then_some(theme::ERR))
+                                    .id("overview-failures")
+                                    .relative()
+                                    .tooltip(tip(
+                                        if failures > 0 {
+                                            "失敗・拒否・中断の合計。押すと最も多いレーンを表示"
+                                        } else {
+                                            "失敗・拒否・中断したイベント"
+                                        },
+                                        None,
+                                    ))
+                                    .when(failures > 0, |d| {
+                                        d.border_color(c(theme::ERR).opacity(0.4))
+                                            .child(div().absolute().top_2().right_2()
+                                                .child(icons::icon(Icon::ChevronRight, theme::ERR).size_3()))
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(c(theme::HOVER)))
+                                            .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
+                                                t.open_failures(session, w, cx)
+                                            }))
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div().flex().gap_2()
+                            .child(stat("API換算料金", usage_cost_label(&summary.total.usage), None))
+                            .child(cache_hit_stat("overview-cache-hit", &summary.total.usage)),
+                    )
+                    .child(
+                        div().flex().flex_wrap().gap_1p5().pt_1()
+                            .child(
+                                self.action_button(
+                                    "resume",
+                                    if resumed { Icon::Check } else { Icon::Terminal },
+                                    if resumed { "コピーしました" } else { "再開コマンドをコピー" },
+                                )
+                                .min_w(px(160.0))
+                                .tooltip(tip(resume.clone(), None))
+                                .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(resume.clone()));
+                                    t.flash_copied("copy-resume", cx);
+                                })),
+                            )
+                            .when(!s.lanes[0].events.is_empty(), |d| {
+                                d.child(
+                                    self.action_button("all-events", Icon::Layers, "メインの履歴")
+                                        .tooltip(tip("メインのレーン全体を履歴に表示", None))
                                         .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
-                                            t.open_failures(session, w, cx)
-                                        }))
-                                })
-                        })
-                        .child(stat("API換算料金", usage_cost_label(&summary.total.usage), None))
-                        .child(cache_hit_stat("overview-cache-hit", &summary.total.usage)),
-                )
-                .child(label("指示と応答 · クリックでターンの履歴を表示"))
-                .into_any_element(),
+                                            t.open_lane_filtered(session, 0, None, w, cx)
+                                        })),
+                                )
+                            }),
+                    )
+                    .child(
+                        div().pt_2().flex().items_center().gap_2()
+                            .child(label("指示と応答"))
+                            .child(div().text_xs().text_color(c(theme::MUTED)).child("メイン")),
+                    )
+                    .into_any_element()
+            }
             Row::NoTurns => div()
                 .pb_3()
                 .text_xs()
@@ -194,11 +212,10 @@ impl Rireki {
                 let first = turn.index;
                 let last = summary.turns[0].get(i + 1).map_or(events.len(), |t| t.index) - 1;
                 let session = sel.session;
-                div()
+                let card = div()
                     .id(("overview-turn", first))
                     .w_full()
                     .min_w_0()
-                    .mb_2()
                     .p_2()
                     .rounded_md()
                     .border_1()
@@ -221,7 +238,8 @@ impl Rireki {
                             .child(div().flex_1())
                             .when(turn.failures > 0, |d| {
                                 d.child(badge(format!("失敗等 {}", turn.failures), theme::ERR))
-                            }),
+                            })
+                            .child(icons::icon(Icon::ChevronRight, theme::MUTED).size_3()),
                     )
                     .child(div().text_sm().child(Marquee::new(
                         "prompt",
@@ -250,8 +268,9 @@ impl Rireki {
                             app.navigate(target, w, cx);
                             app.reveal(target, false, w);
                         }
-                    }))
-                    .into_any_element()
+                    }));
+                // 仮想リストでは行の margin が間隔にならないため、余白を行の内側に含める。
+                div().w_full().min_w_0().pb_2().child(card).into_any_element()
             }
             Row::Agents => div().pt_2().pb_2().child(label("エージェント構成")).into_any_element(),
             Row::Lane(lane, depth) => {
@@ -313,7 +332,7 @@ impl Rireki {
 }
 
 impl Rireki {
-    /// 概要末尾の基本情報と再開・ログの操作。モデルはメインレーンの属性を表示する。
+    /// 概要末尾の基本情報とログの操作。モデルはメインレーンの属性を表示する。
     pub(super) fn overview_information(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         let s = self.detail_session(sel);
         let lane = &s.lanes[0];
@@ -341,47 +360,18 @@ impl Rireki {
             Source::Claude => format!("Claude Code {}", s.version),
             Source::Codex => format!("Codex CLI {}", s.version),
         });
-        let session = sel.session;
-        let resume = resume_command(s);
-        let resumed = self.copied == Some("copy-resume");
         let origin = s
             .lanes
             .first()
             .map(|l| l.origin.clone())
             .unwrap_or_default();
-        let main_n = s.lanes[0].events.len();
         let actions = div()
             .flex()
             .flex_wrap()
             .gap_1p5()
-            .child(
-                self.action_button(
-                    "resume",
-                    if resumed { Icon::Check } else { Icon::Terminal },
-                    if resumed {
-                        "コピーしました"
-                    } else {
-                        "再開コマンドをコピー"
-                    },
-                )
-                .tooltip(tip(resume.clone(), None))
-                .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(resume.clone()));
-                    t.flash_copied("copy-resume", cx);
-                })),
-            )
-            .when(main_n > 0, |d| {
-                d.child(
-                    self.action_button("all-events", Icon::Layers, "全イベントを一覧")
-                        .tooltip(tip("メインのレーン全体を選ぶ", None))
-                        .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
-                            t.open_lane_filtered(session, 0, None, w, cx)
-                        })),
-                )
-            })
             .when(!origin.is_empty(), |d| {
                 d.child(
-                    self.action_button("reveal-log", Icon::FolderOpen, "ログを Finder で表示")
+                    self.action_button("reveal-log", Icon::FolderOpen, "ログを表示")
                         .tooltip(tip(origin.clone(), None))
                         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                             cx.reveal_path(std::path::Path::new(&origin));
@@ -480,7 +470,7 @@ impl Rireki {
             .items_center()
             .gap_1()
             .px_2()
-            .py_0p5()
+            .py_1p5()
             .rounded_md()
             .border_1()
             .border_color(c(theme::BORDER))

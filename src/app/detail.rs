@@ -13,7 +13,7 @@ use gpui::{
 };
 
 use super::rich;
-use super::widgets::{Marquee, dot, event_icon, project_tile, tip};
+use super::widgets::{Marquee, event_icon, project_tile, tip};
 use super::{DETAIL_MAX, HEADER_H, INNER_RADIUS, Rireki, Selection, StyleRefinement, fmt_dur, fmt_n, is_live, local, tilde};
 use crate::icons::{self, Icon};
 use crate::model::{Event, Kind, Session, Source, Status, Usage, UsageSum, one_line};
@@ -188,8 +188,8 @@ impl Rireki {
             .bg(c(theme::PANEL)).border_color(c(theme::BORDER)).text_sm().text_color(c(theme::TEXT))
             .on_scroll_wheel(cx.listener(|app, _: &gpui::ScrollWheelEvent, _, _| app.cancel_detail_follow()));
         let Some(sel) = self.shown_detail_selection() else { return panel.into_any_element(); };
-        let files = self.cache(sel).map_or(0, |d| d.files.len());
-        let panel = panel.child(self.detail_header(sel, cx)).child(self.context_bar(sel, cx))
+        let files = self.cache(sel).map(|d| d.files.len());
+        let panel = panel.child(self.detail_header(cx)).child(self.context_bar(sel, cx))
             .child(self.detail_tabs(sel, self.detail_tab, files, cx)).child(self.detail_scope(sel, cx))
             .when(self.detail_tab == DetailTab::Events && self.cache(sel).is_some(), |d| {
                 d.child(div().flex_none().px_3().pt_3().flex().flex_col().gap_2()
@@ -220,8 +220,15 @@ impl Rireki {
             DetailTab::Analysis => gpui::AnyView::from(self.analysis_content_view.clone())
                 .cached(StyleRefinement::default().w_full().flex_1().min_h_0())
                 .into_any_element(),
-            DetailTab::Files if files == 0 => div().p_3().text_xs().text_color(c(theme::MUTED))
-                .child("選択範囲に記録されたファイル編集はありません").into_any_element(),
+            DetailTab::Files if files == 0 => div().p_3().child(
+                div().w_full().p_4().flex().flex_col().items_center().gap_2()
+                    .rounded_lg().bg(c(theme::BG)).border_1().border_color(c(theme::BORDER))
+                    .child(div().size(px(36.0)).rounded_full().flex().items_center().justify_center()
+                        .bg(c(theme::ELEVATED)).child(icons::icon(Icon::FilePen, theme::MUTED).size_4()))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("変更されたファイルはありません"))
+                    .child(div().text_xs().text_center().text_color(c(theme::MUTED))
+                        .child("この範囲にはファイル編集が記録されていません")),
+            ).into_any_element(),
             DetailTab::Files => div().flex_1().min_h_0().p_3().flex().flex_col()
                 .child(self.files_list(sel, self.cache(sel).unwrap(), window, cx)).into_any_element(),
             DetailTab::Events if sel.first == sel.last => div().id("detail-scroll")
@@ -245,14 +252,17 @@ impl Rireki {
         let (start, end) = if overview { (s.start, s.end) } else {
             (events[0].start, self.cache(sel).map_or(events.last().unwrap().end, |d| d.end()))
         };
-        let title = if overview { "セッション全体（全エージェント）".to_string() } else {
+        let title = if overview { "セッション全体 · 全エージェント".to_string() } else {
             format!("{} · {} 件", if whole { "レーン全体" } else { "選択範囲" }, fmt_n(events.len()))
         };
-        div().flex_none().px_3().py_1p5().flex().flex_col().gap_1().text_xs()
-            .border_b_1().border_color(c(theme::BORDER)).text_color(c(theme::MUTED))
-            .child(div().flex().items_center().gap_2().child(title).child(div().flex_1())
+        div().flex_none().px_3().py_2().flex().flex_col().gap_1().text_xs()
+            .bg(c(theme::BG)).border_b_1().border_color(c(theme::BORDER))
+            .child(div().flex().items_center().gap_2()
+                .child(div().text_color(c(theme::MUTED)).child("対象"))
+                .child(div().id("detail-scope-title").flex_1().min_w_0().truncate().font_weight(FontWeight::MEDIUM)
+                    .text_color(c(theme::TEXT)).tooltip(tip(title.clone(), None)).child(title))
                 .when(!overview && !whole, |d| d.child(self.icon_button(
-                    "scope-lane", Some(Icon::Layers), "レーン全体を見る", false, cx,
+                    "scope-lane", Some(Icon::Layers), "レーン全体", false, cx,
                     move |app, w, cx| {
                         let tab = app.detail_tab;
                         let n = app.store.sessions[sel.session].lanes[sel.lane].events.len();
@@ -260,32 +270,28 @@ impl Rireki {
                         app.navigate(Selection { first: 0, last: n - 1, ..sel }, w, cx);
                         app.set_detail_tab(tab, cx);
                     },
-                ))))
-            .child(format!("{} – {}", local(start).format("%Y/%m/%d %H:%M:%S"),
-                local(end).format(if local(start).date_naive() == local(end).date_naive() {
-                    "%H:%M:%S"
-                } else { "%Y/%m/%d %H:%M:%S" })))
+                ).tooltip(tip("このレーンの全イベントを見る", None)))))
+            .child(div().flex().items_center().gap_1p5().text_color(c(theme::MUTED))
+                .child(icons::icon(Icon::Clock, theme::MUTED).size_3().flex_none())
+                .child(format!("{} – {}", local(start).format("%Y/%m/%d %H:%M:%S"),
+                    local(end).format(if local(start).date_naive() == local(end).date_naive() {
+                        "%H:%M:%S"
+                    } else { "%Y/%m/%d %H:%M:%S" }))))
     }
 
-    fn detail_tabs(&self, sel: Selection, tab: DetailTab, files: usize, cx: &mut Context<Self>) -> Div {
+    fn detail_tabs(&self, sel: Selection, tab: DetailTab, files: Option<usize>, cx: &mut Context<Self>) -> Div {
         let n_events = (sel.first != sel.last).then(|| sel.last - sel.first + 1);
-        div().flex_none().px_3().py_2().border_b_1().border_color(c(theme::BORDER)).child(
+        div().flex_none().px_2().border_b_1().border_color(c(theme::BORDER)).child(
             div()
                 .flex()
-                .gap_0p5()
-                .p(px(2.0))
-                .rounded_lg()
-                .bg(c(theme::BG))
-                .border_1()
-                .border_color(c(theme::BORDER))
                 .child(self.tab_button(DetailTab::Session, "概要", None, "1", tab, true, cx))
                 .child(self.tab_button(DetailTab::Events, "履歴", n_events, "2", tab, true, cx))
-                .child(self.tab_button(DetailTab::Files, "変更", Some(files), "3", tab, true, cx))
+                .child(self.tab_button(DetailTab::Files, "変更", files, "3", tab, true, cx))
                 .child(self.tab_button(DetailTab::Analysis, "分析", None, "4", tab, true, cx)),
         )
     }
 
-    /// タブ。区切られた選択肢の形にし、選んでいるものを浮かせる。件数は小さい丸の中に出す
+    /// タブは同じ幅にし、選択中の表示と件数を一目で見分けられるようにする。
     #[allow(clippy::too_many_arguments)]
     fn tab_button(
         &self,
@@ -311,27 +317,33 @@ impl Rireki {
             .flex()
             .items_center()
             .justify_center()
-            .gap_1p5()
-            .h(px(26.0))
-            .rounded_md()
-            .text_xs()
+            .min_w_0()
+            .gap_1()
+            .h(px(38.0))
+            .border_b_2()
+            .border_color(c(if on { theme::ACCENT } else { theme::PANEL }))
+            .text_sm()
             .text_color(c(fg))
-            .when(on, |d| {
-                d.bg(c(theme::ELEVATED)).border_1().border_color(c(theme::BORDER)).font_weight(FontWeight::SEMIBOLD)
-            })
+            .when(on, |d| d.font_weight(FontWeight::SEMIBOLD))
             .child(text)
             .when_some(count.filter(|&n| n > 0), |d, n| {
                 d.child(
                     div()
                         .px_1p5()
                         .rounded_full()
-                        .bg(c(if on { theme::ACCENT } else { theme::GRID }).opacity(if on { 0.25 } else { 1.0 }))
+                        .bg(c(if on { theme::ACCENT_BG } else { theme::GRID }))
                         .text_color(c(if on { theme::ACCENT } else { theme::MUTED }))
                         .text_size(px(10.0))
-                        .child(fmt_n(n)),
+                        .child(if n > 999 { "999+".into() } else { fmt_n(n) }),
                 )
             })
-            .tooltip(tip(if enabled { text } else { "編集したファイルはありません" }, Some(key)))
+            .tooltip(tip(if !enabled {
+                "編集したファイルはありません".to_string()
+            } else if let Some(n) = count {
+                format!("{text} · {} 件", fmt_n(n))
+            } else {
+                text.to_string()
+            }, Some(key)))
             .when(enabled && !on, |d| {
                 d.cursor_pointer()
                     .hover(|s| s.text_color(c(theme::TEXT)).bg(c(theme::HOVER)))
@@ -416,17 +428,15 @@ impl Rireki {
     }
 
     /// 共通見出しにはセッションと選択の履歴、表示操作を置く。
-    fn detail_header(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
-        let s = self.detail_session(sel);
+    fn detail_header(&self, cx: &mut Context<Self>) -> Div {
         div().h(px(HEADER_H)).flex_none().flex().items_center().gap_1().px_2()
             .border_b_1().border_color(c(theme::BORDER))
             .child(self.ghost_button("d-back", Icon::ArrowLeft, "戻る", Some(crate::platform::shortcut("⌘[", "Ctrl+[")),
                 !self.back.is_empty(), cx, |t, w, cx| t.go_back(w, cx)))
             .child(self.ghost_button("d-forward", Icon::ArrowRight, "進む", Some(crate::platform::shortcut("⌘]", "Ctrl+]")),
                 !self.forward.is_empty(), cx, |t, w, cx| t.go_forward(w, cx)))
-            .child(div().flex_1().min_w_0().font_weight(FontWeight::SEMIBOLD)
-                .child(Marquee::new("session-title", if s.title.is_empty() { "(無題)".to_string() }
-                    else { one_line(&s.title, usize::MAX) })))
+            .child(div().flex_1().min_w_0().pl_1().font_weight(FontWeight::SEMIBOLD)
+                .text_color(c(theme::MUTED)).child("セッション詳細"))
             .child(self.ghost_button("d-locate", Icon::Locate, "選択位置を表示", None, true, cx,
                 |t, w, cx| { t.detail_fullscreen = false;
                     if let Some(sel) = t.selected { t.reveal(sel, true, w); }
@@ -448,11 +458,12 @@ impl Rireki {
             format!("{}–{}", fmt_n(sel.first + 1), fmt_n(sel.last + 1))
         };
         let output = self.cache(sel).and_then(|d| d.texts.first()).map_or("", |t| t.1.as_str());
-        div().flex_none().flex().items_center().gap_1().text_xs()
-            .child(label(title))
+        div().flex_none().flex().items_center().gap_1p5().text_xs()
+            .when(single, |d| d.child(event_icon(theme::event_icon(e), theme::event_color(e), 13.0)))
+            .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD)
+                .text_color(c(theme::MUTED)).child(title))
             .when(single, |d| d.when_some(status_label(e, is_live(s.end), output),
                 |d, (text, color)| d.child(badge(text, color))))
-            .child(div().flex_1())
             .child(self.ghost_button("d-prev", Icon::ChevronUp, "前のイベント", Some("K"),
                 !single || if self.detail_reversed { sel.first + 1 < lane.events.len() } else { sel.first > 0 },
                 cx, |t, w, cx| t.step_event(-1, w, cx)).size(px(22.0)))
@@ -462,62 +473,44 @@ impl Rireki {
                 cx, |t, w, cx| t.step_event(1, w, cx)).size(px(22.0)))
     }
 
-    /// 見出しの下の文脈。読み込み元・プロジェクト・セッション・サブエージェントをパンくずで出す。
-    /// セッション名を押すとセッションのタブへ、サブエージェントの矢印で起動元へ移る
+    /// セッション名と所属をまとめる。名前から概要へ、サブエージェントから起動元へ移れる。
     fn context_bar(&self, sel: Selection, cx: &mut Context<Self>) -> Div {
         let s = self.detail_session(sel);
         let lane = &s.lanes[sel.lane];
         let (logo, logo_color) = icons::source_icon(s.source);
         let title = if s.title.is_empty() { "(無題)".to_string() } else { s.title.clone() };
-        let sep = || icons::icon(Icon::ChevronRight, theme::SUBTLE).size_3().flex_none();
-        let mut bar = div()
+        let mut meta = div()
             .flex_none()
             .flex()
             .items_center()
-            .gap_1()
-            .px_3()
-            .py_1p5()
+            .gap_1p5()
+            .min_w_0()
             .text_xs()
             .text_color(c(theme::MUTED))
-            .bg(c(theme::BG))
-            .border_b_1()
-            .border_color(c(theme::BORDER))
             .child(
                 div()
                     .id("ctx-src")
                     .flex_none()
-                    .child(icons::icon(logo, logo_color))
+                    .flex().items_center().gap_1()
+                    .child(icons::icon(logo, logo_color).size_3())
+                    .child(s.source.label())
                     .tooltip(tip(s.source.label(), None)),
             )
+            .child(div().text_color(c(theme::SUBTLE)).child("·"))
             .child(project_tile(&s.cwd, 14.0))
             .child(
                 div()
                     .id("ctx-project")
-                    .flex_shrink()
-                    .min_w(px(24.0))
-                    .max_w(px(120.0))
+                    .flex_1()
+                    .min_w_0()
                     .truncate()
                     .child(self.project_name(&s.cwd))
                     .tooltip(tip(tilde(&s.cwd), None)),
-            )
-            .child(sep())
-            .child(
-                div()
-                    .id("ctx-session")
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(c(theme::TEXT))
-                    .font_weight(FontWeight::MEDIUM)
-                    .cursor_pointer()
-                    .hover(|d| d.underline())
-                    .child(Marquee::new("title", one_line(&title, usize::MAX)))
-                    .tooltip(tip("セッションの概要", Some("1")))
-                    .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.set_detail_tab(DetailTab::Session, cx))),
             );
         if sel.lane != 0 {
             let (session, parent_id) = (sel.session, lane.spawned_by.clone());
-            bar = bar
-                .child(sep())
+            meta = meta
+                .child(div().text_color(c(theme::SUBTLE)).child("·"))
                 .child(icons::icon(Icon::Bot, theme::SUB).size_3().flex_none())
                 .child(
                     div()
@@ -553,9 +546,16 @@ impl Rireki {
                     )
                 });
         }
-        bar.when(is_live(s.end), |d| {
-            d.child(div().id("ctx-live").child(dot(theme::LIVE, 7.0)).tooltip(tip("進行中", None)))
-        })
+        div().flex_none().px_3().pt_3().pb_2().flex().flex_col().gap_1p5()
+            .child(div().flex().items_center().gap_2()
+                .child(div().id("ctx-session").flex_1().min_w_0().text_base()
+                    .font_weight(FontWeight::SEMIBOLD).cursor_pointer()
+                    .hover(|d| d.text_color(c(theme::ACCENT)))
+                    .child(Marquee::new("title", one_line(&title, usize::MAX)))
+                    .tooltip(tip("セッションの概要を表示", Some("1")))
+                    .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.set_detail_tab(DetailTab::Session, cx))))
+                .when(is_live(s.end), |d| d.child(badge("進行中", theme::LIVE))))
+            .child(meta)
     }
 
     /// レーン全体を選び、イベントのタブで `filter` を掛ける（集計から該当イベントへ移る）
@@ -632,7 +632,9 @@ impl Rireki {
             chips = chips.child(chip("chip-failed".into(), format!("失敗等 {}", st.failures()),
                 None, filter == Some(RowFilter::Failed), Some(RowFilter::Failed)));
         }
-        chips.pb_2().border_b_1().border_color(c(theme::BORDER))
+        div().flex().flex_col().gap_1p5().pb_2().border_b_1().border_color(c(theme::BORDER))
+            .child(label("イベントで絞り込む"))
+            .child(chips)
     }
 
 
