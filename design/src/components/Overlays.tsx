@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import type { Overlay } from '../data';
 import type { Granularity, TimeRange } from './Timeline';
 import {
-  Badge,
+  StatusText,
   Button,
   CopyButton,
   Icon,
@@ -130,7 +130,7 @@ export function McpDialog({
         <div className="mcp-status">
           <span className={`status-dot ${running ? 'running' : ''}`} />
           <strong>{running ? '実行中' : '停止中'}</strong>
-          <Badge>Streamable HTTP</Badge>
+          <StatusText>Streamable HTTP</StatusText>
         </div>
         <p className="muted">ローカルのセッション履歴を MCP クライアントから検索・参照できます。</p>
         <div className="mcp-port">

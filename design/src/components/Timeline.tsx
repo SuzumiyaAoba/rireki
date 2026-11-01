@@ -259,7 +259,7 @@ export function Timeline({
                   }
                 >
                   <Icon name={isCollapsed ? 'ChevronRight' : 'ChevronDown'} size={12} />
-                  <ProjectMark name={project} size={14} />
+                  <ProjectMark name={project} />
                   <strong>{project}</strong>
                   <span className="count">{group.length}</span>
                 </button>

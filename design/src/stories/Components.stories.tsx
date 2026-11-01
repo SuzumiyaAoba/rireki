@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { eventKinds } from '../tokens';
 import {
-  Badge,
+  StatusText,
   Button,
   EventBlock,
   IconButton,
@@ -67,19 +67,18 @@ export const Events: Story = {
     </div>
   ),
 };
-export const Badges: Story = {
+export const StatusTexts: Story = {
   name: '状態と読み込み元',
   render: () => (
     <div className="component-preview">
-      <Badge color="var(--live)">進行中</Badge>
-      <Badge color="var(--ok)">成功</Badge>
-      <Badge color="var(--err)">失敗</Badge>
-      <Badge color="var(--warn)">拒否 / 中断</Badge>
-      <Badge color="var(--sub)">サブエージェント</Badge>
+      <StatusText tone="live">進行中</StatusText>
+      <StatusText>成功</StatusText>
+      <StatusText tone="err">失敗</StatusText>
+      <StatusText tone="warn">拒否 / 中断</StatusText>
       <SourceLogo source="all" size={36} />
       <SourceLogo source="claude" size={22} />
       <SourceLogo source="codex" size={22} />
-      <ProjectMark name="rireki" size={22} />
+      <ProjectMark name="rireki" />
     </div>
   ),
 };

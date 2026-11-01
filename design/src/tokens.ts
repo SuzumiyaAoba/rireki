@@ -43,7 +43,7 @@ export const dimensions = {
 // 角丸は 4 段。正円は点だけに使う。
 export const radius = { sm: 3, md: 6, panel: 10, inner: 9 } as const;
 
-// 文字サイズは 5 段。11px は軸と kbd 専用。太さは通常と 600 の 2 つ。
+// 文字サイズは 5 段。11px は軸・時刻・件数・kbd などの補助の文字。太さは通常と 600 の 2 つ。
 export const fontSize = { axis: 11, small: 12, body: 13, heading: 16, value: 20 } as const;
 
 // 余白は 4px の倍数だけ。

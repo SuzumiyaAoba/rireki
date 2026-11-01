@@ -167,30 +167,21 @@ export function SourceLogo({ source, size = 14 }: { source: Source; size?: numbe
   );
 }
 
-export function ProjectMark({ name, size = 18 }: { name: string; size?: number }) {
+export function ProjectMark({ name }: { name: string }) {
   return (
-    <span
-      aria-hidden="true"
-      className="project-mark"
-      style={{ '--project-color': projectColor(name), width: size, height: size } as CSSProperties}
-    >
-      <Icon name="Folder" size={size * 0.68} />
-    </span>
+    <i aria-hidden="true" className="project-mark" style={{ background: projectColor(name) }} />
   );
 }
 
-export function Badge({
+// 状態は色付きの文字で示す。進行中だけは点を添える。
+export function StatusText({
   children,
-  color = 'var(--muted)',
+  tone = 'muted',
 }: {
   children: ReactNode;
-  color?: string;
+  tone?: 'live' | 'err' | 'warn' | 'muted';
 }) {
-  return (
-    <span className="badge" style={{ '--badge-color': color } as CSSProperties}>
-      {children}
-    </span>
-  );
+  return <span className={`status-text ${tone}`}>{children}</span>;
 }
 
 export function Segmented<T extends string>({
@@ -273,7 +264,6 @@ export function EventBlock({
     <button
       type="button"
       className={`event-block ${failed ? 'failed' : ''} ${selected ? 'selected' : ''}`}
-      aria-label={label}
       aria-pressed={selected}
       title={label}
       onClick={onClick}
@@ -297,27 +287,9 @@ export function EmptyState({
 }) {
   return (
     <div className="empty-state" role="status">
-      <span className="empty-icon">
-        <Icon
-          name={loading ? 'LoaderCircle' : filtered ? 'Search' : 'Folder'}
-          size={28}
-          className={loading ? 'spin' : ''}
-        />
+      <span>
+        {loading ? '読み込み中…' : filtered ? '一致する履歴はありません' : 'まだ履歴がありません'}
       </span>
-      <strong>
-        {loading
-          ? '履歴を読み込み中…'
-          : filtered
-            ? '一致する履歴はありません'
-            : 'まだ履歴がありません'}
-      </strong>
-      <p>
-        {loading
-          ? 'セッションログを読み込んでいます'
-          : filtered
-            ? '検索語やプロジェクトの絞り込みを変更してください'
-            : 'Claude Code または Codex のセッションを開始すると、ここに表示されます'}
-      </p>
       {filtered && onReset && <Button onClick={onReset}>絞り込みを解除</Button>}
     </div>
   );

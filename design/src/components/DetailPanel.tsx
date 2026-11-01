@@ -12,7 +12,7 @@ import {
 } from '../data';
 import { eventKinds } from '../tokens';
 import {
-  Badge,
+  StatusText,
   Button,
   CopyButton,
   EmptyState,
@@ -74,13 +74,13 @@ export function DetailPanel({
           <button type="button" className="context-title" onClick={() => onTab('overview')}>
             {session.title}
           </button>
-          {session.live && <Badge color="var(--live)">進行中</Badge>}
+          {session.live && <StatusText tone="live">進行中</StatusText>}
         </div>
         <div className="context-meta">
           <SourceLogo source={session.source} size={12} />
           <span>{session.source === 'claude' ? 'Claude Code' : 'Codex'}</span>
           <span>·</span>
-          <ProjectMark name={session.project} size={14} />
+          <ProjectMark name={session.project} />
           <span>{session.project}</span>
         </div>
       </div>
@@ -325,9 +325,9 @@ function History({
             10/{26 + session.day} {formatTime(event.start)}
             <span>·</span>
             {Math.round(event.duration * 3600)}秒
-            <Badge color={event.status === 'success' ? 'var(--ok)' : 'var(--err)'}>
+            <StatusText tone={event.status === 'success' ? 'muted' : 'err'}>
               {event.status === 'success' ? '成功' : event.status === 'failed' ? '失敗' : '中断'}
-            </Badge>
+            </StatusText>
           </div>
           <p className="prompt-reference">
             選択範囲外の指示 <span>{session.title}</span>
@@ -400,7 +400,7 @@ export function EventRow({
             <Highlight text={event.name} query={query} />
           </strong>
           {event.status !== 'success' && (
-            <Badge color="var(--err)">{event.status === 'failed' ? '失敗' : '中断'}</Badge>
+            <StatusText tone="err">{event.status === 'failed' ? '失敗' : '中断'}</StatusText>
           )}
           <small>{formatTime(event.start)}</small>
         </span>
