@@ -753,7 +753,7 @@ fn usage_lines(usage: &UsageSum) -> Vec<Line<'static>> {
             rate(usage.cache_hit_rate())
         )),
         Line::from(format!(
-            "API {} 回 · 推定料金 {} · 料金不明 {} 回",
+            "API {} 回 · 料金 {} · 料金不明 {} 回",
             number(usage.calls),
             cost_label(usage),
             number(usage.unpriced)

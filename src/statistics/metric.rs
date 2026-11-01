@@ -28,7 +28,7 @@ impl Metric {
     pub fn label(self) -> &'static str {
         match self {
             Self::Tokens => "トークン",
-            Self::Cost => "推定料金",
+            Self::Cost => "料金",
             Self::Turns => "ターン",
             Self::Sessions => "セッション",
             Self::Tools => "ツール呼び出し",
@@ -39,7 +39,7 @@ impl Metric {
     pub fn help(self) -> &'static str {
         match self {
             Self::Tokens => "入力・キャッシュ・出力の合計",
-            Self::Cost => "ログの使用量と料金表による推定（USD）。料金不明のモデルは含まない",
+            Self::Cost => "ログの使用量と料金表による API 換算の推定値（USD）。料金不明のモデルは含まない",
             Self::Turns => "ユーザーの発話の数",
             Self::Sessions => {
                 "イベントのあるセッションの数。サブエージェントは起動元と合わせて 1 件"

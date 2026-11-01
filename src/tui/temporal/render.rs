@@ -81,7 +81,7 @@ impl Model {
         let options = format!(
             "{} · {} · {} · {}",
             if self.settings.cost {
-                "API換算料金"
+                "料金"
             } else {
                 "イベント"
             },

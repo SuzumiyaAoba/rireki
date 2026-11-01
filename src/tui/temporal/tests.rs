@@ -293,7 +293,7 @@ fn costs_keep_unknown_model_usage_and_invalidate_after_period_moves() {
     assert!(model.cost_request().is_none());
     model.ensure_rows(&snapshot, &[0]);
     assert!(!model.rows[1].items.is_empty());
-    assert!(screen(&mut model, &snapshot, 100, 26).contains("API換算料金"));
+    assert!(screen(&mut model, &snapshot, 100, 26).contains("料金"));
     model.step(1);
     assert!(model.cost_request().is_some());
     assert!(model.cost.is_none());

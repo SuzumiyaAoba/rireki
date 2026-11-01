@@ -174,7 +174,7 @@ fn totals(out: &mut Vec<Entry>, total: &Totals) {
 
 fn usage(out: &mut Vec<Entry>, usage: &UsageSum) {
     out.push(Entry::text(format!(
-        "合計 {} tokens / API呼出 {} / 推定API料金 {}",
+        "合計 {} tokens / API呼出 {} / 料金 {}",
         usage.total(),
         usage.calls,
         cost(usage)

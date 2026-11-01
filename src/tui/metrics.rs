@@ -1,4 +1,4 @@
-//! 統計と API 換算料金の端末表示。集計は worker の Cache で行い、描画は結果だけを読む。
+//! 統計と料金の端末表示。集計は worker の Cache で行い、描画は結果だけを読む。
 
 mod compute;
 mod render;
@@ -55,7 +55,7 @@ impl Tab {
             Self::Projects => "プロジェクト",
             Self::Sessions => "セッション",
             Self::Tools => "ツール",
-            Self::Costs => "API 料金",
+            Self::Costs => "料金",
         }
     }
 }

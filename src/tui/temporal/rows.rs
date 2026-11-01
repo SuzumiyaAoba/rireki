@@ -230,7 +230,7 @@ impl Model {
             if self.settings.directory {
                 self.rows.push(Row {
                     cwd: directory.cwd.clone(),
-                    label: "API 換算料金".into(),
+                    label: "料金".into(),
                     header: false,
                     lane: None,
                     range: self.range,
