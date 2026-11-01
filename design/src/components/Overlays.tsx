@@ -303,16 +303,14 @@ export function DisplayOptions({
             label="表示内容"
             options={[
               { value: 'events', label: 'イベント' },
-              { value: 'cost', label: 'API コスト' },
+              { value: 'cost', label: '料金' },
             ]}
             value={cost ? 'cost' : 'events'}
             onChange={(value) => onCost(value === 'cost')}
           />
         </div>
         <p>
-          {cost
-            ? '区間ごとの API 換算料金（USD）を棒で表示'
-            : 'ツール呼び出しやメッセージをブロックで表示'}
+          {cost ? '区間ごとの料金（USD）を棒で表示' : 'ツール呼び出しやメッセージをブロックで表示'}
         </p>
         <div className="display-option-row">
           <span>行の並び</span>

@@ -22,7 +22,7 @@ import {
   type Source,
   type View,
 } from './data';
-import { eventKinds } from './tokens';
+import { eventGroups } from './tokens';
 import { Sidebar } from './components/Sidebar';
 import { Minimap, Timeline, type Granularity, type TimeRange } from './components/Timeline';
 import { CalendarView } from './components/Calendar';
@@ -105,7 +105,6 @@ export function RirekiApp({
   const loading = initialStatus === 'loading';
   const empty = initialStatus !== 'ready';
   const scoped = empty ? [] : filterSessions(source, project, query);
-  const allScoped = empty ? [] : filterSessions(source, null);
   const session = selected
     ? (sampleSessions.find((session) => session.id === selected) ?? null)
     : null;
@@ -294,13 +293,13 @@ export function RirekiApp({
           <i />
         </div>
         <strong>rireki</strong>
-        <span>·</span>
-        {loading && <Icon name="LoaderCircle" size={12} className="spin" />}
-        <span>
-          {loading
-            ? '索引を更新中 8/24 ファイル'
-            : `${allScoped.length} セッション · ${new Set(allScoped.map((session) => session.project)).size} プロジェクト`}
-        </span>
+        {loading && (
+          <>
+            <span>·</span>
+            <Icon name="LoaderCircle" size={12} className="spin" />
+            <span>索引を更新中 8/24 ファイル</span>
+          </>
+        )}
       </div>
       <div className="app-body">
         {!isFullscreen && (
@@ -320,7 +319,11 @@ export function RirekiApp({
                   }
                   aria-pressed={source === value}
                   title={
-                    value === 'all' ? 'すべての履歴' : value === 'claude' ? 'Claude Code' : 'Codex'
+                    value === 'all'
+                      ? 'すべての履歴'
+                      : value === 'claude'
+                        ? 'Claude Code の履歴'
+                        : 'Codex の履歴'
                   }
                   onClick={() => {
                     setSource(value);
@@ -469,7 +472,7 @@ export function RirekiApp({
                           label="タイムラインの表示内容"
                           options={[
                             { value: 'events', label: 'イベント' },
-                            { value: 'cost', label: 'API コスト' },
+                            { value: 'cost', label: '料金' },
                           ]}
                           value={cost ? 'cost' : 'events'}
                           onChange={(value) => setCost(value === 'cost')}
@@ -554,14 +557,14 @@ export function RirekiApp({
                             <i className="codex-color" />
                             Codex
                           </span>
-                          <span>API 換算料金（USD）</span>
+                          <span>料金（USD）</span>
                         </>
                       ) : (
-                        Object.entries(eventKinds)
-                          .filter(([kind]) => kind !== 'thinking')
-                          .map(([kind, token]) => (
-                            <span key={kind} style={{ color: token.color }}>
-                              <Icon name={token.icon} size={11} />
+                        Object.entries(eventGroups)
+                          .filter(([group]) => group !== 'thinking')
+                          .map(([group, token]) => (
+                            <span key={group}>
+                              <i style={{ background: token.color }} />
                               {token.label}
                             </span>
                           ))

@@ -637,9 +637,6 @@ kbd {
 }
 .count {
   font-size: var(--font-axis);
-  border-radius: var(--radius-sm);
-  padding: 0 4px;
-  background: var(--raised);
 }
 .row-time {
   color: var(--subtle);
@@ -689,10 +686,6 @@ kbd {
   border-bottom: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
   gap: 8px;
-}
-.search-event .icon {
-  color: var(--accent);
-  margin-top: 4px;
 }
 .search-event .row-content {
   gap: 4px;
@@ -812,9 +805,9 @@ kbd {
 }
 .footer-legend i,
 .chart-legend i {
-  height: 7px;
-  width: 7px;
-  border-radius: var(--radius-sm);
+  height: 8px;
+  width: 8px;
+  border-radius: 50%;
   display: inline-block;
 }
 @container (width < 930px) {
@@ -906,11 +899,6 @@ kbd {
   font-size: var(--font-axis);
   color: var(--muted);
   border-right: 1px solid var(--border);
-}
-.axis-label > span {
-  margin-left: auto;
-  color: var(--subtle);
-  font-size: var(--font-axis);
 }
 .axis-ticks {
   position: relative;
@@ -1057,18 +1045,22 @@ kbd {
   min-width: 3px;
   overflow: hidden;
   white-space: nowrap;
-  color: var(--event-color);
-  border: 1px solid color-mix(in srgb, var(--event-color) 55%, transparent);
+  color: var(--text);
+  border: 1px solid var(--event-color);
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--event-color) 22%, var(--bg));
+  background: var(--raised);
   font-size: var(--font-axis);
+}
+.event-block > .icon {
+  flex: none;
+  color: var(--event-color);
 }
 .event-block > span {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .event-block:hover {
-  background: color-mix(in srgb, var(--event-color) 42%, var(--bg));
+  background: var(--hover);
   z-index: 2;
 }
 .event-block.selected {
@@ -1241,15 +1233,14 @@ kbd {
   flex-direction: column;
   gap: 4px;
   padding: 4px;
-  border: 1px solid color-mix(in srgb, var(--project-color) 60%, transparent);
-  border-left: 3px solid var(--project-color);
+  border: 1px solid var(--project-color);
   border-radius: var(--radius-sm);
   overflow: hidden;
-  background: color-mix(in srgb, var(--project-color) 22%, var(--bg));
+  background: var(--raised);
   font-size: var(--font-axis);
 }
 .calendar-session:hover {
-  background: color-mix(in srgb, var(--project-color) 40%, var(--bg));
+  background: var(--hover);
   z-index: 2;
 }
 .calendar-session-heading {

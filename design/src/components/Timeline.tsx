@@ -170,7 +170,7 @@ export function Timeline({
                 type="button"
                 className="cost-bar"
                 key={i}
-                aria-label={`${session.title} API 換算 $${(session.cost / 18).toFixed(3)}`}
+                aria-label={`${session.title} 料金 $${(session.cost / 18).toFixed(3)}`}
                 onClick={() => onSelect(session)}
                 style={
                   {
@@ -214,7 +214,7 @@ export function Timeline({
   return (
     <div
       className="timeline"
-      aria-label={cost ? 'API コストのタイムライン' : 'イベントのタイムライン'}
+      aria-label={cost ? '料金のタイムライン' : 'イベントのタイムライン'}
       style={
         {
           '--tick-step': `${(tickStep / span) * 100}%`,
@@ -223,11 +223,7 @@ export function Timeline({
       }
     >
       <div className="timeline-axis">
-        <div className="axis-label">
-          <Icon name={directory ? 'Folder' : 'ListTree'} size={12} />
-          {directory ? 'ディレクトリ' : 'セッション / エージェント'}
-          <span>{visible.length}</span>
-        </div>
+        <div className="axis-label">{directory ? 'ディレクトリ' : 'セッション / エージェント'}</div>
         <div className="axis-ticks" ref={axis}>
           <span className="timezone">
             {formatDate(day + Math.floor(range.start / 24))} · UTC+09:00

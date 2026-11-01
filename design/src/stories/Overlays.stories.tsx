@@ -27,15 +27,15 @@ export const McpRunning: Story = {
 };
 
 export const ChangeDisplay: Story = {
-  name: '操作：API コストと行の表示',
+  name: '操作：料金と行の表示',
   args: { initialOverlay: 'display' },
   play: async ({ canvas, userEvent }) => {
     const dialog = within(canvas.getByRole('dialog', { name: '表示設定' }));
-    await userEvent.click(dialog.getByRole('button', { name: 'API コスト' }));
+    await userEvent.click(dialog.getByRole('button', { name: '料金' }));
     await userEvent.click(dialog.getByRole('button', { name: 'ディレクトリ' }));
     await expect(dialog.getByRole('button', { name: /自動/ })).toBeDisabled();
     await userEvent.click(canvas.getByRole('button', { name: '表示設定を閉じる' }));
-    await expect(canvas.getByLabelText('API コストのタイムライン')).toBeVisible();
+    await expect(canvas.getByLabelText('料金のタイムライン')).toBeVisible();
     await expect(canvas.getByText('ディレクトリ', { exact: true })).toBeVisible();
   },
 };

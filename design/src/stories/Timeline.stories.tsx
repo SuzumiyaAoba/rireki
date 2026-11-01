@@ -47,7 +47,7 @@ export const Project: Story = {
 };
 export const Claude: Story = { name: 'Claude Code', args: { initialSource: 'claude' } };
 export const Codex: Story = { name: 'Codex', args: { initialSource: 'codex' } };
-export const Cost: Story = { name: 'API コスト', args: { initialCost: true } };
+export const Cost: Story = { name: '料金', args: { initialCost: true } };
 export const Directory: Story = { name: 'ディレクトリ表示', args: { initialDirectory: true } };
 export const SidebarClosed: Story = {
   name: 'サイドバーを閉じた状態',

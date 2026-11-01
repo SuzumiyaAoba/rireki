@@ -140,7 +140,6 @@ export function Sidebar({
         {query ? (
           <>
             <div className="search-summary">
-              <Icon name="Search" size={12} />
               <span>「{query}」の検索結果</span>
               <span>{visible.length + searchEvents.length}</span>
             </div>
@@ -156,7 +155,6 @@ export function Sidebar({
                     key={event.id}
                     onClick={() => onSession(session, event)}
                   >
-                    <Icon name="FileText" />
                     <span className="row-content">
                       <strong>
                         <Highlight text={event.name} query={query} />
@@ -190,7 +188,7 @@ export function Sidebar({
                 className={`sidebar-row ${project === null ? 'selected' : ''}`}
                 onClick={() => onProject(null)}
               >
-                <Icon name="Layers" size={18} />
+                <i aria-hidden="true" className="project-mark" style={{ visibility: 'hidden' }} />
                 <span className="row-content truncate">すべてのプロジェクト</span>
                 <span className="count">{scoped.length}</span>
               </button>
