@@ -1,5 +1,14 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { colors, dimensions, eventKinds } from '../tokens';
+import {
+  alpha,
+  colors,
+  dimensions,
+  eventGroups,
+  fontSize,
+  projectColors,
+  radius,
+  space,
+} from '../tokens';
 
 const meta = {
   title: 'デザイントークン/テーマ',
@@ -7,28 +16,58 @@ const meta = {
     docs: {
       description: {
         component:
-          '既存の GPUI 実装から転記した色と寸法の一覧。src/theme.rs、src/app.rs、src/prefs.rs を参照してください。',
+          '色・角丸・文字・余白の一覧。src/tokens.ts が正で、README の「デザイン原則」に従って使う。',
       },
     },
   },
 } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;
+
+function Swatches({ items }: { items: Array<[string, string]> }) {
+  return (
+    <div className="token-grid">
+      {items.map(([name, value]) => (
+        <div className="token-swatch" key={name}>
+          <div style={{ background: value }} />
+          <span>{name}</span>
+          <code>{value}</code>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ScaleTable({ rows, unit }: { rows: Array<[string, number]>; unit: string }) {
+  return (
+    <table className="dimension-table">
+      <thead>
+        <tr>
+          <th>名前</th>
+          <th>値</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(([name, value]) => (
+          <tr key={name}>
+            <td>{name}</td>
+            <td>
+              {value}
+              {unit}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export const Colors: Story = {
   name: '配色',
   render: () => (
     <div className="token-page">
-      <h2>rireki の配色</h2>
-      <p>src/theme.rs の色をそのまま使用</p>
-      <div className="token-grid">
-        {Object.entries(colors).map(([name, value]) => (
-          <div className="token-swatch" key={name}>
-            <div style={{ background: value }} />
-            <span>{name}</span>
-            <code>{value}</code>
-          </div>
-        ))}
-      </div>
+      <h2>配色</h2>
+      <Swatches items={Object.entries(colors)} />
     </div>
   ),
 };
@@ -36,17 +75,25 @@ export const EventColors: Story = {
   name: 'イベントの色',
   render: () => (
     <div className="token-page">
-      <h2>イベントとツールの色</h2>
-      <p>src/theme.rs · event_color / tool_color / LEGEND</p>
-      <div className="token-grid">
-        {Object.entries(eventKinds).map(([kind, value]) => (
-          <div className="token-swatch" key={kind}>
-            <div style={{ background: value.color }} />
-            <span>{value.label}</span>
-            <code>{value.color}</code>
-          </div>
-        ))}
-      </div>
+      <h2>イベントの色</h2>
+      <Swatches items={Object.values(eventGroups).map((group) => [group.label, group.color])} />
+      <h2>プロジェクトの色</h2>
+      <Swatches items={projectColors.map((color, index) => [`${index + 1}`, color])} />
+    </div>
+  ),
+};
+export const Scales: Story = {
+  name: '角丸・文字・余白',
+  render: () => (
+    <div className="token-page">
+      <h2>角丸</h2>
+      <ScaleTable rows={Object.entries(radius)} unit="px" />
+      <h2>文字サイズ</h2>
+      <ScaleTable rows={Object.entries(fontSize)} unit="px" />
+      <h2>余白</h2>
+      <ScaleTable rows={Object.entries(space)} unit="px" />
+      <h2>透明度</h2>
+      <ScaleTable rows={Object.entries(alpha)} unit="" />
     </div>
   ),
 };
@@ -55,23 +102,7 @@ export const Dimensions: Story = {
   render: () => (
     <div className="token-page">
       <h2>ウィンドウとパネルの寸法</h2>
-      <p>src/app.rs の定数と src/prefs.rs の初期値（px）</p>
-      <table className="dimension-table">
-        <thead>
-          <tr>
-            <th>名前</th>
-            <th>値</th>
-          </tr>
-        </thead>
-        <tbody>
-          {Object.entries(dimensions).map(([name, value]) => (
-            <tr key={name}>
-              <td>{name}</td>
-              <td>{value}px</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <ScaleTable rows={Object.entries(dimensions)} unit="px" />
     </div>
   ),
 };

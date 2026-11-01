@@ -1,4 +1,4 @@
-import type { EventKind } from './tokens';
+import { colors, projectColors, type EventKind } from './tokens';
 
 export type Source = 'all' | 'claude' | 'codex';
 export type View = 'timeline' | 'day' | 'week' | 'month' | 'statistics';
@@ -33,12 +33,12 @@ export interface Session {
 }
 
 export const projects = [
-  { name: 'rireki', color: '#5d7fb0' },
-  { name: 'website', color: '#5e9a82' },
-  { name: 'dotfiles', color: '#b08f55' },
-  { name: 'api-server', color: '#a66f97' },
-  { name: 'notes', color: '#8270c9' },
-  { name: 'design-system', color: '#b8714f' },
+  { name: 'rireki', color: projectColors[0] },
+  { name: 'website', color: projectColors[1] },
+  { name: 'dotfiles', color: projectColors[2] },
+  { name: 'api-server', color: projectColors[3] },
+  { name: 'notes', color: projectColors[5] },
+  { name: 'design-system', color: projectColors[4] },
 ] as const;
 
 const eventTemplates: Array<Pick<HistoryEvent, 'kind' | 'name' | 'summary' | 'input' | 'output'>> =
@@ -339,7 +339,7 @@ export function filterSessions(source: Source, project: string | null, query = '
 }
 
 export function projectColor(name: string) {
-  return projects.find((project) => project.name === name)?.color ?? '#737d8f';
+  return projects.find((project) => project.name === name)?.color ?? colors.subtle;
 }
 
 export const formatNumber = (value: number) => new Intl.NumberFormat('ja-JP').format(value);

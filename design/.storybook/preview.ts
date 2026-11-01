@@ -1,5 +1,6 @@
 import type { Preview } from '@storybook/react-vite';
 import { themes } from 'storybook/theming';
+import { colors } from '../src/tokens';
 import '../src/styles.css';
 
 const preview: Preview = {
@@ -7,7 +8,7 @@ const preview: Preview = {
     layout: 'fullscreen',
     controls: { expanded: true },
     docs: { theme: themes.dark },
-    backgrounds: { options: { dark: { name: 'rireki', value: '#0e1014' } } },
+    backgrounds: { options: { dark: { name: 'rireki', value: colors.backdrop } } },
     options: {
       storySort: {
         order: [
