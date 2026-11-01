@@ -79,7 +79,7 @@ pub(super) fn event_icon(i: crate::icons::Icon, color: u32, size: f32) -> gpui::
     crate::icons::icon(i, color).size(px(size))
 }
 
-/// プロジェクトの目印。ディレクトリ名の頭文字を色付きの角丸四角に入れる
+/// プロジェクトの目印。名前の隣に置く色の点
 pub(super) fn project_mark(cwd: &str) -> Div {
     dot(theme::project_color(cwd), 8.0)
 }

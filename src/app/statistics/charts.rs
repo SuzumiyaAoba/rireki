@@ -426,7 +426,7 @@ fn paint_hours(
             // 最大に対する割合を 5 段階に分ける。0 は空のマス
             let color =
                 if v > 0.0 { theme::HEAT[((v / max * 5.0).ceil() as usize).clamp(1, 5) - 1] } else { theme::LINE_SOFT };
-            let q = fill(rect(h as f32 * pitch, y, cell_w, cell_h), c(color)).corner_radii(px(3.0));
+            let q = fill(rect(h as f32 * pitch, y, cell_w, cell_h), c(color)).corner_radii(px(theme::radius::SM));
             window.paint_quad(if hover == Some(Hover::Hour(d * 24 + h)) {
                 q.border_widths(px(1.0)).border_color(c(theme::TEXT))
             } else {

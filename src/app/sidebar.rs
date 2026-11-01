@@ -188,7 +188,7 @@ impl Rireki {
             .min_h(px(ROW))
             .radius_md()
             .cursor_pointer()
-            .when(selected, |d| d.bg(c(theme::SELECT)).text_color(gpui::white()))
+            .when(selected, |d| d.bg(c(theme::SELECT)).text_color(c(theme::TEXT)))
             .when(!selected, |d| d.hover(|s| s.bg(c(theme::RAISED))))
     }
 
@@ -674,9 +674,9 @@ fn highlights(text: &str, terms: &[String]) -> Vec<(std::ops::Range<usize>, High
     }
     ranges.truncate(merged);
     let style = HighlightStyle {
-        color: Some(gpui::white()),
+        color: Some(c(theme::TEXT)),
         background_color: Some(c(theme::ACCENT_BG)),
-        font_weight: Some(FontWeight::BOLD),
+        font_weight: Some(FontWeight::SEMIBOLD),
         ..Default::default()
     };
     ranges.into_iter().map(|r| (r, style)).collect()
@@ -793,9 +793,9 @@ mod tests {
     #[test]
     fn highlight_preserves_case_unicode_and_merged_ranges() {
         let expected_style = HighlightStyle {
-            color: Some(gpui::white()),
+            color: Some(c(theme::TEXT)),
             background_color: Some(c(theme::ACCENT_BG)),
-            font_weight: Some(FontWeight::BOLD),
+            font_weight: Some(FontWeight::SEMIBOLD),
             ..Default::default()
         };
         let cases = [

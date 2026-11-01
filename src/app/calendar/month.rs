@@ -96,7 +96,7 @@ impl Rireki {
                                     .rounded_full()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .when(date == today, |d| {
-                                        d.bg(c(theme::ACCENT)).text_color(gpui::white())
+                                        d.bg(c(theme::ACCENT)).text_color(c(theme::BACKDROP))
                                     })
                                     .child(if date.day() == 1 {
                                         format!("{}/{}", date.month(), date.day())

@@ -609,6 +609,9 @@ impl Rireki {
                 .border_color(c(theme::ACCENT))
                 .text_small()
                 .child(project_mark(f))
+                .when(name_max.is_none(), |d| {
+                    d.child(self.project_name(f).chars().next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_default())
+                })
                 .when_some(name_max, |d, max| {
                     d.child(
                         div().max_w(px(max)).truncate().font_weight(FontWeight::SEMIBOLD).child(self.project_name(f)),

@@ -303,4 +303,76 @@ mod tests {
         assert_eq!(number(alpha, "range"), alpha::RANGE);
         assert_eq!(number(alpha, "diff"), alpha::DIFF);
     }
+
+    /// 画面のソースに、段階を通さない文字サイズ・角丸・色・透明度や、廃止した呼び名が戻らないようにする
+    #[test]
+    fn app_sources_use_the_scale() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") && path.file_name().unwrap() != "tests.rs" {
+                    out.push(path);
+                }
+            }
+        }
+        // 構文強調と ANSI の表は、意味の色ではなく内容の色なので直書きを許す
+        const RAW_COLORS: [&str; 2] = ["rich.rs", "syntax.rs"];
+        const BANNED: [&str; 14] = [
+            ".text_xs(",
+            ".text_sm(",
+            ".text_lg(",
+            ".text_base(",
+            ".rounded_sm(",
+            ".rounded_md(",
+            ".rounded_lg(",
+            ".rounded_xl(",
+            "gpui::white()",
+            "theme::SUB",
+            "theme::OK",
+            "API コスト",
+            "API 換算料金",
+            "推定料金",
+        ];
+        let mut files = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app"), &mut files);
+        assert!(files.len() > 20, "ソースを見つけられない");
+        let mut found = Vec::new();
+        for path in files {
+            let source = std::fs::read_to_string(&path).unwrap();
+            // テストモジュールは検査しない
+            let code = source.split("#[cfg(test)]").next().unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            for pattern in BANNED {
+                // `theme::SUB` が `theme::SUBTLE` に当たらないよう、識別子の途中で終わるものは除く
+                let hit = code.match_indices(pattern).any(|(at, _)| {
+                    !code[at + pattern.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                });
+                if hit {
+                    found.push(format!("{name}: {pattern}"));
+                }
+            }
+            for (at, _) in code.match_indices("gpui::black()") {
+                if !code[at..].starts_with("gpui::black().opacity(theme::SCRIM)") {
+                    found.push(format!("{name}: gpui::black()"));
+                }
+            }
+            for (at, _) in code.match_indices(".opacity(") {
+                let next = &code[at + ".opacity(".len()..];
+                if next.starts_with(|c: char| c.is_ascii_digit()) && !next.starts_with("0.0)") {
+                    found.push(format!("{name}: 透明度の直書き {}", &next[..next.find(')').unwrap_or(8)]));
+                }
+            }
+            if !RAW_COLORS.contains(&name) {
+                for (at, _) in code.match_indices("0x") {
+                    let digits = code[at + 2..].chars().take_while(char::is_ascii_hexdigit).count();
+                    if digits == 6 {
+                        found.push(format!("{name}: 色の直書き {}", &code[at..at + 8]));
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "theme の段階を使う:\n{}", found.join("\n"));
+    }
 }

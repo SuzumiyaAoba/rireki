@@ -344,6 +344,8 @@ impl Rireki {
             (0.15, 6)
         } else if inner >= 560.0 {
             (0.3, 3)
+        } else if inner < 320.0 {
+            (1.0, 1)
         } else {
             (0.45, 2)
         };

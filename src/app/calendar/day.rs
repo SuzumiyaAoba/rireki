@@ -242,7 +242,7 @@ impl Rireki {
                             .justify_center()
                             .rounded_full()
                             .when(is_today, |d| {
-                                d.bg(c(theme::ACCENT)).text_color(gpui::white())
+                                d.bg(c(theme::ACCENT)).text_color(c(theme::BACKDROP))
                             })
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(if week {
@@ -285,7 +285,7 @@ impl Rireki {
             .is_some_and(|s| self.selected.is_some_and(|x| x.session == s.session));
         let hovered = info.sel.is_some_and(|s| self.hovered == Some(s));
         let (logo, logo_color) = crate::icons::source_icon(info.source);
-        let radius = px(4.0);
+        let radius = px(theme::radius::SM);
         // ブロックの上端が画面より上にあるときも、名前は見える位置に留める
         let sticky = (-y).clamp(0.0, (h - MIN_H).max(0.0));
         let text = w >= 28.0;

@@ -163,7 +163,7 @@ fn init_mac_menu(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action("サイドバーの表示を切り替え", ToggleSidebar),
                 MenuItem::action("詳細パネルの全画面表示を切り替え", ToggleDetailFullscreen),
-                MenuItem::action("イベント分析", DetailAnalysis),
+                MenuItem::action("分析", DetailAnalysis),
                 MenuItem::action("表示範囲内のセッションだけを表示", ToggleInViewOnly),
             ],
         },

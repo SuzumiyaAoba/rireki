@@ -1,9 +1,9 @@
-//! 右サイドパネル。1 / 2 / 3 / 4 で「概要」「履歴」「変更」「分析」を切り替える。
+//! 右サイドパネル。1 / 2 / 3 / 4 で「セッション」「イベント」「ファイル」「分析」を切り替える。
 //!
-//! 概要はセッション全体の指示・応答・エージェント構成を示す。
-//! 履歴・変更・分析は選択範囲を対象にし、対象範囲を共通上部に明示する。
-//! 履歴では指示と応答を読み、ツール実行と思考を必要なときに展開する。
-//! 概要、履歴、変更、分析の一覧は可視行だけを描き、タブ切り替えで位置を保持する。
+//! セッションはセッション全体の指示・応答・レーンを示す。
+//! イベント・ファイル・分析は選択範囲を対象にし、対象範囲を共通上部に明示する。
+//! イベントでは指示と応答を読み、ツール実行と思考を必要なときに展開する。
+//! セッション、イベント、ファイル、分析の一覧は可視行だけを描き、タブ切り替えで位置を保持する。
 
 use std::cell::{Cell, RefCell};
 
@@ -234,8 +234,12 @@ impl Rireki {
             format!("{} · {} 件", if whole { "レーン全体" } else { "選択範囲" }, fmt_n(events.len()))
         };
         div().flex_none().px_3().pb_2().flex().items_center().gap_2().text_small()
-            .child(div().id("detail-scope-title").flex_1().min_w_0().truncate()
-                .text_color(c(theme::TEXT)).tooltip(tip(title.clone(), None)).when(!overview, |d| d.child(title)))
+            .child(if overview {
+                div().flex_1().into_any_element()
+            } else {
+                div().id("detail-scope-title").flex_1().min_w_0().truncate().text_color(c(theme::TEXT))
+                    .tooltip(tip(title.clone(), None)).child(title).into_any_element()
+            })
                 .when(!overview && !whole, |d| d.child(self.icon_button(
                     "scope-lane", Some(Icon::Layers), "レーン全体", false, cx,
                     move |app, w, cx| {
@@ -519,7 +523,7 @@ impl Rireki {
                     .font_weight(FontWeight::SEMIBOLD).cursor_pointer()
                     .hover(|d| d.text_color(c(theme::ACCENT)))
                     .child(Marquee::new("title", one_line(&title, usize::MAX)))
-                    .tooltip(tip("セッションの概要を表示", Some("1")))
+                    .tooltip(tip("セッションのタブを表示", Some("1")))
                     .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.set_detail_tab(DetailTab::Session, cx))))
                 .when(is_live(s.end), |d| d.child(status_text("進行中", theme::LIVE))))
             .child(meta)
