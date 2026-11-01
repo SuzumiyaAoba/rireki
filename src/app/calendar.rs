@@ -37,7 +37,7 @@ const MIN_H: f32 = 18.0;
 const IDLE: f64 = 15.0 * 60.0;
 /// 指示を枠の中に並べる最小の幅
 const PROMPT_MIN_W: f32 = 150.0;
-const USER: u32 = 0xe0b341;
+const USER: u32 = theme::USER;
 
 pub(super) fn clamp_scroll(scroll: f32, px_per_hour: f32, height: f32) -> f32 {
     let min = -TIME_EDGE_PAD;

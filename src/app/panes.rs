@@ -186,7 +186,7 @@ impl Rireki {
             .bottom_0()
             .w(px(HANDLE_W))
             .cursor_col_resize()
-            .hover(|s| s.bg(c(theme::ACCENT).opacity(0.5)))
+            .hover(|s| s.bg(c(theme::ACCENT)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |t, e: &MouseDownEvent, _, cx| {

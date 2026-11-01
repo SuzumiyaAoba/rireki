@@ -67,9 +67,9 @@ impl Rireki {
                     .border_b_1()
                     .border_color(c(theme::LINE_SOFT))
                     .when(day.active > 0.0, |d| {
-                        d.bg(c(theme::HEAT[2]).opacity(0.05 + 0.2 * heat))
+                        d.bg(c(theme::HEAT[(heat * 4.0).round() as usize]).opacity(theme::alpha::RANGE))
                     })
-                    .when(!in_month, |d| d.opacity(0.45))
+                    .when(!in_month, |d| d.opacity(theme::alpha::DISABLED))
                     .cursor_pointer()
                     .hover(|s| s.bg(c(theme::HOVER)))
                     .tooltip(tip("この日を日表示で開く", None))
@@ -131,7 +131,7 @@ impl Rireki {
                             .radius_sm()
                             .text_small()
                             .when(selected, |d| d.bg(c(theme::SELECT)))
-                            .hover(|d| d.bg(gpui::white().opacity(0.1)))
+                            .hover(|d| d.bg(c(theme::RAISED)))
                             .child(dot(theme::project_color(&s.cwd), 7.0))
                             .when(cell_w >= 120.0, |d| {
                                 d.child(

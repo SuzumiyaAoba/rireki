@@ -1,4 +1,4 @@
-//! API 換算コストのタイムライン。集計は背景で行い、可視行だけを描く。
+//! 料金のタイムライン。集計は背景で行い、可視行だけを描く。
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -12,7 +12,7 @@ use gpui::{
 };
 
 use super::detail::{fmt_tokens, fmt_usd};
-use super::widgets::{project_mark, tip};
+use super::widgets::{dot, project_mark, tip};
 use super::{AXIS_H, FOOTER_H, ROW_H, Rireki, Selection, local, now};
 use crate::cost_timeline::{Bucket, Cache, Summary, View};
 use crate::icons::{self, Icon};
@@ -140,7 +140,7 @@ pub(super) fn cost_label(usage: &UsageSum) -> String {
 
 fn usage_tip(usage: &UsageSum) -> String {
     let mut text = format!(
-        "API 換算 {}（USD）\n{} トークン · API {} 回",
+        "料金 {}（USD）\n{} トークン · API {} 回",
         cost_label(usage),
         fmt_tokens(usage.total()),
         usage.calls
@@ -231,7 +231,7 @@ impl Rireki {
                     .child(label),
             );
             grid = grid.child(div().absolute().left(px(x)).top_0().bottom_0().w(px(1.0)).bg(c(if major {
-                0x353b47
+                theme::LINE
             } else {
                 theme::LINE_SOFT
             })));
@@ -285,9 +285,9 @@ impl Rireki {
                     .text_small()
                     .whitespace_nowrap()
                     .overflow_hidden()
-                    .when(directory, |d| d.bg(c(0x1f232b)).border_t_1().border_color(c(0x3a4150)))
+                    .when(directory, |d| d.bg(c(theme::RAISED)).border_t_1().border_color(c(theme::LINE)))
                     .when(selected, |d| d.bg(c(theme::ACCENT_BG)))
-                    .when(!active, |d| d.opacity(0.4))
+                    .when(!active, |d| d.opacity(theme::alpha::DISABLED))
                     .cursor_pointer()
                     .hover(|d| d.bg(c(theme::HOVER)));
                 let mut detail = usage_tip(usage);
@@ -339,16 +339,7 @@ impl Rireki {
                                 .text_color(c(theme::SUBTLE))
                                 .child(group.sessions.len().to_string()),
                         );
-                    detail = format!(
-                        "{}\n{detail}\n{} セッション（全レーンを含む）\n{}",
-                        group.cwd,
-                        group.sessions.len(),
-                        if directory_mode {
-                            "クリックでこのディレクトリのセッション別コストを表示"
-                        } else {
-                            "クリックで折りたたみ・展開"
-                        }
-                    );
+                    detail = format!("{}\n{detail}\n{} セッション（全レーンを含む）", group.cwd, group.sessions.len());
                     label = label.on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                         if t.directory_timeline {
@@ -367,7 +358,7 @@ impl Rireki {
                             div()
                                 .flex_none()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(c(if usage.unpriced > 0 { theme::WARN } else { theme::OK }))
+                                .text_color(c(if usage.unpriced > 0 { theme::WARN } else { theme::TEXT }))
                                 .child(cost_label(usage)),
                         )
                         .tooltip(tip(detail, None)),
@@ -381,8 +372,8 @@ impl Rireki {
                         .h(px(ROW_H))
                         .border_b_1()
                         .border_color(c(theme::LINE_SOFT))
-                        .when(directory, |d| d.bg(c(0x1b1e25).opacity(0.6)))
-                        .when(selected, |d| d.bg(c(theme::ACCENT).opacity(0.07))),
+                        .when(directory, |d| d.bg(c(theme::RAISED)))
+                        .when(selected, |d| d.bg(c(theme::ACCENT).opacity(theme::alpha::RANGE))),
                 );
                 let buckets = session.map_or_else(
                     || {
@@ -400,7 +391,7 @@ impl Rireki {
                 plot = plot.child(self.empty_state(cx));
             }
         } else {
-            self.counts = "API コストを集計中…".into();
+            self.counts = "料金を集計中…".into();
             plot = plot.child(
                 div()
                     .absolute()
@@ -408,14 +399,14 @@ impl Rireki {
                     .left(px(24.0))
                     .text_body()
                     .text_color(c(theme::MUTED))
-                    .child("API コストを集計中…"),
+                    .child("料金を集計中…"),
             );
         }
         div().flex().flex_col().child(div().flex().border_b_1().border_color(c(theme::LINE))
             .child(div().w(px(self.label_w)).h(px(AXIS_H)).flex_none().px_2().flex().items_center()
                 .text_small().text_color(c(theme::MUTED)).border_r_1().border_color(c(theme::LINE))
-                .child("表示期間の合計 · API 換算 USD")
-                .id("cost-explanation").tooltip(tip("記録されたトークン使用量をモデル別の API 料金で換算。サブスクリプションの請求額とは異なります。使用量のない呼び出しと料金不明のモデルは金額に含みません。", None)))
+                .child("表示期間の合計 · 料金 USD")
+                .id("cost-explanation").tooltip(tip("記録されたトークン使用量をモデル別の API 料金で換算した推定値で、請求額とは異なります。", None)))
             .child(axis))
             .child(div().flex().child(labels.border_r_1().border_color(c(theme::LINE))).child(plot))
             .into_any_element()
@@ -464,7 +455,7 @@ impl Rireki {
             .w(px(width))
             .h(px(ROW_H - 6.0))
             .cursor_pointer()
-            .hover(|d| d.bg(c(theme::OK).opacity(0.12)))
+            .hover(|d| d.bg(c(theme::HEAT[2]).opacity(theme::alpha::RANGE)))
             .child(
                 div()
                     .absolute()
@@ -473,8 +464,7 @@ impl Rireki {
                     .right_0()
                     .h(px(height))
                     .radius_sm()
-                    .bg(c(if bucket.usage.calls == bucket.usage.unpriced { theme::WARN } else { theme::OK })
-                        .opacity(0.8))
+                    .bg(c(if bucket.usage.calls == bucket.usage.unpriced { theme::WARN } else { theme::HEAT[2] }))
                     .when(bucket.usage.unpriced > 0, |d| {
                         d.child(div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(c(theme::WARN)))
                     }),
@@ -523,13 +513,12 @@ impl Rireki {
             .child(div().id("cost-total").flex_1().min_w_0().truncate().child(self.counts.clone()).tooltip(tip(detail, None)))
             .when(summary.is_some() && self.main_width(window) >= 900.0, |d| d.child(
                 div().id("cost-scale").flex_none().whitespace_nowrap()
-                    .child(format!("高さの上限 {} / 区間", cost_amount(self.cost_state.max_bucket)))
-                    .tooltip(tip("すべての行を同じ金額の縮尺で表示。表示範囲と幅に合わせて区間を分割します。", None))))
+                    .child(format!("高さの上限 {} / 区間", cost_amount(self.cost_state.max_bucket)))))
             .when(pending && summary.is_some(), |d| d.child("集計中…"))
             .child(div().id("cost-legend").flex_none().flex().items_center().gap_1()
-                .child(div().size(px(7.0)).radius_sm().bg(c(theme::OK))).child("API 換算")
-                .child(div().size(px(7.0)).radius_sm().bg(c(theme::WARN))).child("料金不明")
-                .tooltip(tip("緑の棒は区間の API 換算料金。オレンジの印は料金不明の呼び出し。実際の請求額とは異なります。", None)))
+                .child(dot(theme::HEAT[2], 8.0)).child("料金")
+                .child(dot(theme::WARN, 8.0)).child("料金不明")
+                .tooltip(tip("黄の印は料金不明の呼び出し", None)))
     }
 }
 

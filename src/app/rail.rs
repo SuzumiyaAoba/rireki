@@ -3,7 +3,7 @@
 use gpui::{AnyElement, ClickEvent, Context, Decorations, Div, FontWeight, MouseButton, Stateful, Window, div, prelude::*, px};
 
 use super::widgets::tip;
-use super::{Popover, RAIL_W, Rireki, STRIP_H, fmt_n};
+use super::{Popover, RAIL_W, Rireki, STRIP_H};
 use crate::icons::{self, Icon};
 use crate::prefs::{Mode, SourceFilter};
 use crate::theme::Scale as _;
@@ -14,10 +14,11 @@ impl Rireki {
     pub(super) fn top_strip(&self, window: &Window) -> Div {
         // GNOME など、Wayland のサーバー側タイトルバーを提供しない環境では操作部品を描く。
         let client = cfg!(target_os = "linux") && matches!(window.window_decorations(), Decorations::Client { .. });
+        // 件数はフッターと一覧の見出しに出すので、ここには読み込みの状態だけを出す
         let status = match self.loading {
-            Some((d, t)) if t > 0 => format!("索引を更新中 {d}/{t} ファイル"),
-            Some(_) => "履歴を読み込み中…".to_string(),
-            None => format!("{} セッション · {} プロジェクト", fmt_n(self.scope.len()), self.projects.len()),
+            Some((d, t)) if t > 0 => Some(format!("索引を更新中 {d}/{t} ファイル")),
+            Some(_) => Some("履歴を読み込み中…".to_string()),
+            None => None,
         };
         div()
             .relative()
@@ -29,9 +30,10 @@ impl Rireki {
             .gap_2()
             .text_small()
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::MUTED)).child("rireki"))
-            .child(div().text_color(c(theme::SUBTLE)).child("·"))
-            .when(self.loading.is_some(), |d| d.child(icons::icon(Icon::Refresh, theme::ACCENT).size_3()))
-            .child(div().text_color(c(theme::SUBTLE)).child(status))
+            .when_some(status, |d, status| {
+                d.child(div().text_color(c(theme::SUBTLE)).child("·"))
+                    .child(div().text_color(c(theme::SUBTLE)).child(status))
+            })
             .when(client, |d| {
                 let button = |id: &'static str, text: &'static str, title: &'static str| {
                     div().id(id).w(px(30.0)).h_full().flex().items_center().justify_center()
@@ -118,8 +120,8 @@ impl Rireki {
                 "すべての履歴",
                 live_claude || live_codex,
             ),
-            SourceFilter::Claude => (logo(Icon::Claude, 0xd97757), Some(0x2b211d), "Claude Code", live_claude),
-            SourceFilter::Codex => (logo(Icon::Codex, 0xd0d0d0), Some(0x262a31), "Codex", live_codex),
+            SourceFilter::Claude => (logo(Icon::Claude, theme::LOGO_CLAUDE), Some(theme::RAISED), "Claude Code", live_claude),
+            SourceFilter::Codex => (logo(Icon::Codex, theme::LOGO_CODEX), Some(theme::RAISED), "Codex", live_codex),
         };
         let id = match s {
             SourceFilter::All => "src-all",
@@ -197,8 +199,8 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .when(active, |d| d.bg(gpui::white().opacity(0.14)))
-                    .when(!active, |d| d.group_hover(id, |s| s.bg(gpui::white().opacity(0.07))))
+                    .when(active, |d| d.bg(c(theme::HOVER)))
+                    .when(!active, |d| d.group_hover(id, |s| s.bg(c(theme::RAISED))))
                     .child(icons::icon(icon, if active { theme::TEXT } else { theme::MUTED }).size(px(18.0))),
             )
             .tooltip(tip(label, Some(key)))

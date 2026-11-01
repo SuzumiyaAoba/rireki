@@ -1,7 +1,7 @@
 //! メイン列の見出し（ツールバー）と、下端の凡例
 //!
 //! ツールバーは左に「移動（前 / 今日 / 次）」「表示中の期間」を、右に「絞り込み中のプロジェクト」「拡大縮小」
-//! 「表示の切り替え（イベント / API コスト、またはカレンダーの日 / 週 / 月）」「表示オプション」を置く。
+//! 「表示の切り替え（イベント / 料金、またはカレンダーの日 / 週 / 月）」「表示オプション」を置く。
 //! 期間の表記は押すと期間（カレンダーでは日付）を選ぶポップオーバーを開く。
 //! 幅が足りないときは推定幅で配置を決め、期間の表記を短くし、表示の切り替えを表示オプションのメニューへ移す。
 //! 部品を黙って消さず、表示中の期間は最後まで残す。
@@ -9,7 +9,7 @@
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Weekday};
 use gpui::{ClickEvent, Context, Div, ElementId, FontWeight, Stateful, Window, canvas, div, prelude::*, px};
 
-use super::widgets::{event_icon, project_mark, tip};
+use super::widgets::{dot, project_mark, tip};
 use super::{FOOTER_H, HEADER_H, Popover, Rireki, fmt_dur, local, now, tilde};
 use crate::icons::{self, Icon};
 use crate::prefs::Mode;
@@ -81,13 +81,13 @@ fn title_w(s: &str, icon: bool) -> f32 {
     text_w(s, 14.0) * 1.04 + if icon { 54.0 } else { 34.0 }
 }
 
-/// 表示の切り替え（イベント / API コスト）のラベル。狭いときは短くする
-fn cost_label(full: bool) -> &'static str {
-    if full { "API コスト" } else { "コスト" }
+/// 表示の切り替え（イベント / 料金）のラベル
+fn cost_label() -> &'static str {
+    "料金"
 }
 
-fn switch_w(full: bool) -> f32 {
-    6.0 + (16.0 + text_w("イベント", 12.0)) + 2.0 + (16.0 + text_w(cost_label(full), 12.0))
+fn switch_w() -> f32 {
+    6.0 + (16.0 + text_w("イベント", 12.0)) + 2.0 + (16.0 + text_w(cost_label(), 12.0))
 }
 
 /// 日付の表記。`long` なら「10月7日」、そうでなければ「10/7」とし、`year` なら年を添える
@@ -150,8 +150,8 @@ struct Plan {
     /// 絞り込み中のプロジェクト名の最大幅。None なら頭文字の印だけを出す
     chip: Option<f32>,
     zoom: bool,
-    /// イベント / API コストの切り替えを出すか（出すなら長いラベルか）。出さないときは表示オプションのメニューで切り替える
-    switch: Option<bool>,
+    /// イベント / 料金の切り替えを出すか。出さないときは表示オプションのメニューで切り替える
+    switch: bool,
     /// 表示オプションのボタンにラベルを付けるか
     options_label: bool,
     /// 余白と間隔を詰め、期間の表記のアイコンを省く（最後の手段）
@@ -184,8 +184,8 @@ impl Fit<'_> {
             items.push(ZOOM_W);
         }
         if self.timeline {
-            if let Some(full) = p.switch {
-                items.push(switch_w(full));
+            if p.switch {
+                items.push(switch_w());
             }
             items.push(if p.options_label { OPTIONS_W } else { OPTIONS_ICON_W });
         } else {
@@ -200,16 +200,15 @@ impl Fit<'_> {
     fn plan(&self, avail: f32) -> Plan {
         let last = self.titles.len() - 1;
         let mut p =
-            Plan { title: 0, chip: Some(160.0), zoom: true, switch: Some(true), options_label: true, dense: false };
+            Plan { title: 0, chip: Some(160.0), zoom: true, switch: true, options_label: true, dense: false };
         let steps: &[fn(&mut Plan, usize)] = if self.timeline {
             &[
                 |p, last| p.title = last.min(1),
                 |p, _| p.chip = Some(96.0),
-                |p, _| p.switch = Some(false),
                 |p, _| p.options_label = false,
                 |p, last| p.title = last.min(2),
                 |p, _| p.chip = None,
-                |p, _| p.switch = None,
+                |p, _| p.switch = false,
                 |p, _| p.zoom = false,
                 |p, last| p.title = last,
                 |p, _| p.dense = true,
@@ -501,8 +500,8 @@ impl Rireki {
             .child(self.tool_icon("zoom-in", Icon::ZoomIn, "拡大", Some("+"), on, cx, |t, w, _| t.zoom(0.5, w)))
     }
 
-    /// イベント / API コストの切り替え
-    pub(super) fn metric_switch(&self, full: bool, cx: &mut Context<Self>) -> Div {
+    /// イベント / 料金の切り替え
+    pub(super) fn metric_switch(&self, cx: &mut Context<Self>) -> Div {
         self.tool_segmented(
             "metric",
             &[
@@ -511,8 +510,8 @@ impl Rireki {
                 },
                 Choice {
                     value: true,
-                    label: cost_label(full),
-                    tip: "API 換算料金をセッション・ディレクトリ別に時系列で表示（USD）",
+                    label: cost_label(),
+                    tip: "料金（USD）をセッション・ディレクトリ別に時系列で表示",
                     key: None,
                 },
             ],
@@ -529,7 +528,7 @@ impl Rireki {
     /// 表示オプションの今の設定（ツールチップ用）
     fn display_summary(&self) -> String {
         let mut parts = vec![
-            if self.cost_timeline { "API コスト" } else { "イベント" },
+            if self.cost_timeline { "料金" } else { "イベント" },
             if self.directory_timeline { "ディレクトリごと" } else { "セッションごと" },
         ];
         if !self.cost_timeline {
@@ -607,7 +606,7 @@ impl Rireki {
                 .radius_md()
                 .bg(c(theme::ACCENT_BG))
                 .border_1()
-                .border_color(c(theme::ACCENT).opacity(0.45))
+                .border_color(c(theme::ACCENT))
                 .text_small()
                 .child(project_mark(f))
                 .when_some(name_max, |d, max| {
@@ -666,7 +665,7 @@ impl Rireki {
         }
         row = row.when(plan.zoom, |d| d.child(self.zoom_group(cx)));
         if timeline {
-            row.when_some(plan.switch, |d, full| d.child(self.metric_switch(full, cx)))
+            row.when(plan.switch, |d| d.child(self.metric_switch(cx)))
                 .child(self.display_button(plan.options_label, cx))
         } else {
             row.child(self.tool_segmented(
@@ -702,14 +701,15 @@ impl Rireki {
             legend = self.calendar_legend(room);
             room = 0.0;
         }
-        for (name, col, ic) in theme::LEGEND {
-            let need = 12.0 + 4.0 + text_w(name) + 12.0;
+        for category in theme::CATEGORIES.iter().filter(|c| c.key != "thinking") {
+            let need = 8.0 + 4.0 + text_w(category.label) + 12.0;
             if room < need {
                 break;
             }
             room -= need;
-            legend
-                .push(div().flex().flex_none().items_center().gap_1().child(event_icon(*ic, *col, 12.0)).child(*name));
+            legend.push(
+                div().flex().flex_none().items_center().gap_1().child(dot(category.color, 8.0)).child(category.label),
+            );
         }
         div()
             .h(px(FOOTER_H))
@@ -786,7 +786,7 @@ mod tests {
             let fit = Fit { titles: &titles, timeline, sidebar_button: true, chip_name };
             let p = fit.plan(1200.0);
             let all =
-                Plan { title: 0, chip: Some(160.0), zoom: true, switch: Some(true), options_label: true, dense: false };
+                Plan { title: 0, chip: Some(160.0), zoom: true, switch: true, options_label: true, dense: false };
             assert_eq!(p, all, "{titles:?}");
         }
     }
@@ -807,11 +807,11 @@ mod tests {
                     let p = fit.plan(avail);
                     assert!(fit.width(&p) <= avail || p.dense, "{avail} {p:?}");
                     // タイムラインでは、拡大縮小を表示の切り替えより後まで残す
-                    assert!(!timeline || p.zoom || p.switch.is_none(), "{avail} {p:?}");
+                    assert!(!timeline || p.zoom || !p.switch, "{avail} {p:?}");
                     if let Some(q) = prev {
                         // 狭くするほど表記は短くなり、一度隠した部品は戻らない
                         assert!(
-                            p.title >= q.title && (q.zoom || !p.zoom) && (q.switch.is_some() || p.switch.is_none())
+                            p.title >= q.title && (q.zoom || !p.zoom) && (q.switch || !p.switch)
                         );
                         assert!((q.options_label || !p.options_label) && (!q.dense || p.dense));
                     }

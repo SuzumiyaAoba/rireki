@@ -40,8 +40,10 @@ pub const WARN: u32 = 0xe0a24a;
 pub const DIFF_ADD: u32 = 0x7fd18b;
 #[allow(dead_code)] // 画面の作り直しで使い始めたら外す
 pub const DIFF_DEL: u32 = 0xf07c7c;
+/// ロゴの地色。ブランドの色なので他には使わない
+pub const LOGO_CLAUDE: u32 = 0xd97757;
+pub const LOGO_CODEX: u32 = 0xd0d0d0;
 /// 画面の作り直しが終わるまでの移行用。置き換えたら削除する
-pub const SUB: u32 = MUTED;
 pub const OK: u32 = DIFF_ADD;
 
 /// 角丸は 4 段。正円は点だけに使う
@@ -114,7 +116,6 @@ pub const SHELL: u32 = 0x967cdb;
 pub const AGENT: u32 = 0x953d7c;
 pub const OTHER: u32 = 0x82868f;
 
-#[allow(dead_code)] // 凡例の作り直しで使う
 pub struct Category {
     /// design/src/tokens.ts の eventGroups のキー
     pub key: &'static str,
@@ -122,7 +123,6 @@ pub struct Category {
     pub color: u32,
 }
 
-#[allow(dead_code)] // 凡例の作り直しで使う
 pub const CATEGORIES: [Category; 8] = [
     Category { key: "user", label: "ユーザー", color: USER },
     Category { key: "assistant", label: "応答", color: ASSISTANT },
@@ -198,16 +198,6 @@ pub const SERIES_CLAUDE: u32 = 0xd95926;
 pub const SERIES_CODEX: u32 = 0x199e70;
 /// 量を表す青の段階（少 → 多）。読み込み元の色と紛れないよう、量は青だけで表す
 pub const HEAT: [u32; 5] = [0x184f95, 0x256abf, 0x3987e5, 0x6da7ec, 0x9ec5f4];
-
-/// 凡例。画面の作り直しが終わるまでの移行用。CATEGORIES から作るものに置き換えて削除する
-pub const LEGEND: &[(&str, u32, Icon)] = &[
-    ("ユーザー", USER, Icon::User),
-    ("参照", REFERENCE, Icon::FileText),
-    ("編集", EDIT, Icon::FilePen),
-    ("シェル", SHELL, Icon::Terminal),
-    ("エージェント", AGENT, Icon::Bot),
-    ("その他", OTHER, Icon::Wrench),
-];
 
 /// プロジェクト（作業ディレクトリ）の目印の色。名前を必ず並べるので、同じ色になっても構わない
 const PROJECT: [u32; 8] = [0x5d7fb0, 0x5e9a82, 0xb08f55, 0xa66f97, 0xb8714f, 0x4f97a6, 0x949a52, 0xb35f70];

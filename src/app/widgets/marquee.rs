@@ -161,7 +161,7 @@ impl Element for Marquee {
             "↻".into(),
             font_size,
             &[TextRun {
-                color: text_style.color.opacity(0.55),
+                color: text_style.color.opacity(crate::theme::alpha::STALE),
                 ..run("↻".len(), &text_style)
             }],
             None,

@@ -189,7 +189,7 @@ impl Rireki {
             .radius_md()
             .cursor_pointer()
             .when(selected, |d| d.bg(c(theme::SELECT)).text_color(gpui::white()))
-            .when(!selected, |d| d.hover(|s| s.bg(gpui::white().opacity(0.06))))
+            .when(!selected, |d| d.hover(|s| s.bg(c(theme::RAISED))))
     }
 
     fn navigator(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -300,7 +300,7 @@ impl Rireki {
                                     .gap_1()
                                     .text_small()
                                     .text_color(if selected {
-                                        gpui::white().opacity(0.8)
+                                        c(theme::TEXT)
                                     } else {
                                         c(theme::MUTED)
                                     })
@@ -315,15 +315,7 @@ impl Rireki {
             NavRow::AllProjects => {
                 let all = self.focus.is_none();
                 self.row("proj-all", all)
-                    .child(
-                        div()
-                            .size(px(18.0))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(icons::icon(Icon::Layers, if all { theme::TEXT } else { theme::MUTED })),
-                    )
+                    .child(div().flex_none().size(px(8.0)))
                     .child(div().flex_1().truncate().child("すべてのプロジェクト"))
                     .child(count_badge(self.scope.len(), all))
                     .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.set_focus(None, cx))).into_any_element()
@@ -356,7 +348,7 @@ impl Rireki {
                         div()
                             .flex_none()
                             .text_small()
-                            .text_color(if selected { gpui::white().opacity(0.8) } else { c(theme::SUBTLE) })
+                            .text_color(if selected { c(theme::TEXT) } else { c(theme::SUBTLE) })
                             .child(rel_time(s.end)),
                     )
                     .on_click(cx.listener(move |t, _: &ClickEvent, window, cx| t.open_session(si, window, cx))).into_any_element()
@@ -375,7 +367,7 @@ impl Rireki {
                     .text_small()
                     .text_color(c(theme::ACCENT))
                     .cursor_pointer()
-                    .hover(|s| s.bg(gpui::white().opacity(0.06)))
+                    .hover(|s| s.bg(c(theme::RAISED)))
                     .child(format!("さらに表示（残り {rest} 件）"))
                     .on_click(cx.listener(|t, _: &ClickEvent, _, cx| {
                         t.session_limit += 100;
@@ -591,8 +583,8 @@ impl Rireki {
             .border_color(if cursor { c(theme::ACCENT) } else { gpui::transparent_black() })
             .cursor_pointer()
             .when(selected, |d| d.bg(c(theme::ACCENT_BG)))
-            .when(cursor && !selected, |d| d.bg(gpui::white().opacity(0.05)))
-            .hover(|s| s.bg(gpui::white().opacity(0.07)))
+            .when(cursor && !selected, |d| d.bg(c(theme::RAISED)))
+            .hover(|s| s.bg(c(theme::RAISED)))
     }
 }
 
@@ -604,7 +596,7 @@ fn count_badge(n: usize, selected: bool) -> Div {
     div()
         .flex_none()
         .text_small()
-        .text_color(if selected { gpui::white().opacity(0.8) } else { c(theme::SUBTLE) })
+        .text_color(if selected { c(theme::TEXT) } else { c(theme::SUBTLE) })
         .child(super::fmt_n(n))
 }
 
@@ -683,7 +675,7 @@ fn highlights(text: &str, terms: &[String]) -> Vec<(std::ops::Range<usize>, High
     ranges.truncate(merged);
     let style = HighlightStyle {
         color: Some(gpui::white()),
-        background_color: Some(c(theme::ACCENT).opacity(0.35)),
+        background_color: Some(c(theme::ACCENT_BG)),
         font_weight: Some(FontWeight::BOLD),
         ..Default::default()
     };
@@ -802,7 +794,7 @@ mod tests {
     fn highlight_preserves_case_unicode_and_merged_ranges() {
         let expected_style = HighlightStyle {
             color: Some(gpui::white()),
-            background_color: Some(c(theme::ACCENT).opacity(0.35)),
+            background_color: Some(c(theme::ACCENT_BG)),
             font_weight: Some(FontWeight::BOLD),
             ..Default::default()
         };
