@@ -12,6 +12,7 @@ use crate::app::{fmt_n, is_live, rel_time, tilde};
 use crate::icons::{self, Icon};
 use crate::model::one_line;
 use crate::statistics::{SessionRow, Summary, source_index};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// 最初に並べる件数と、すべて表示したときの上限
@@ -59,8 +60,8 @@ impl Rireki {
                 .h(px(40.0))
                 .mx(px(-6.0))
                 .px(px(6.0))
-                .rounded_md()
-                .text_xs()
+                .radius_md()
+                .text_small()
                 .cursor_pointer()
                 .hover(|d| d.bg(c(theme::HOVER)))
                 .child(
@@ -150,7 +151,7 @@ impl Rireki {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::ACCENT))
                         .cursor_pointer()
                         .hover(|d| d.text_color(c(theme::TEXT)))

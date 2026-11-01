@@ -38,6 +38,7 @@ pub const ERR: u32 = 0xf07c7c;
 pub const WARN: u32 = 0xe0a24a;
 /// 差分の追加と削除。赤緑の慣習に従う例外
 pub const DIFF_ADD: u32 = 0x7fd18b;
+#[allow(dead_code)] // 画面の作り直しで使い始めたら外す
 pub const DIFF_DEL: u32 = 0xf07c7c;
 /// 画面の作り直しが終わるまでの移行用。置き換えたら削除する
 pub const SUB: u32 = MUTED;
@@ -61,12 +62,46 @@ pub mod size {
 }
 
 /// 透明度は意味ごとに 1 つ。これ以外の透明度で色を作らない
+#[allow(dead_code)] // 画面の作り直しで使い始めたら外す
 pub mod alpha {
     pub const DISABLED: f32 = 0.4;
     pub const STALE: f32 = 0.55;
     pub const RANGE: f32 = 0.2;
     pub const DIFF: f32 = 0.12;
 }
+
+/// 文字サイズと角丸を、段階の名前で指定する。gpui の text_xs / rounded_md など任意の値は使わない
+pub trait Scale: gpui::Styled + Sized {
+    fn text_axis(self) -> Self {
+        self.text_size(gpui::px(size::AXIS))
+    }
+    fn text_small(self) -> Self {
+        self.text_size(gpui::px(size::SMALL))
+    }
+    fn text_body(self) -> Self {
+        self.text_size(gpui::px(size::BODY))
+    }
+    fn text_heading(self) -> Self {
+        self.text_size(gpui::px(size::HEADING))
+    }
+    fn text_value(self) -> Self {
+        self.text_size(gpui::px(size::VALUE))
+    }
+    fn radius_sm(self) -> Self {
+        self.rounded(gpui::px(radius::SM))
+    }
+    fn radius_md(self) -> Self {
+        self.rounded(gpui::px(radius::MD))
+    }
+    fn radius_inner(self) -> Self {
+        self.rounded(gpui::px(radius::INNER))
+    }
+    fn radius_panel(self) -> Self {
+        self.rounded(gpui::px(radius::PANEL))
+    }
+}
+
+impl<T: gpui::Styled> Scale for T {}
 
 /// イベントの色。判別できる色相は 5 つまで（ユーザー・参照・編集・シェル・エージェント）。
 /// 応答・思考・その他は無彩色の濃淡。Claude の橙・Codex の青緑・失敗の赤は使わない

@@ -13,7 +13,7 @@ use gpui::{
 };
 
 use super::rich;
-use super::widgets::{Marquee, event_icon, project_tile, tip};
+use super::widgets::{Marquee, event_icon, project_mark, tip};
 use super::{DETAIL_MAX, HEADER_H, INNER_RADIUS, Rireki, Selection, StyleRefinement, fmt_dur, fmt_n, is_live, local, tilde};
 use crate::icons::{self, Icon};
 use crate::model::{Event, Kind, Session, Source, Status, Usage, UsageSum, one_line};
@@ -39,6 +39,7 @@ use crate::detail::{DetailCache, FileStat};
 pub(super) use files::FileList;
 use files::{FILE_MAX, FileListKey, FileRow, PER_EDIT};
 use crate::prefs::DetailTab;
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// 詳細パネルの枠と見出し。本文は独立したビューとして再利用する。
@@ -137,9 +138,9 @@ fn badge(label: impl Into<SharedString>, color: u32) -> Div {
     div()
         .flex_none()
         .px_1p5()
-        .rounded_sm()
+        .radius_sm()
         .bg(c(color).opacity(0.15))
-        .text_xs()
+        .text_small()
         .text_color(c(color))
         .whitespace_nowrap()
         .child(label.into())
@@ -147,7 +148,7 @@ fn badge(label: impl Into<SharedString>, color: u32) -> Div {
 
 /// 小見出し（「入力」「結果」など）
 fn label(text: impl Into<SharedString>) -> Div {
-    div().flex_none().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::MUTED)).child(text.into())
+    div().flex_none().text_small().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::MUTED)).child(text.into())
 }
 
 /// 集計の 1 項目。並べたときに行の幅を等分する
@@ -161,19 +162,19 @@ fn stat(name: &'static str, value: String, color: Option<u32>) -> Div {
         .whitespace_nowrap()
         .px_2p5()
         .py_2()
-        .rounded_lg()
+        .radius_md()
         .bg(c(theme::BG))
         .border_1()
         .border_color(c(theme::LINE))
         .child(
             div()
-                .text_lg()
+                .text_heading()
                 .line_height(px(22.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(c(color.unwrap_or(theme::TEXT)))
                 .child(value),
         )
-        .child(div().truncate().text_xs().text_color(c(theme::SUBTLE)).child(name))
+        .child(div().truncate().text_small().text_color(c(theme::SUBTLE)).child(name))
 }
 
 fn detail_tab_index(tab: DetailTab) -> usize {
@@ -185,7 +186,7 @@ impl Rireki {
         let panel = div().id("detail-panel").size_full().flex().flex_col()
             .when(self.detail_fullscreen, |d| d.rounded(px(INNER_RADIUS)))
             .when(!self.detail_fullscreen, |d| d.rounded_r(px(INNER_RADIUS)).border_l_1())
-            .bg(c(theme::PANEL)).border_color(c(theme::LINE)).text_sm().text_color(c(theme::TEXT))
+            .bg(c(theme::PANEL)).border_color(c(theme::LINE)).text_body().text_color(c(theme::TEXT))
             .on_scroll_wheel(cx.listener(|app, _: &gpui::ScrollWheelEvent, _, _| app.cancel_detail_follow()));
         let Some(sel) = self.shown_detail_selection() else { return panel.into_any_element(); };
         let files = self.cache(sel).map(|d| d.files.len());
@@ -211,7 +212,7 @@ impl Rireki {
         let Some(sel) = self.shown_detail_selection() else { return div().into_any_element(); };
         let files = self.cache(sel).map_or(0, |d| d.files.len());
         if self.cache(sel).is_none() {
-            return div().p_3().text_xs().text_color(c(theme::MUTED))
+            return div().p_3().text_small().text_color(c(theme::MUTED))
                 .child("詳細を読み込み中…").into_any_element();
         }
         self.detail_live.set(Some(is_live(self.detail_session(sel).end)));
@@ -222,11 +223,11 @@ impl Rireki {
                 .into_any_element(),
             DetailTab::Files if files == 0 => div().p_3().child(
                 div().w_full().p_4().flex().flex_col().items_center().gap_2()
-                    .rounded_lg().bg(c(theme::BG)).border_1().border_color(c(theme::LINE))
+                    .radius_md().bg(c(theme::BG)).border_1().border_color(c(theme::LINE))
                     .child(div().size(px(36.0)).rounded_full().flex().items_center().justify_center()
                         .bg(c(theme::RAISED)).child(icons::icon(Icon::FilePen, theme::MUTED).size_4()))
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("変更されたファイルはありません"))
-                    .child(div().text_xs().text_center().text_color(c(theme::MUTED))
+                    .child(div().text_small().text_center().text_color(c(theme::MUTED))
                         .child("この範囲にはファイル編集が記録されていません")),
             ).into_any_element(),
             DetailTab::Files => div().flex_1().min_h_0().p_3().flex().flex_col()
@@ -255,7 +256,7 @@ impl Rireki {
         let title = if overview { "セッション全体 · 全エージェント".to_string() } else {
             format!("{} · {} 件", if whole { "レーン全体" } else { "選択範囲" }, fmt_n(events.len()))
         };
-        div().flex_none().px_3().py_2().flex().flex_col().gap_1().text_xs()
+        div().flex_none().px_3().py_2().flex().flex_col().gap_1().text_small()
             .bg(c(theme::BG)).border_b_1().border_color(c(theme::LINE))
             .child(div().flex().items_center().gap_2()
                 .child(div().text_color(c(theme::MUTED)).child("対象"))
@@ -322,7 +323,7 @@ impl Rireki {
             .h(px(38.0))
             .border_b_2()
             .border_color(c(if on { theme::ACCENT } else { theme::PANEL }))
-            .text_sm()
+            .text_body()
             .text_color(c(fg))
             .when(on, |d| d.font_weight(FontWeight::SEMIBOLD))
             .child(text)
@@ -333,7 +334,7 @@ impl Rireki {
                         .rounded_full()
                         .bg(c(if on { theme::ACCENT_BG } else { theme::LINE_SOFT }))
                         .text_color(c(if on { theme::ACCENT } else { theme::MUTED }))
-                        .text_size(px(10.0))
+                        .text_axis()
                         .child(if n > 999 { "999+".into() } else { fmt_n(n) }),
                 )
             })
@@ -458,7 +459,7 @@ impl Rireki {
             format!("{}–{}", fmt_n(sel.first + 1), fmt_n(sel.last + 1))
         };
         let output = self.cache(sel).and_then(|d| d.texts.first()).map_or("", |t| t.1.as_str());
-        div().flex_none().flex().items_center().gap_1p5().text_xs()
+        div().flex_none().flex().items_center().gap_1p5().text_small()
             .when(single, |d| d.child(event_icon(theme::event_icon(e), theme::event_color(e), 13.0)))
             .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD)
                 .text_color(c(theme::MUTED)).child(title))
@@ -485,7 +486,7 @@ impl Rireki {
             .items_center()
             .gap_1p5()
             .min_w_0()
-            .text_xs()
+            .text_small()
             .text_color(c(theme::MUTED))
             .child(
                 div()
@@ -497,7 +498,7 @@ impl Rireki {
                     .tooltip(tip(s.source.label(), None)),
             )
             .child(div().text_color(c(theme::SUBTLE)).child("·"))
-            .child(project_tile(&s.cwd, 14.0))
+            .child(project_mark(&s.cwd))
             .child(
                 div()
                     .id("ctx-project")
@@ -548,7 +549,7 @@ impl Rireki {
         }
         div().flex_none().px_3().pt_3().pb_2().flex().flex_col().gap_1p5()
             .child(div().flex().items_center().gap_2()
-                .child(div().id("ctx-session").flex_1().min_w_0().text_base()
+                .child(div().id("ctx-session").flex_1().min_w_0().text_heading()
                     .font_weight(FontWeight::SEMIBOLD).cursor_pointer()
                     .hover(|d| d.text_color(c(theme::ACCENT)))
                     .child(Marquee::new("title", one_line(&title, usize::MAX)))
@@ -596,11 +597,11 @@ impl Rireki {
                 .gap_1()
                 .px_1p5()
                 .py(px(1.0))
-                .rounded_md()
+                .radius_md()
                 .border_1()
                 .border_color(c(if on { theme::ACCENT } else { theme::LINE }))
                 .bg(c(if on { theme::ACCENT_BG } else { theme::BG }))
-                .text_xs()
+                .text_small()
                 .cursor_pointer()
                 .hover(|s| s.bg(c(theme::HOVER)))
                 .when_some(col, |d, (col, ic)| d.child(event_icon(ic, col, 11.0)))
@@ -653,7 +654,7 @@ fn diff_bar(added: usize, removed: usize) -> Div {
         } else {
             c(theme::LINE_SOFT)
         };
-        div().size(px(6.0)).rounded(px(1.0)).bg(col)
+        div().size(px(6.0)).radius_sm().bg(col)
     }))
 }
 

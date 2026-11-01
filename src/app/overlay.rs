@@ -11,6 +11,7 @@ use super::{Popover, Rireki, fmt_dur, local};
 use crate::icons::{self, Icon};
 use crate::layout::{self, Block, Granularity};
 use crate::model::{Status, one_line};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 impl Rireki {
@@ -92,12 +93,12 @@ impl Rireki {
             .gap_1()
             .px_2p5()
             .py_2()
-            .rounded_lg()
+            .radius_md()
             .bg(c(theme::RAISED))
             .border_1()
             .border_color(c(theme::LINE))
             .shadow_lg()
-            .text_xs()
+            .text_small()
             .text_color(c(theme::TEXT))
             .child(
                 div()
@@ -106,7 +107,7 @@ impl Rireki {
                     .gap_1p5()
                     .child(event_icon(ic, color, 14.0))
                     .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(color)).child(head))
-                    .when_some(outcome, |d, (label, color)| d.child(div().px_1().rounded_sm()
+                    .when_some(outcome, |d, (label, color)| d.child(div().px_1().radius_sm()
                         .bg(c(color).opacity(0.12)).text_color(c(color)).child(label)))
                     .child(div().flex_1())
                     .when(end > start, |d| d.child(div().text_color(c(theme::MUTED)).child(fmt_dur(end - start)))),
@@ -156,12 +157,12 @@ impl Rireki {
                 .px_2()
                 .pt_1()
                 .pb_1()
-                .text_xs()
+                .text_small()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(c(theme::MUTED))
                 .child(text)
         };
-        let note = |text: &'static str| div().px_2().pb_1().text_xs().text_color(c(theme::MUTED)).child(text);
+        let note = |text: &'static str| div().px_2().pb_1().text_small().text_color(c(theme::MUTED)).child(text);
         // 見出しと切り替えを横に並べた行
         let labeled = |label: &'static str, control: Div| {
             div()
@@ -170,7 +171,7 @@ impl Rireki {
                 .gap_2()
                 .px_2()
                 .py_1()
-                .child(div().w(px(72.0)).flex_none().text_xs().text_color(c(theme::MUTED)).child(label))
+                .child(div().w(px(72.0)).flex_none().text_small().text_color(c(theme::MUTED)).child(label))
                 .child(control)
         };
         let divider = || div().mx_2().my_1p5().h(px(1.0)).bg(c(theme::LINE));
@@ -224,8 +225,8 @@ impl Rireki {
                     .gap_2()
                     .px_2()
                     .py_1()
-                    .rounded_md()
-                    .text_xs()
+                    .radius_md()
+                    .text_small()
                     .when(!cost, |d| d.cursor_pointer().hover(|s| s.bg(c(theme::HOVER))))
                     .child(div().w(px(14.0)).pt(px(1.0)).flex_none().when(on, |d| {
                         d.child(icons::icon(Icon::Check, if cost { theme::SUBTLE } else { theme::ACCENT }))
@@ -261,7 +262,7 @@ impl Rireki {
             .gap_2()
             .px_2()
             .py_1p5()
-            .rounded_md()
+            .radius_md()
             .cursor_pointer()
             .hover(|s| s.bg(c(theme::HOVER)))
             // 切り替えスイッチ
@@ -284,8 +285,8 @@ impl Rireki {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().text_xs().child("表示範囲内のセッションだけ"))
-                    .child(div().text_xs().text_color(c(theme::MUTED)).child(if on {
+                    .child(div().text_small().child("表示範囲内のセッションだけ"))
+                    .child(div().text_small().text_color(c(theme::MUTED)).child(if on {
                         "範囲にイベントのないセッションを隠す"
                     } else {
                         "範囲外のセッションもグレーで並べる"
@@ -306,7 +307,7 @@ impl Rireki {
                         .p_1()
                         .flex()
                         .flex_col()
-                        .rounded_lg()
+                        .radius_md()
                         .bg(c(theme::RAISED))
                         .border_1()
                         .border_color(c(theme::LINE))
@@ -378,14 +379,14 @@ impl Rireki {
                 .flex_col()
                 .gap_1()
                 .child(
-                    div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::MUTED)).mb_1().child(title),
+                    div().text_small().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::MUTED)).mb_1().child(title),
                 )
                 .children(rows.iter().map(|&(k, v)| {
-                    div().flex().items_center().gap_3().text_xs().child(div().flex_1().child(v)).child(
+                    div().flex().items_center().gap_3().text_small().child(div().flex_1().child(v)).child(
                         div()
                             .flex_none()
                             .px_1p5()
-                            .rounded_sm()
+                            .radius_sm()
                             .bg(c(theme::BG))
                             .border_1()
                             .border_color(c(theme::LINE))
@@ -419,7 +420,7 @@ impl Rireki {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .rounded_xl()
+                    .radius_panel()
                     .bg(c(theme::RAISED))
                     .border_1()
                     .border_color(c(theme::LINE))
@@ -436,7 +437,7 @@ impl Rireki {
                                 div()
                                     .id("help-close")
                                     .p_1()
-                                    .rounded_md()
+                                    .radius_md()
                                     .cursor_pointer()
                                     .hover(|s| s.bg(c(theme::HOVER)))
                                     .child(icons::icon(Icon::X, theme::MUTED))

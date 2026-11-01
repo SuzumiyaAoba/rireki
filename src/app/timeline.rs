@@ -10,11 +10,12 @@ use gpui::{
     MouseMoveEvent, Pixels, Point, LineLayout, SharedString, TextRun, Window, canvas, div, fill, point, prelude::*, px, size,
 };
 
-use super::widgets::{Marquee, project_tile, tip};
+use super::widgets::{Marquee, project_mark, tip};
 use super::{AXIS_H, BlockPaint, MIN_BLOCK, ROW_H, Rireki, Row, Selection, fmt_dur, fmt_n, local, now};
 use crate::icons::{self, Icon};
 use crate::layout::{Block, Granularity};
 use crate::model::{Status, one_line};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// ブロックに描くアイコンの大きさと、アイコンを出すブロックの最小幅
@@ -455,7 +456,7 @@ impl Rireki {
 
         // 時間軸
         let mut axis = div().relative().h(px(AXIS_H)).w(px(pw)).flex_none().bg(c(theme::PANEL)).overflow_hidden()
-            .child(div().absolute().left(px(8.0)).top(px(2.0)).text_size(px(10.0))
+            .child(div().absolute().left(px(8.0)).top(px(2.0)).text_axis()
                 .text_color(c(theme::SUBTLE))
                 .child(format!("{} · UTC{}", local(v0).format("%Y/%m/%d"), local(v0).format("%:z"))));
         let mut grid = grid::Grid::default();
@@ -469,7 +470,7 @@ impl Rireki {
                     .absolute()
                     .left(px(x + 3.0))
                     .top(px(19.0))
-                    .text_xs()
+                    .text_small()
                     .whitespace_nowrap()
                     .text_color(c(if major { theme::TEXT } else { theme::MUTED }))
                     .child(label),
@@ -533,7 +534,7 @@ impl Rireki {
                             .border_t_1()
                             .border_color(c(theme::LINE))
                             .when(dim, |d| d.opacity(0.45))
-                            .text_xs()
+                            .text_small()
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .when(!directory, |d| d.cursor_pointer())
@@ -542,7 +543,7 @@ impl Rireki {
                                 if collapsed { Icon::ChevronRight } else { Icon::ChevronDown },
                                 theme::MUTED,
                             )))
-                            .child(project_tile(cwd, 14.0))
+                            .child(project_mark(cwd))
                             .child(
                                 div()
                                     .min_w_0()
@@ -551,8 +552,8 @@ impl Rireki {
                                     .text_color(c(theme::TEXT))
                                     .child(self.project_name(cwd)),
                             )
-                            .child(div().flex_none().px_1p5().rounded_sm().bg(c(theme::BG))
-                                .text_size(px(10.0)).text_color(c(theme::MUTED)).child(fmt_n(sessions.len())))
+                            .child(div().flex_none().px_1p5().radius_sm().bg(c(theme::BG))
+                                .text_axis().text_color(c(theme::MUTED)).child(fmt_n(sessions.len())))
                             // 右寄せは ml_auto ではなく詰め物で行う（auto マージンがあると gap が効かない）
                             .child(div().flex_1())
                             .child(
@@ -563,7 +564,7 @@ impl Rireki {
                                     .items_center()
                                     .gap_1()
                                     .px_1()
-                                    .rounded_sm()
+                                    .radius_sm()
                                     .when(!focused, |d| d.invisible().group_hover(group.clone(), |s| s.visible()))
                                     .text_color(c(if focused { theme::ACCENT } else { theme::MUTED }))
                                     .hover(|d| d.bg(c(0x3a4150)).text_color(c(theme::TEXT)))
@@ -663,7 +664,7 @@ impl Rireki {
                     .when(lane_selected, |d| d.bg(c(theme::ACCENT_BG)))
                     .when(lane_hovered && !lane_selected, |d| d.bg(c(theme::HOVER)))
                     .when(!tr.active, |d| d.opacity(0.4))
-                    .text_xs()
+                    .text_small()
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .cursor_pointer()
@@ -679,10 +680,10 @@ impl Rireki {
                             .text_color(c(if sub { theme::SUB } else { theme::TEXT }))
                             .child(Marquee::new("title", title)),
                     )
-                    .when(self.label_w >= 240.0, |d| d.child(div().flex_none().text_size(px(10.0))
+                    .when(self.label_w >= 240.0, |d| d.child(div().flex_none().text_axis()
                         .text_color(c(theme::SUBTLE)).child(fmt_n(n))))
                     .when(self.label_w >= 320.0, |d| d.child(div().w(px(54.0)).flex_none().text_right()
-                        .text_size(px(10.0)).text_color(c(theme::MUTED))
+                        .text_axis().text_color(c(theme::MUTED))
                         .child(lane.range().map_or_else(String::new, |(a, b)| fmt_dur(b - a)))))
                     .tooltip(tip(format!("{}\n{} 件 · {}", if sub { &lane.name } else { &s.title }, fmt_n(n),
                         lane.range().map_or_else(String::new, |(a, b)| fmt_dur(b - a))), None))
@@ -784,7 +785,7 @@ impl Rireki {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_xs()
+                            .text_small()
                             .bg(c(theme::PANEL))
                             .text_color(c(theme::MUTED))
                             .border_r_1()
@@ -797,9 +798,9 @@ impl Rireki {
                             } else {
                                 "セッション"
                             }))
-                            .when(self.label_w >= 240.0 && !directory, |d| d.child(div().text_size(px(10.0)).child("件数")))
+                            .when(self.label_w >= 240.0 && !directory, |d| d.child(div().text_axis().child("件数")))
                             .when(self.label_w >= 320.0 && !directory, |d| d.child(div().w(px(54.0)).text_right()
-                                .text_size(px(10.0)).child("経過時間"))),
+                                .text_axis().child("経過時間"))),
                     )
                     .child(axis)
                     .border_b_1()
@@ -999,7 +1000,7 @@ impl Rireki {
             .flex_col()
             .items_center()
             .gap_2()
-            .text_sm()
+            .text_body()
             .text_color(c(theme::MUTED))
             .child(if loading {
                 "読み込み中…"
@@ -1017,11 +1018,11 @@ impl Rireki {
                         .gap_1()
                         .px_3()
                         .py_1()
-                        .rounded_md()
+                        .radius_md()
                         .border_1()
                         .border_color(c(theme::LINE))
                         .bg(c(theme::PANEL))
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::TEXT))
                         .cursor_pointer()
                         .hover(|s| s.bg(c(theme::HOVER)))
@@ -1038,7 +1039,7 @@ impl Rireki {
                 |d| {
                     d.child(
                         div()
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::SUBTLE))
                             .child("読み込み元やプロジェクトの絞り込みを確認してください"),
                     )

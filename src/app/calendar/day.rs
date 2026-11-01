@@ -1,6 +1,7 @@
 //! 日・週表示の時刻軸、セッションブロックと指示の描画。
 
 use super::*;
+use crate::theme::Scale as _;
 
 impl Rireki {
     pub(in crate::app) fn calendar(
@@ -91,7 +92,7 @@ impl Rireki {
                             .absolute()
                             .left(px(4.0))
                             .top(px(y - 7.0))
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::MUTED))
                             .child(format!("{:02}:{:02}", mins / 60, mins % 60)),
                     );
@@ -222,7 +223,7 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .text_sm()
+                    .text_body()
                     .text_color(c(if is_today {
                         theme::ACCENT
                     } else if weekend {
@@ -230,7 +231,7 @@ impl Rireki {
                     } else {
                         theme::TEXT
                     }))
-                    .child(div().text_xs().child(weekday_ja(date.weekday())))
+                    .child(div().text_small().child(weekday_ja(date.weekday())))
                     .child(
                         div()
                             .min_w(px(20.0))
@@ -251,7 +252,12 @@ impl Rireki {
                             }),
                     ),
             )
-            .child(div().text_xs().text_color(c(theme::SUBTLE)).child(summary))
+            .child(
+                div()
+                    .text_small()
+                    .text_color(c(theme::SUBTLE))
+                    .child(summary),
+            )
             .when(week, |d| {
                 d.cursor_pointer()
                     .hover(|s| s.bg(c(theme::HOVER)))
@@ -292,7 +298,7 @@ impl Rireki {
             .flex_col()
             .px_1()
             .pt(px(1.0))
-            .text_xs()
+            .text_small()
             .overflow_hidden()
             .when(text, |d| {
                 d.child(
@@ -417,11 +423,11 @@ impl Rireki {
                     .items_center()
                     .gap_1()
                     .px_1()
-                    .rounded_sm()
+                    .radius_sm()
                     .when(hovered || selected, |d| {
                         d.bg(gpui::white().opacity(if selected { 0.16 } else { 0.08 }))
                     })
-                    .text_xs()
+                    .text_small()
                     .child(dot(USER, 5.0))
                     .child(
                         div()

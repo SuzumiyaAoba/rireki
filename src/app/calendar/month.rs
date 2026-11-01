@@ -1,6 +1,7 @@
 //! 月表示の日付グリッドと、その日に動いたセッションの描画。
 
 use super::*;
+use crate::theme::Scale as _;
 
 impl Rireki {
     pub(super) fn month(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -35,7 +36,7 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(if i >= 5 { theme::MUTED } else { theme::TEXT }))
                     .child(weekday_ja(wd))
             }));
@@ -83,7 +84,7 @@ impl Rireki {
                             .items_center()
                             .gap_1()
                             .h(px(20.0))
-                            .text_xs()
+                            .text_small()
                             .child(
                                 div()
                                     .min_w(px(20.0))
@@ -127,8 +128,8 @@ impl Rireki {
                             .gap_1()
                             .h(px(16.0))
                             .px_1()
-                            .rounded_sm()
-                            .text_xs()
+                            .radius_sm()
+                            .text_small()
                             .when(selected, |d| d.bg(c(theme::SELECT)))
                             .hover(|d| d.bg(gpui::white().opacity(0.1)))
                             .child(dot(theme::project_color(&s.cwd), 7.0))
@@ -164,7 +165,7 @@ impl Rireki {
                     cell = cell.child(
                         div()
                             .px_1()
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::MUTED))
                             .child(format!("ほか {} 件", day.sessions - shown)),
                     );

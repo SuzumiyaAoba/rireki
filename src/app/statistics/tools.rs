@@ -17,6 +17,7 @@ use crate::app::widgets::lazy_tip;
 use crate::app::{fmt_dur, fmt_n};
 use crate::icons::{self, Icon};
 use crate::statistics::{Calls, Durations, Summary, Tool};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// 並べるツールの数。残りは「その他」にまとめる
@@ -102,7 +103,7 @@ impl Rireki {
             .when(!s.tools.is_empty(), |d| {
                 d.child(
                     div()
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::SUBTLE))
                         .child("失敗率は呼び出しに対する割合。所要時間は結果のある呼び出しの区間分布から求めた近似値（誤差 6.25% 以内）で、サブエージェントは配下の処理を含みます"),
                 )
@@ -123,7 +124,7 @@ impl Rireki {
             .justify_end()
             .gap_x_3()
             .gap_y_1()
-            .text_xs()
+            .text_small()
             .when(sources.len() > 1, |d| {
                 d.children(sources.iter().map(|&i| item(swatch(series(i)), ["Claude", "Codex"][i])))
             })
@@ -203,7 +204,7 @@ fn cells(
         .items_center()
         .gap_2()
         .h(px(ROW_H))
-        .text_xs()
+        .text_small()
         .child(div().flex_none().w(px(16.0)).flex().justify_center().child(mark))
         .child(div().flex_none().w(px(layout.name_w)).truncate().child(name))
         .child(div().flex_1().min_w(px(48.0)).flex().items_center().child(calls_bar))
@@ -237,7 +238,7 @@ fn columns(layout: &Layout, scale: Option<f64>) -> Div {
         .items_end()
         .gap_2()
         .pb_1()
-        .text_size(px(11.0))
+        .text_axis()
         .text_color(c(theme::MUTED))
         .child(div().flex_none().w(px(16.0)))
         .child(div().flex_none().w(px(layout.name_w)))

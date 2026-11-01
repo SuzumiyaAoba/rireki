@@ -6,6 +6,7 @@ use super::{
     c, div, fmt_dur, fmt_n, icons, is_live, label, local, one_line, px, rich, status_label, theme,
     tip, usage_input, usage_meter,
 };
+use crate::theme::Scale as _;
 use gpui::prelude::*;
 
 impl Rireki {
@@ -40,7 +41,7 @@ impl Rireki {
                 .items_center()
                 .gap_x_3()
                 .gap_y_0p5()
-                .text_xs()
+                .text_small()
                 .text_color(c(theme::MUTED))
                 .child(
                     div()
@@ -92,11 +93,11 @@ impl Rireki {
                     .gap_1p5()
                     .px_2()
                     .py_1p5()
-                    .rounded_md()
+                    .radius_md()
                     .bg(c(theme::event_color(u)).opacity(0.07))
                     .border_l_2()
                     .border_color(c(theme::event_color(u)).opacity(0.7))
-                    .text_xs()
+                    .text_small()
                     .cursor_pointer()
                     .hover(|d| d.bg(c(theme::event_color(u)).opacity(0.12)))
                     .child(
@@ -136,17 +137,13 @@ impl Rireki {
                 } else {
                     theme::TEXT
                 };
-                col = col.child(
-                    self.titled(
-                        None,
-                        "copy-in",
-                        input,
-                        rich::markdown(input, color)
-                            .text_size(px(13.0))
-                            .into_any_element(),
-                        cx,
-                    ),
-                );
+                col = col.child(self.titled(
+                    None,
+                    "copy-in",
+                    input,
+                    rich::markdown(input, color).text_body().into_any_element(),
+                    cx,
+                ));
             }
             Kind::Tool | Kind::Agent => {
                 col = col.child(self.tool_input(e, input, raw, &s.cwd, cx));
@@ -213,8 +210,8 @@ impl Rireki {
             .gap_1()
             .px_2()
             .py_0p5()
-            .rounded_md()
-            .text_xs()
+            .radius_md()
+            .text_small()
             .text_color(c(theme::ACCENT))
             .cursor_pointer()
             .hover(|s| s.bg(c(theme::HOVER)))
@@ -307,7 +304,7 @@ impl Rireki {
             (
                 "内容",
                 rich::markdown(input, theme::TEXT)
-                    .text_size(px(13.0))
+                    .text_body()
                     .into_any_element(),
             )
         } else if input.starts_with("$ ") {
@@ -334,7 +331,7 @@ impl Rireki {
             .gap_1p5()
             .min_w_0()
             .when_some(caption, |d, cap| {
-                d.child(div().text_sm().child(SharedString::from(cap)))
+                d.child(div().text_body().child(SharedString::from(cap)))
             })
             .child(self.titled(Some(label(title)), "copy-in", copy, body, cx))
     }
@@ -358,7 +355,7 @@ impl Rireki {
             .when(lines > 1, |d| {
                 d.child(
                     div()
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::SUBTLE))
                         .child(format!("{} 行", fmt_n(lines))),
                 )
@@ -371,13 +368,13 @@ impl Rireki {
                 _ => "出力なし",
             };
             div()
-                .text_xs()
+                .text_small()
                 .text_color(c(theme::SUBTLE))
                 .child(note)
                 .into_any_element()
         } else if MARKDOWN_OUTPUT.contains(&e.name.as_ref()) {
             rich::markdown(output, theme::TEXT)
-                .text_size(px(13.0))
+                .text_body()
                 .into_any_element()
         } else if rich::is_patch(output) {
             let files = rich::parse_patch(output);

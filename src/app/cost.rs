@@ -12,11 +12,12 @@ use gpui::{
 };
 
 use super::detail::{fmt_tokens, fmt_usd};
-use super::widgets::{project_tile, tip};
+use super::widgets::{project_mark, tip};
 use super::{AXIS_H, FOOTER_H, ROW_H, Rireki, Selection, local, now};
 use crate::cost_timeline::{Bucket, Cache, Summary, View};
 use crate::icons::{self, Icon};
 use crate::model::{UsageSum, one_line};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 type Key = (u64, u64, u64, usize, bool);
@@ -224,7 +225,7 @@ impl Rireki {
                     .absolute()
                     .left(px(x + 3.0))
                     .top(px(if major { 2.0 } else { 14.0 }))
-                    .text_xs()
+                    .text_small()
                     .whitespace_nowrap()
                     .text_color(c(if major { theme::TEXT } else { theme::MUTED }))
                     .child(label),
@@ -281,7 +282,7 @@ impl Rireki {
                     .items_center()
                     .gap_1p5()
                     .px_2()
-                    .text_xs()
+                    .text_small()
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .when(directory, |d| d.bg(c(0x1f232b)).border_t_1().border_color(c(0x3a4150)))
@@ -323,7 +324,7 @@ impl Rireki {
                                 theme::MUTED,
                             ))
                         })
-                        .child(project_tile(&group.cwd, 14.0))
+                        .child(project_mark(&group.cwd))
                         .child(
                             div()
                                 .flex_1()
@@ -405,14 +406,14 @@ impl Rireki {
                     .absolute()
                     .top(px(32.0))
                     .left(px(24.0))
-                    .text_sm()
+                    .text_body()
                     .text_color(c(theme::MUTED))
                     .child("API コストを集計中…"),
             );
         }
         div().flex().flex_col().child(div().flex().border_b_1().border_color(c(theme::LINE))
             .child(div().w(px(self.label_w)).h(px(AXIS_H)).flex_none().px_2().flex().items_center()
-                .text_xs().text_color(c(theme::MUTED)).border_r_1().border_color(c(theme::LINE))
+                .text_small().text_color(c(theme::MUTED)).border_r_1().border_color(c(theme::LINE))
                 .child("表示期間の合計 · API 換算 USD")
                 .id("cost-explanation").tooltip(tip("記録されたトークン使用量をモデル別の API 料金で換算。サブスクリプションの請求額とは異なります。使用量のない呼び出しと料金不明のモデルは金額に含みません。", None)))
             .child(axis))
@@ -471,7 +472,7 @@ impl Rireki {
                     .left_0()
                     .right_0()
                     .h(px(height))
-                    .rounded(px(2.0))
+                    .radius_sm()
                     .bg(c(if bucket.usage.calls == bucket.usage.unpriced { theme::WARN } else { theme::OK })
                         .opacity(0.8))
                     .when(bucket.usage.unpriced > 0, |d| {
@@ -518,7 +519,7 @@ impl Rireki {
         let detail = summary.as_ref()
             .map_or_else(|| self.counts.clone(), |s| usage_tip(&s.usage));
         div().h(px(FOOTER_H)).flex_none().flex().items_center().gap_3().px_3()
-            .border_t_1().border_color(c(theme::LINE)).text_xs().text_color(c(theme::MUTED))
+            .border_t_1().border_color(c(theme::LINE)).text_small().text_color(c(theme::MUTED))
             .child(div().id("cost-total").flex_1().min_w_0().truncate().child(self.counts.clone()).tooltip(tip(detail, None)))
             .when(summary.is_some() && self.main_width(window) >= 900.0, |d| d.child(
                 div().id("cost-scale").flex_none().whitespace_nowrap()
@@ -526,8 +527,8 @@ impl Rireki {
                     .tooltip(tip("すべての行を同じ金額の縮尺で表示。表示範囲と幅に合わせて区間を分割します。", None))))
             .when(pending && summary.is_some(), |d| d.child("集計中…"))
             .child(div().id("cost-legend").flex_none().flex().items_center().gap_1()
-                .child(div().size(px(7.0)).rounded_sm().bg(c(theme::OK))).child("API 換算")
-                .child(div().size(px(7.0)).rounded_sm().bg(c(theme::WARN))).child("料金不明")
+                .child(div().size(px(7.0)).radius_sm().bg(c(theme::OK))).child("API 換算")
+                .child(div().size(px(7.0)).radius_sm().bg(c(theme::WARN))).child("料金不明")
                 .tooltip(tip("緑の棒は区間の API 換算料金。オレンジの印は料金不明の呼び出し。実際の請求額とは異なります。", None)))
     }
 }

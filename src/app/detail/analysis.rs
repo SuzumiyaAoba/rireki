@@ -20,6 +20,7 @@ use crate::detail::{
 use crate::icons::{self, Icon};
 use crate::input::{InputEvent, TextInput};
 use crate::prefs::DetailTab;
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 #[derive(Clone, PartialEq)]
@@ -338,7 +339,7 @@ impl Rireki {
                 .when(state.busy, |d| d.opacity(0.5)),
             );
         } else {
-            body = body.child(div().text_xs().text_color(c(theme::MUTED)).child("集計中…"));
+            body = body.child(div().text_small().text_color(c(theme::MUTED)).child("集計中…"));
         }
         body.into_any_element()
     }
@@ -361,7 +362,7 @@ impl Rireki {
                 .px_2()
                 .h(px(32.0))
                 .flex_none()
-                .rounded_md()
+                .radius_md()
                 .bg(c(theme::BG))
                 .border_1()
                 .border_color(c(theme::LINE))
@@ -460,7 +461,7 @@ impl Rireki {
                     .child(badge(name.clone(), theme::ACCENT))
                     .child(
                         div()
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::MUTED))
                             .child("のイベントに絞り込み中"),
                     ),
@@ -469,7 +470,7 @@ impl Rireki {
         body = body.child(
             div()
                 .flex_none()
-                .text_xs()
+                .text_small()
                 .text_color(c(theme::MUTED))
                 .child(if state.busy {
                     "集計中…".into()
@@ -565,10 +566,10 @@ impl Rireki {
             .flex_col()
             .gap_1()
             .p_2()
-            .rounded_md()
+            .radius_md()
             .border_b_1()
             .border_color(c(theme::LINE))
-            .text_xs()
+            .text_small()
             .child(
                 div()
                     .flex()
@@ -708,14 +709,14 @@ impl Rireki {
                             None,
                         )),
                 )
-                .child(div().text_xs().text_color(c(theme::MUTED)).child(format!(
+                .child(div().text_small().text_color(c(theme::MUTED)).child(format!(
                     "範囲 {} · ツール合計 {} · 失敗等 {} 件 · 結果なし {} 件",
                     fmt_dur(analysis.span),
                     fmt_dur(analysis.tool_seconds),
                     fmt_n(analysis.failures),
                     fmt_n(analysis.pending)
                 )))
-                .child(div().text_xs().text_color(c(theme::SUBTLE)).child(
+                .child(div().text_small().text_color(c(theme::SUBTLE)).child(
                     "時間集計は結果のあるツールが対象です。合計は同時実行の重なりを含みます。",
                 ));
         if !analysis.tools.is_empty() {
@@ -738,14 +739,14 @@ impl Rireki {
                         .id(gpui::SharedString::from(format!("analysis-tool-{name}")))
                         .px_2()
                         .py_1()
-                        .rounded_md()
+                        .radius_md()
                         .when(on, |d| d.bg(c(theme::ACCENT_BG)))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .text_xs()
+                                .text_small()
                                 .child(
                                     div()
                                         .flex_1()
@@ -802,7 +803,7 @@ impl Rireki {
             out = out.child(tools);
         }
         if analysis.usage.calls > 0 {
-            out = out.child(div().flex().flex_col().gap_1().text_xs()
+            out = out.child(div().flex().flex_col().gap_1().text_small()
                 .child(label("モデル別のトークン・API換算料金"))
                 .child(super::model_table(&analysis.models)))
                 .child(self.icon_button("analysis-usage-toggle", Some(Icon::ChevronDown),
@@ -817,7 +818,7 @@ impl Rireki {
                     }))
                 .when(self.expanded.contains("analysis-usage"), |d| d.child(usage_view(&analysis.usage))
                     .child(stat("最大コンテキスト", fmt_tokens(analysis.peak_context), None)))
-                .child(div().text_xs().text_color(c(theme::SUBTLE)).child("トークン・料金は記録された使用量を集計しています。"));
+                .child(div().text_small().text_color(c(theme::SUBTLE)).child("トークン・料金は記録された使用量を集計しています。"));
         }
         if analysis.indices.is_empty() {
             out = out.child(

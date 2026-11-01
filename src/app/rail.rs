@@ -6,6 +6,7 @@ use super::widgets::tip;
 use super::{Popover, RAIL_W, Rireki, STRIP_H, fmt_n};
 use crate::icons::{self, Icon};
 use crate::prefs::{Mode, SourceFilter};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 impl Rireki {
@@ -26,7 +27,7 @@ impl Rireki {
             .items_center()
             .justify_center()
             .gap_2()
-            .text_xs()
+            .text_small()
             .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::MUTED)).child("rireki"))
             .child(div().text_color(c(theme::SUBTLE)).child("·"))
             .when(self.loading.is_some(), |d| d.child(icons::icon(Icon::Refresh, theme::ACCENT).size_3()))
@@ -133,7 +134,7 @@ impl Rireki {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(12.0))
+            .radius_panel()
             .border_2()
             .border_color(if active { c(theme::TEXT) } else { gpui::transparent_black() })
             .cursor_pointer()
@@ -141,7 +142,7 @@ impl Rireki {
             .child(
                 div()
                     .size(px(36.0))
-                    .rounded(px(9.0))
+                    .radius_inner()
                     .when_some(bg, |d, color| d.bg(c(color)))
                     .flex()
                     .items_center()
@@ -192,7 +193,7 @@ impl Rireki {
             .child(
                 div()
                     .size(px(36.0))
-                    .rounded(px(9.0))
+                    .radius_inner()
                     .flex()
                     .items_center()
                     .justify_center()

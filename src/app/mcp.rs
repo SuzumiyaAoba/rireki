@@ -10,6 +10,7 @@ use super::{Dismiss, Rireki, SearchCancel};
 use crate::icons::{self, Icon};
 use crate::mcp::Server;
 use crate::platform::MONO;
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 const TOOLS: [(Icon, &str, &str); 5] = [
@@ -101,12 +102,12 @@ impl Rireki {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded_xl()
+            .radius_panel()
             .bg(c(theme::PANEL))
             .border_1()
             .border_color(c(theme::LINE))
             .shadow_lg()
-            .text_sm()
+            .text_body()
             .text_color(c(theme::TEXT))
             // 内容をスクロールしても、見出しと操作ボタンは残す。
             .child(
@@ -125,7 +126,7 @@ impl Rireki {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded_lg()
+                            .radius_md()
                             .bg(c(theme::ACCENT_BG))
                             .child(icons::icon(Icon::Plug, theme::ACCENT).size(px(22.0))),
                     )
@@ -138,13 +139,13 @@ impl Rireki {
                             .gap_1()
                             .child(
                                 div()
-                                    .text_size(px(18.0))
+                                    .text_heading()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("MCP サーバー"),
                             )
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_small()
                                     .text_color(c(theme::MUTED))
                                     .child("Claude Code / Codex の履歴をエージェントに接続"),
                             ),
@@ -157,7 +158,7 @@ impl Rireki {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded_md()
+                            .radius_md()
                             .cursor_pointer()
                             .hover(|s| s.bg(c(theme::RAISED)))
                             .tooltip(tip("閉じる", Some("esc")))
@@ -185,7 +186,7 @@ impl Rireki {
                             .flex()
                             .items_start()
                             .gap_2()
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::MUTED))
                             .child(icons::icon(Icon::Layers, theme::MUTED).size_4().flex_none())
                             .child(
@@ -224,7 +225,7 @@ impl Rireki {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::MUTED))
                             .child(if running {
                                 "この画面を閉じても接続を維持します。"
@@ -244,7 +245,7 @@ impl Rireki {
                             .justify_center()
                             .gap_2()
                             .px_4()
-                            .rounded_md()
+                            .radius_md()
                             .font_weight(FontWeight::SEMIBOLD)
                             .bg(
                                 c(if running { theme::ERR } else { theme::ACCENT }).opacity(if running {
@@ -320,7 +321,7 @@ impl Rireki {
             .flex_col()
             .gap_4()
             .p_4()
-            .rounded_lg()
+            .radius_md()
             .bg(c(theme::BG))
             .border_1()
             .border_color(c(theme::LINE))
@@ -338,7 +339,7 @@ impl Rireki {
                             .child(div().font_weight(FontWeight::SEMIBOLD).child("接続設定"))
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_small()
                                     .text_color(c(theme::MUTED))
                                     .child("Streamable HTTP · この端末のみ · 読み取り専用"),
                             ),
@@ -353,7 +354,7 @@ impl Rireki {
                             .py_1()
                             .rounded_full()
                             .bg(c(color).opacity(0.1))
-                            .text_xs()
+                            .text_small()
                             .text_color(c(color))
                             .child(dot(color, 6.0))
                             .child(state),
@@ -368,7 +369,7 @@ impl Rireki {
                         .gap_2()
                         .child(
                             div()
-                                .text_xs()
+                                .text_small()
                                 .text_color(c(theme::MUTED))
                                 .child("エンドポイント"),
                         )
@@ -380,7 +381,7 @@ impl Rireki {
                                 .pl_3()
                                 .pr_1p5()
                                 .py_1p5()
-                                .rounded_md()
+                                .radius_md()
                                 .bg(c(theme::BACKDROP))
                                 .border_1()
                                 .border_color(c(theme::LINE))
@@ -389,7 +390,7 @@ impl Rireki {
                                         .flex_1()
                                         .min_w_0()
                                         .font_family(MONO)
-                                        .text_size(px(13.0))
+                                        .text_body()
                                         .child(server.url()),
                                 )
                                 .child(self.mcp_copy_button(
@@ -409,7 +410,7 @@ impl Rireki {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_xs()
+                                .text_small()
                                 .text_color(c(theme::MUTED))
                                 .child("接続先の MCP 設定に追加してください。"),
                         )
@@ -428,7 +429,7 @@ impl Rireki {
                     .items_center()
                     .justify_center()
                     .gap_2()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::MUTED))
                     .child(icons::icon(Icon::Hourglass, theme::WARN).size_4())
                     .child("サーバーの状態を切り替えています…"),
@@ -450,7 +451,7 @@ impl Rireki {
                             .child("ポート番号")
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_small()
                                     .text_color(c(theme::MUTED))
                                     .child("使用中の場合は別の番号に変更できます。"),
                             ),
@@ -465,7 +466,7 @@ impl Rireki {
                             .items_center()
                             .px_3()
                             .font_family(MONO)
-                            .rounded_md()
+                            .radius_md()
                             .bg(c(theme::BACKDROP))
                             .border_1()
                             .border_color(c(if self.mcp_error.is_some() {
@@ -490,9 +491,9 @@ impl Rireki {
                     .items_start()
                     .gap_2()
                     .p_3()
-                    .rounded_md()
+                    .radius_md()
                     .bg(c(theme::ERR).opacity(0.08))
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::ERR))
                     .child(icons::icon(Icon::X, theme::ERR).size_4().flex_none())
                     .child(div().flex_1().min_w_0().child(error.clone())),
@@ -517,8 +518,8 @@ impl Rireki {
             .gap_1p5()
             .h_8()
             .px_2p5()
-            .rounded_md()
-            .text_xs()
+            .radius_md()
+            .text_small()
             .text_color(c(if done { theme::OK } else { theme::TEXT }))
             .child(if done { "コピーしました" } else { label })
     }
@@ -539,16 +540,16 @@ fn mcp_tools() -> Div {
                 .child(
                     div()
                         .px_1p5()
-                        .rounded_md()
+                        .radius_md()
                         .bg(c(theme::RAISED))
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::MUTED))
                         .child(TOOLS.len().to_string()),
                 ),
         )
         .child(
             div()
-                .rounded_lg()
+                .radius_md()
                 .border_1()
                 .border_color(c(theme::LINE))
                 .overflow_hidden()
@@ -561,12 +562,12 @@ fn mcp_tools() -> Div {
                         .py_2p5()
                         .when(i > 0, |d| d.border_t_1().border_color(c(theme::LINE)))
                         .child(icons::icon(icon, theme::MUTED).size_4().flex_none())
-                        .child(div().flex_1().min_w_0().text_xs().child(description))
+                        .child(div().flex_1().min_w_0().text_small().child(description))
                         .child(
                             div()
                                 .flex_none()
                                 .font_family(MONO)
-                                .text_size(px(11.0))
+                                .text_axis()
                                 .text_color(c(theme::ACCENT))
                                 .child(name),
                         )

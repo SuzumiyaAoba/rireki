@@ -12,6 +12,7 @@ use super::charts::WEEKDAYS;
 use super::{Hover, Metric, MetricFormat, Rireki, card, card_title, percent};
 use crate::app::widgets::tip;
 use crate::statistics::{HOURS, Summary};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 const MAX_SIZE: f32 = 360.0;
@@ -216,7 +217,7 @@ impl Rireki {
             .items_center()
             .justify_center()
             .gap_x_2()
-            .text_xs()
+            .text_small()
             .line_height(px(18.0))
             .min_h(px(36.0))
             .child(div().text_color(c(theme::MUTED)).child(label))
@@ -256,7 +257,7 @@ impl Rireki {
                 .top(px(chart_size / 2.0 - radius * angle.cos() - 7.0))
                 .w(px(32.0))
                 .text_center()
-                .text_size(px(11.0))
+                .text_axis()
                 .line_height(px(14.0))
                 .text_color(c(theme::MUTED))
                 .child(format!("{hour}時"))
@@ -283,10 +284,10 @@ impl Rireki {
                     .items_center()
                     .justify_center()
                     .gap_1()
-                    .child(div().text_size(px(10.0)).text_color(c(theme::MUTED)).child("期間合計"))
+                    .child(div().text_axis().text_color(c(theme::MUTED)).child("期間合計"))
                     .child(
                         div()
-                            .text_size(px(16.0))
+                            .text_heading()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(if total >= 1000.0 {
                                 metric.tick(total)
@@ -324,13 +325,13 @@ impl Rireki {
                         .gap_1()
                         .px_1()
                         .py_0p5()
-                        .rounded_sm()
-                        .text_xs()
+                        .radius_sm()
+                        .text_small()
                         .text_color(c(if selected { theme::TEXT } else { theme::MUTED }))
                         .when(selected, |d| d.bg(c(theme::HOVER)))
                         .child(
                             div()
-                                .text_size(px(10.0))
+                                .text_axis()
                                 .text_color(c(theme::SUBTLE))
                                 .child((day + 1).to_string()),
                         )
@@ -359,12 +360,12 @@ impl Rireki {
             .items_center()
             .justify_center()
             .gap_1()
-            .text_xs()
+            .text_small()
             .text_color(c(theme::MUTED))
             .child("0")
-            .child(div().size(px(10.0)).rounded(px(2.0)).bg(c(EMPTY)))
+            .child(div().size(px(10.0)).radius_sm().bg(c(EMPTY)))
             .child("少")
-            .children(theme::HEAT.map(|color| div().size(px(10.0)).rounded(px(2.0)).bg(c(color))))
+            .children(theme::HEAT.map(|color| div().size(px(10.0)).radius_sm().bg(c(color))))
             .child("多")
             .when(peak > 0.0, |d| {
                 d.child(format!("（最大 {}{}）", metric.format(peak), metric.unit()))
@@ -381,7 +382,7 @@ impl Rireki {
             .child(
                 div()
                     .text_center()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::MUTED))
                     .child("内側から月〜日 · 上が0時、時計回りに24時間"),
             )
@@ -390,7 +391,7 @@ impl Rireki {
                 d.child(
                     div()
                         .text_center()
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::SUBTLE))
                         .child("API換算の推定額（USD） · 料金不明の記録は除外"),
                 )

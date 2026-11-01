@@ -14,6 +14,7 @@ use super::{HoursView, Hover, Metric, MetricFormat, Rireki, card, card_title, pe
 use crate::app::header::{Choice, weekday_ja};
 use crate::prefs::SourceFilter;
 use crate::statistics::{Summary, Unit};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// 推移の描画領域の高さと、その下の日付の帯の高さ
@@ -93,7 +94,7 @@ impl Rireki {
             .justify_end()
             .gap_x_3()
             .gap_y_1()
-            .text_xs()
+            .text_small()
             .when_some(head, |d, head| d.child(div().font_weight(FontWeight::SEMIBOLD).child(head)))
             .children(sources.iter().map(|&i| {
                 div()
@@ -123,7 +124,7 @@ impl Rireki {
                     .absolute()
                     .top(px(y(t) - 7.0))
                     .right(px(8.0))
-                    .text_size(px(11.0))
+                    .text_axis()
                     .line_height(px(14.0))
                     .text_color(c(theme::MUTED))
                     .whitespace_nowrap()
@@ -139,7 +140,7 @@ impl Rireki {
                 .flex()
                 .justify_center()
                 .whitespace_nowrap()
-                .text_size(px(11.0))
+                .text_axis()
                 .text_color(c(theme::MUTED))
                 .child(axis_label(s, i, slot >= 72.0))
         });
@@ -242,7 +243,7 @@ impl Rireki {
             .gap_1p5()
             .child(div().font_weight(FontWeight::SEMIBOLD).child(head))
             .when_some(shown, |d, v| d.child(value(v)));
-        let label = |text: String| div().text_size(px(11.0)).text_color(c(theme::MUTED)).child(text);
+        let label = |text: String| div().text_axis().text_color(c(theme::MUTED)).child(text);
         let weekdays = div()
             .flex_none()
             .w(px(DAY_W))
@@ -290,10 +291,10 @@ impl Rireki {
             .items_center()
             .justify_end()
             .gap_1()
-            .text_xs()
+            .text_small()
             .text_color(c(theme::MUTED))
             .child("少")
-            .children(theme::HEAT.iter().map(|&h| div().size(px(10.0)).rounded(px(2.0)).bg(c(h))))
+            .children(theme::HEAT.iter().map(|&h| div().size(px(10.0)).radius_sm().bg(c(h))))
             .child("多");
         card()
             .child(
@@ -301,7 +302,7 @@ impl Rireki {
                     .flex_wrap()
                     .child(self.hours_view_switch(cx)),
             )
-            .child(div().text_xs().child(readout))
+            .child(div().text_small().child(readout))
             .child(
                 div()
                     .flex()

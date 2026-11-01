@@ -33,6 +33,7 @@ use super::{HEADER_H, Rireki, fmt_n, tilde};
 use crate::icons::{self, Icon};
 use crate::model::UsageSum;
 use crate::prefs::SourceFilter;
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// 内容の外側の余白とカードの間隔
@@ -219,7 +220,7 @@ impl Rireki {
                 .justify_center()
                 .gap_2()
                 .py_16()
-                .text_sm()
+                .text_body()
                 .text_color(c(theme::MUTED))
                 .child(icons::icon(Icon::Refresh, theme::ACCENT).size_4())
                 .child("統計を集計中…"),
@@ -278,7 +279,7 @@ impl Rireki {
             .px_3()
             .border_b_1()
             .border_color(c(theme::LINE))
-            .text_sm()
+            .text_body()
             .child(icons::icon(Icon::Chart, theme::ACCENT).size_4())
             .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("統計"))
             .children(self.focus_chip(cx))
@@ -287,7 +288,7 @@ impl Rireki {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::MUTED))
                     .when(width >= 640.0, |d| d.child(format!("{range}{source}"))),
             )
@@ -321,7 +322,7 @@ impl Rireki {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::MUTED))
                         .child(icons::icon(Icon::Refresh, theme::ACCENT).size_3())
                         .child("履歴を読み込み中です。読み込み済みの分だけを集計しています"),
@@ -335,10 +336,10 @@ impl Rireki {
                     .py_12()
                     .gap_2()
                     .child(icons::icon(Icon::Chart, theme::SUBTLE).size_6())
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("この期間の履歴はありません"))
+                    .child(div().text_body().font_weight(FontWeight::SEMIBOLD).child("この期間の履歴はありません"))
                     .child(
                         div()
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::MUTED))
                             .child("期間を広げるか、左の読み込み元やプロジェクトの絞り込みを切り替えてください"),
                     ),
@@ -402,7 +403,7 @@ impl Rireki {
             .px_4()
             .pt_3()
             .pb(px(14.0))
-            .rounded_lg()
+            .radius_md()
             .border_1()
             .cursor_pointer()
             .when(selected, |d| d.bg(c(theme::ACCENT_BG).opacity(0.6)).border_color(c(theme::ACCENT)))
@@ -411,7 +412,7 @@ impl Rireki {
             })
             .child(
                 div()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(if selected { theme::TEXT } else { theme::MUTED }))
                     .when(selected, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .child(metric.label()),
@@ -423,7 +424,7 @@ impl Rireki {
                     .gap_2()
                     .child(
                         div()
-                            .text_size(px(24.0))
+                            .text_value()
                             .line_height(px(30.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .whitespace_nowrap()
@@ -435,13 +436,13 @@ impl Rireki {
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .text_xs()
+                                .text_small()
                                 .text_color(c(theme::MUTED))
                                 .child(format!("呼び出しの {}", percent(value / s.total.tools as f64))),
                         )
                     }),
             )
-            .child(div().text_xs().child(comparison))
+            .child(div().text_small().child(comparison))
             .when(both && value > 0.0, |d| d.child(split_bar(split).mt_1()))
             .tooltip(tip(
                 {
@@ -487,7 +488,7 @@ impl Rireki {
             .gap_x_4()
             .gap_y_1()
             .pt_1()
-            .text_xs()
+            .text_small()
             .text_color(c(theme::MUTED))
             .child("ローカル時間で集計 · サブエージェントを含む")
             .when(s.total.sessions > 0, |d| {
@@ -529,7 +530,7 @@ fn card() -> Div {
         .flex_col()
         .gap_3()
         .p_4()
-        .rounded_lg()
+        .radius_md()
         .bg(c(theme::PANEL))
         .border_1()
         .border_color(c(theme::LINE))
@@ -544,8 +545,8 @@ fn card_title(title: impl Into<SharedString>, note: impl Into<SharedString>) -> 
             .flex()
             .flex_col()
             .gap_0p5()
-            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title.into()))
-            .child(div().text_xs().text_color(c(theme::MUTED)).truncate().child(note.into())),
+            .child(div().text_body().font_weight(FontWeight::SEMIBOLD).child(title.into()))
+            .child(div().text_small().text_color(c(theme::MUTED)).truncate().child(note.into())),
     )
 }
 
@@ -556,7 +557,7 @@ fn series(source: usize) -> u32 {
 
 /// 凡例の色見本
 fn swatch(color: u32) -> Div {
-    div().flex_none().size(px(8.0)).rounded(px(2.0)).bg(c(color))
+    div().flex_none().size(px(8.0)).radius_sm().bg(c(color))
 }
 
 /// 読み込み元の割合の帯。境目は面の色の隙間で分ける
@@ -569,7 +570,7 @@ fn split_bar(values: [f64; 2]) -> Div {
                 .flex_basis(relative((v / total) as f32))
                 .flex_shrink()
                 .min_w(px(2.0))
-                .rounded(px(2.0))
+                .radius_sm()
                 .bg(c(series(i)))
         }),
     )

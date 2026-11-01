@@ -8,11 +8,12 @@ use gpui::{
     StyledText, WeakEntity, Window, div, prelude::*, px,
 };
 
-use super::widgets::{Marquee, dot, event_icon, kbd, project_tile, tip};
+use super::widgets::{Marquee, dot, event_icon, kbd, project_mark, tip};
 use super::{HEADER_H, INNER_RADIUS, Rireki, is_live, rel_time, when};
 use crate::icons::{self, Icon};
 use crate::model::one_line;
 use crate::prefs::SourceFilter;
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// サイドバー。一覧や検索結果が変わったときだけ描き直すよう、別ビューとしてキャッシュする
@@ -65,7 +66,7 @@ impl Rireki {
             .bg(c(theme::BG))
             .border_r_1()
             .border_color(c(theme::LINE))
-            .text_size(px(13.0))
+            .text_body()
             .child(self.search_box(window, cx))
             .child(body)
             .into_any_element()
@@ -94,7 +95,7 @@ impl Rireki {
                     .items_center()
                     .gap_1p5()
                     .px_2()
-                    .rounded_md()
+                    .radius_md()
                     .bg(c(theme::BACKDROP))
                     .border_1()
                     .border_color(c(if focused { theme::ACCENT } else { theme::LINE }))
@@ -107,7 +108,7 @@ impl Rireki {
                                 .id("search-clear")
                                 .flex_none()
                                 .p(px(2.0))
-                                .rounded_sm()
+                                .radius_sm()
                                 .cursor_pointer()
                                 .hover(|s| s.bg(c(theme::HOVER)))
                                 .child(icons::icon(Icon::X, theme::MUTED).size_3())
@@ -155,8 +156,8 @@ impl Rireki {
             .mb_0p5()
             .px_1()
             .h(px(22.0))
-            .rounded_sm()
-            .text_xs()
+            .radius_sm()
+            .text_small()
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(c(theme::MUTED))
             .cursor_pointer()
@@ -185,7 +186,7 @@ impl Rireki {
             .mx_2()
             .px_2()
             .min_h(px(ROW))
-            .rounded_md()
+            .radius_md()
             .cursor_pointer()
             .when(selected, |d| d.bg(c(theme::SELECT)).text_color(gpui::white()))
             .when(!selected, |d| d.hover(|s| s.bg(gpui::white().opacity(0.06))))
@@ -297,7 +298,7 @@ impl Rireki {
                                     .flex()
                                     .items_center()
                                     .gap_1()
-                                    .text_xs()
+                                    .text_small()
                                     .text_color(if selected {
                                         gpui::white().opacity(0.8)
                                     } else {
@@ -332,23 +333,9 @@ impl Rireki {
                 let selected = self.focus.as_ref() == Some(&p.cwd);
                 let cwd = p.cwd.clone();
                 self.row(ElementId::NamedInteger("proj".into(), i as u64), selected)
-                    .child(div().relative().flex_none().child(project_tile(&p.cwd, 18.0)).when(
-                        is_live(p.last),
-                        |d| {
-                            d.child(
-                                div()
-                                    .absolute()
-                                    .bottom(px(-2.0))
-                                    .right(px(-2.0))
-                                    .size(px(8.0))
-                                    .rounded_full()
-                                    .bg(c(theme::LIVE))
-                                    .border_1()
-                                    .border_color(c(theme::BG)),
-                            )
-                        },
-                    ))
+                    .child(project_mark(&p.cwd))
                     .child(div().flex_1().truncate().child(p.name.clone()))
+                    .when(is_live(p.last), |d| d.child(dot(theme::LIVE, 8.0)))
                     .child(count_badge(p.sessions, selected))
                     .tooltip(tip(format!("{}\n最終: {}", p.cwd, rel_time(p.last)), None))
                     .on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
@@ -368,7 +355,7 @@ impl Rireki {
                     .child(
                         div()
                             .flex_none()
-                            .text_xs()
+                            .text_small()
                             .text_color(if selected { gpui::white().opacity(0.8) } else { c(theme::SUBTLE) })
                             .child(rel_time(s.end)),
                     )
@@ -384,8 +371,8 @@ impl Rireki {
                     .h(px(ROW))
                     .flex()
                     .items_center()
-                    .rounded_md()
-                    .text_xs()
+                    .radius_md()
+                    .text_small()
                     .text_color(c(theme::ACCENT))
                     .cursor_pointer()
                     .hover(|s| s.bg(gpui::white().opacity(0.06)))
@@ -445,7 +432,7 @@ impl Rireki {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .text_xs()
+                .text_small()
                 .text_color(c(theme::MUTED))
                 .child(summary)
                 .when(filtered, |d| {
@@ -492,7 +479,7 @@ impl Rireki {
                                 .flex()
                                 .flex_col()
                                 .child(Marquee::new("title", title.clone()).with_highlights(highlights(&title, terms)))
-                                .child(div().text_xs().text_color(c(theme::MUTED)).truncate().child(format!(
+                                .child(div().text_small().text_color(c(theme::MUTED)).truncate().child(format!(
                                     "{} · {}",
                                     self.project_name(&s.cwd),
                                     rel_time(s.end)
@@ -531,7 +518,7 @@ impl Rireki {
                                         .flex()
                                         .items_center()
                                         .gap_1p5()
-                                        .text_xs()
+                                        .text_small()
                                         .child(
                                             div()
                                                 .flex_none()
@@ -564,7 +551,7 @@ impl Rireki {
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::SUBTLE))
                     .child("セッションのタイトル・ディレクトリと、ツール呼び出しやメッセージの要約から探します。")
                     .child("空白で区切ると、すべての語を含むものに絞り込みます。").into_any_element(); }
@@ -599,7 +586,7 @@ impl Rireki {
             .mx_2()
             .px_2()
             .py_1()
-            .rounded_md()
+            .radius_md()
             .border_l_2()
             .border_color(if cursor { c(theme::ACCENT) } else { gpui::transparent_black() })
             .cursor_pointer()
@@ -616,7 +603,7 @@ fn title_of(t: &str) -> String {
 fn count_badge(n: usize, selected: bool) -> Div {
     div()
         .flex_none()
-        .text_xs()
+        .text_small()
         .text_color(if selected { gpui::white().opacity(0.8) } else { c(theme::SUBTLE) })
         .child(super::fmt_n(n))
 }
@@ -629,7 +616,7 @@ fn result_heading(title: &'static str, n: usize) -> Div {
         .mx_3()
         .mt_3()
         .mb_1()
-        .text_xs()
+        .text_small()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(c(theme::MUTED))
         .child(title)

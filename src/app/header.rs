@@ -9,10 +9,11 @@
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, Weekday};
 use gpui::{ClickEvent, Context, Div, ElementId, FontWeight, Stateful, Window, canvas, div, prelude::*, px};
 
-use super::widgets::{event_icon, project_tile, tip};
+use super::widgets::{event_icon, project_mark, tip};
 use super::{FOOTER_H, HEADER_H, Popover, Rireki, fmt_dur, local, now, tilde};
 use crate::icons::{self, Icon};
 use crate::prefs::Mode;
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// ツールバーの部品の高さ
@@ -242,7 +243,7 @@ fn tool_frame(bg: u32) -> Div {
         .gap(px(2.0))
         .p(px(2.0))
         .h(px(CONTROL_H))
-        .rounded_md()
+        .radius_md()
         .border_1()
         .border_color(c(theme::LINE))
         .bg(c(bg))
@@ -366,7 +367,7 @@ impl Rireki {
             .justify_center()
             .w(px(26.0))
             .h(px(ITEM_H))
-            .rounded(px(4.0))
+            .radius_sm()
             .child(icons::icon(icon, if enabled { theme::MUTED } else { theme::SUBTLE }).size_4())
             .tooltip(tip(tip_text, key))
             .when(enabled, |d| {
@@ -398,8 +399,8 @@ impl Rireki {
                 .items_center()
                 .h(px(ITEM_H))
                 .px_2()
-                .rounded(px(4.0))
-                .text_xs()
+                .radius_sm()
+                .text_small()
                 .whitespace_nowrap()
                 .text_color(c(if on { theme::TEXT } else { theme::MUTED }))
                 .when(on, |d| d.bg(c(theme::RAISED)).font_weight(FontWeight::SEMIBOLD))
@@ -430,8 +431,8 @@ impl Rireki {
                     .items_center()
                     .h(px(ITEM_H))
                     .px_2()
-                    .rounded(px(4.0))
-                    .text_xs()
+                    .radius_sm()
+                    .text_small()
                     .cursor_pointer()
                     .hover(|s| s.bg(c(theme::HOVER)))
                     .child("今日")
@@ -463,7 +464,7 @@ impl Rireki {
             .gap(px(6.0))
             .h(px(CONTROL_H))
             .px_2()
-            .rounded_md()
+            .radius_md()
             .cursor_pointer()
             .when(open, |d| d.bg(c(theme::HOVER)))
             .hover(|s| s.bg(c(theme::HOVER)))
@@ -473,7 +474,7 @@ impl Rireki {
                     if open || picked { theme::ACCENT } else { theme::MUTED },
                 ))
             })
-            .child(div().min_w_0().truncate().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
+            .child(div().min_w_0().truncate().text_body().font_weight(FontWeight::SEMIBOLD).child(title))
             .child(icons::icon(Icon::ChevronDown, theme::MUTED).size_3())
             .child(canvas(move |b, _, _| anchor.set(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
             .tooltip(tip(if timeline { "表示する期間を選ぶ" } else { "日付を選んで移動" }, Some("G")))
@@ -553,11 +554,11 @@ impl Rireki {
             .gap_1()
             .h(px(CONTROL_H))
             .px(px(if label { 8.0 } else { 6.0 }))
-            .rounded_md()
+            .radius_md()
             .border_1()
             .border_color(c(if open { theme::ACCENT } else { theme::LINE }))
             .bg(c(if open { theme::ACCENT_BG } else { theme::PANEL }))
-            .text_xs()
+            .text_small()
             .cursor_pointer()
             .hover(|s| s.bg(c(theme::HOVER)))
             .child(icons::icon(Icon::SlidersHorizontal, if open { theme::ACCENT } else { theme::MUTED }))
@@ -603,12 +604,12 @@ impl Rireki {
                 .pl_1()
                 .pr(px(2.0))
                 .h(px(CONTROL_H))
-                .rounded_md()
+                .radius_md()
                 .bg(c(theme::ACCENT_BG))
                 .border_1()
                 .border_color(c(theme::ACCENT).opacity(0.45))
-                .text_xs()
-                .child(project_tile(f, 16.0))
+                .text_small()
+                .child(project_mark(f))
                 .when_some(name_max, |d, max| {
                     d.child(
                         div().max_w(px(max)).truncate().font_weight(FontWeight::SEMIBOLD).child(self.project_name(f)),
@@ -618,7 +619,7 @@ impl Rireki {
                     div()
                         .id("focus-clear")
                         .p(px(3.0))
-                        .rounded_sm()
+                        .radius_sm()
                         .cursor_pointer()
                         .hover(|s| s.bg(c(theme::HOVER)))
                         .child(icons::icon(Icon::X, theme::MUTED).size_3())
@@ -719,7 +720,7 @@ impl Rireki {
             .px_3()
             .border_t_1()
             .border_color(c(theme::LINE))
-            .text_xs()
+            .text_small()
             .text_color(c(theme::MUTED))
             .child(div().flex_none().whitespace_nowrap().child(left))
             .child(div().flex_1())

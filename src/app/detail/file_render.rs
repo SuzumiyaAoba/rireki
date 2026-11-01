@@ -5,6 +5,7 @@ use super::{
     FileRow, FileStat, FontWeight, Icon, PER_EDIT, Rireki, Selection, SharedString, Window, c,
     diff_bar, div, event_icon, fmt_n, icons, label, local, px, rich, theme, tip,
 };
+use crate::theme::Scale as _;
 use gpui::prelude::*;
 
 impl Rireki {
@@ -119,20 +120,20 @@ impl Rireki {
                         )))
                         .child(
                             div()
-                                .text_xs()
+                                .text_small()
                                 .text_color(c(theme::OK))
                                 .child(format!("+{}", fmt_n(added))),
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_small()
                                 .text_color(c(theme::ERR))
                                 .child(format!("−{}", fmt_n(removed))),
                         )
                         .child(div().flex_1())
                         .child(
                             div()
-                                .text_xs()
+                                .text_small()
                                 .text_color(c(theme::SUBTLE))
                                 .child("編集履歴の差分"),
                         ),
@@ -159,8 +160,8 @@ impl Rireki {
                 .gap_2()
                 .px_2()
                 .py_1()
-                .rounded_md()
-                .text_xs()
+                .radius_md()
+                .text_small()
                 .cursor_pointer()
                 .when(open, |d| d.bg(c(theme::ACCENT_BG)))
                 .when(!open, |d| d.hover(|s| s.bg(c(theme::HOVER))))
@@ -234,7 +235,7 @@ impl Rireki {
                 div()
                     .id("more-files")
                     .px_1p5()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::ACCENT))
                     .cursor_pointer()
                     .hover(|s| s.underline())
@@ -314,7 +315,7 @@ impl Rireki {
             .relative()
             .h(px(34.0))
             .w_full()
-            .rounded_md()
+            .radius_md()
             .bg(c(theme::BG))
             .border_1()
             .border_color(c(theme::LINE))
@@ -347,7 +348,7 @@ impl Rireki {
                     .left(gpui::relative(frac * 0.96 + 0.01))
                     .w(px(5.0))
                     .h(px(h))
-                    .rounded(px(2.0))
+                    .radius_sm()
                     .bg(c(col).opacity(0.85))
                     .cursor_pointer()
                     .hover(|d| d.bg(c(theme::ACCENT)))
@@ -370,7 +371,7 @@ impl Rireki {
         }
         let axis = div()
             .flex()
-            .text_xs()
+            .text_small()
             .text_color(c(theme::SUBTLE))
             .child(local(start).format(fmt).to_string())
             .child(div().flex_1())
@@ -421,8 +422,8 @@ impl Rireki {
                             .gap_1p5()
                             .px_1()
                             .py_0p5()
-                            .rounded_md()
-                            .text_xs()
+                            .radius_md()
+                            .text_small()
                             .cursor_pointer()
                             .hover(|d| d.bg(c(theme::HOVER)))
                             .child(
@@ -474,7 +475,7 @@ impl Rireki {
                         d.child(
                             div()
                                 .px_1()
-                                .text_xs()
+                                .text_small()
                                 .text_color(c(theme::SUBTLE))
                                 .child(format!("… {} 行を省略", fmt_n(hidden))),
                         )
@@ -485,7 +486,7 @@ impl Rireki {
             diffs = diffs.child(
                 div()
                     .id("file-diff-all")
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::ACCENT))
                     .cursor_pointer()
                     .hover(|s| s.underline())
@@ -499,7 +500,7 @@ impl Rireki {
         if matches!(row, FileRow::Empty(_)) {
             diffs = diffs.child(
                 div()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::SUBTLE))
                     .child("差分は記録されていません"),
             );

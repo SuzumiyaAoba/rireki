@@ -6,6 +6,7 @@ use super::{
     div, event_icon, fmt_dur, fmt_n, is_live, label, list, local, one_line, px, rich, status_label,
     theme, tip, usage_meter,
 };
+use crate::theme::Scale as _;
 use gpui::prelude::*;
 
 impl Rireki {
@@ -168,7 +169,7 @@ impl Rireki {
             Some(DetailRow::Empty) => {
                 return div()
                     .py_2()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::SUBTLE))
                     .child(
                         if self
@@ -186,7 +187,7 @@ impl Rireki {
             Some(DetailRow::Limit) => {
                 return div()
                     .pt_1()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::MUTED))
                     .child(format!(
                         "先頭 {} 件を表示しています（全 {} 件）",
@@ -230,7 +231,7 @@ impl Rireki {
         div()
             .id("history-context")
             .p_2()
-            .rounded_md()
+            .radius_md()
             .bg(c(theme::BG))
             .flex()
             .flex_col()
@@ -238,7 +239,7 @@ impl Rireki {
             .child(label("選択範囲外の指示 · 文脈として表示"))
             .child(
                 div()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::MUTED))
                     .child(Marquee::new(
                         "prompt",
@@ -298,7 +299,7 @@ impl Rireki {
             .my_1()
             .px_2p5()
             .py_2()
-            .rounded_lg()
+            .radius_md()
             .bg(c(color).opacity(0.08))
             .border_1()
             .border_color(c(color).opacity(0.25))
@@ -312,7 +313,7 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .text_xs()
+                    .text_small()
                     .child(
                         div()
                             .flex_none()
@@ -331,7 +332,7 @@ impl Rireki {
                             .child(facts.join(" · ")),
                     ),
             )
-            .child(rich::markdown(text, theme::TEXT).text_size(px(13.0)))
+            .child(rich::markdown(text, theme::TEXT).text_body())
             .when(!e.usage.is_empty(), |d| {
                 d.child(usage_meter(
                     ElementId::NamedInteger("usage".into(), idx as u64),
@@ -378,7 +379,7 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .text_xs()
+                    .text_small()
                     .when(foldable, |d| {
                         d.child(self.icon_button(
                             SharedString::from(format!("history-toggle-{idx}")),
@@ -449,7 +450,7 @@ impl Rireki {
             .when(!expanded, |d| {
                 d.child(
                     div()
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::MUTED))
                         .line_clamp(1)
                         .child(one_line(&e.summary, 160)),
@@ -467,7 +468,7 @@ impl Rireki {
                                 theme::TEXT
                             },
                         )
-                        .text_size(px(13.0)),
+                        .text_body(),
                     )
                 },
             )
@@ -518,7 +519,7 @@ impl Rireki {
             .min_w_0()
             .flex()
             .gap_2()
-            .rounded_md()
+            .radius_md()
             .cursor_pointer()
             .hover(|d| d.bg(c(theme::HOVER)))
             .child(
@@ -528,7 +529,7 @@ impl Rireki {
                     .whitespace_nowrap()
                     .pt(px(if turn { 12.0 } else { 7.0 }))
                     .pl_1()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::SUBTLE))
                     .child(local(e.start).format("%H:%M:%S").to_string()),
             )

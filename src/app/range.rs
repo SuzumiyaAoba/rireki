@@ -15,6 +15,7 @@ use super::{MINIMAP_H, Popover, Rireki, local, midnight};
 use crate::icons::{self, Icon};
 use crate::histogram::count_bins;
 use crate::prefs::Mode;
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// ミニマップの棒 1 本の幅（px）
@@ -93,7 +94,7 @@ impl Rireki {
             div()
                 .id(id)
                 .p(px(4.0))
-                .rounded_md()
+                .radius_md()
                 .cursor_pointer()
                 .hover(|s| s.bg(c(theme::HOVER)))
                 .child(icons::icon(icon, theme::MUTED))
@@ -106,7 +107,7 @@ impl Rireki {
             .px_1()
             .pb_1()
             .child(nav("pick-prev", Icon::ChevronLeft, "前の月", shift(-1)))
-            .child(div().flex_1().text_center().text_sm().font_weight(FontWeight::SEMIBOLD).child(format!(
+            .child(div().flex_1().text_center().text_body().font_weight(FontWeight::SEMIBOLD).child(format!(
                 "{}年{}月",
                 month.year(),
                 month.month()
@@ -124,7 +125,7 @@ impl Rireki {
                 chrono::Weekday::Sun,
             ]
             .into_iter()
-            .map(|w| div().w(px(34.0)).text_center().text_xs().text_color(c(theme::SUBTLE)).child(weekday_ja(w))),
+            .map(|w| div().w(px(34.0)).text_center().text_small().text_color(c(theme::SUBTLE)).child(weekday_ja(w))),
         );
         let cell = |i: usize, d: NaiveDate| {
             let n = counts[i];
@@ -149,13 +150,13 @@ impl Rireki {
                 .items_center()
                 .justify_center()
                 .gap(px(2.0))
-                .rounded_md()
+                .radius_md()
                 .cursor_pointer()
                 // 範囲の内側は角を丸めず、続いた帯に見せる
                 .when(inside && !ends, |s| s.rounded_none().bg(c(theme::ACCENT_BG)))
                 .when(ends, |s| s.bg(c(theme::SELECT)))
                 .hover(|s| s.border_1().border_color(c(theme::ACCENT)))
-                .text_xs()
+                .text_small()
                 .text_color(c(fg))
                 .when(d == today, |s| s.font_weight(FontWeight::SEMIBOLD))
                 .child(d.day().to_string())
@@ -168,7 +169,7 @@ impl Rireki {
                         } else {
                             4.0 + 18.0 * (n as f32 / max).sqrt()
                         }))
-                        .rounded_sm()
+                        .radius_sm()
                         .bg(c(theme::ACCENT).opacity(if in_month { 0.9 } else { 0.4 })),
                 )
                 .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
@@ -207,7 +208,7 @@ impl Rireki {
                 .flex_none()
                 .px_2()
                 .py(px(2.0))
-                .rounded_md()
+                .radius_md()
                 .border_1()
                 .border_color(c(theme::LINE))
                 .cursor_pointer()
@@ -228,7 +229,7 @@ impl Rireki {
             .mt_1()
             .border_t_1()
             .border_color(c(theme::LINE))
-            .text_xs()
+            .text_small()
             .child(div().flex_1().text_color(c(theme::MUTED)).child(hint))
             .children(clear);
         let calendar = div().flex().flex_col().child(head).child(week_head).child(grid).child(foot);
@@ -250,7 +251,7 @@ impl Rireki {
                         .px_2()
                         .pt_1()
                         .pb_1p5()
-                        .text_xs()
+                        .text_small()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(c(theme::MUTED))
                         .child("表示する期間"),
@@ -264,8 +265,8 @@ impl Rireki {
                         .gap_2()
                         .h(px(28.0))
                         .px_2()
-                        .rounded_md()
-                        .text_xs()
+                        .radius_md()
+                        .text_small()
                         .cursor_pointer()
                         .hover(|s| s.bg(c(theme::HOVER)))
                         // 全期間は直近の期間と分けて置く
@@ -291,7 +292,7 @@ impl Rireki {
                         .occlude()
                         .p_2()
                         .flex()
-                        .rounded_lg()
+                        .radius_md()
                         .bg(c(theme::RAISED))
                         .border_1()
                         .border_color(c(theme::LINE))
@@ -440,7 +441,7 @@ impl Rireki {
                 .id("pick-clear")
                 .flex_none()
                 .p(px(3.0))
-                .rounded_sm()
+                .radius_sm()
                 .cursor_pointer()
                 .hover(|s| s.bg(c(theme::HOVER)))
                 .child(icons::icon(Icon::X, theme::MUTED).size_3())
@@ -465,7 +466,7 @@ impl Rireki {
                     .items_center()
                     .gap_1()
                     .px_3()
-                    .text_xs()
+                    .text_small()
                     .text_color(c(theme::MUTED))
                     .child(div().flex_1().min_w_0().truncate().child(label))
                     .children(clear),

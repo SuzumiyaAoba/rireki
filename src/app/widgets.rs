@@ -10,6 +10,7 @@ use gpui::{
 
 use super::Rireki;
 use crate::icons::{self, Icon};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// 短い説明と、あればショートカットキーを添えたツールチップ
@@ -26,12 +27,12 @@ impl Render for Tip {
             .gap_2()
             .px_2()
             .py_1()
-            .rounded_md()
+            .radius_md()
             .bg(c(theme::RAISED))
             .border_1()
             .border_color(c(theme::LINE))
             .shadow_md()
-            .text_xs()
+            .text_small()
             .text_color(c(theme::TEXT))
             .child(self.text.clone())
             .when_some(self.key, |d, k| d.child(kbd(k)))
@@ -59,11 +60,11 @@ pub(super) fn lazy_tip(text: impl Fn() -> String + 'static) -> impl Fn(&mut Wind
 pub(super) fn kbd(k: &'static str) -> Div {
     div()
         .px_1()
-        .rounded_sm()
+        .radius_sm()
         .border_1()
         .border_color(c(theme::LINE))
         .bg(c(theme::BG))
-        .text_xs()
+        .text_small()
         .text_color(c(theme::MUTED))
         .child(k)
 }
@@ -79,21 +80,8 @@ pub(super) fn event_icon(i: crate::icons::Icon, color: u32, size: f32) -> gpui::
 }
 
 /// プロジェクトの目印。ディレクトリ名の頭文字を色付きの角丸四角に入れる
-pub(super) fn project_tile(cwd: &str, size: f32) -> Div {
-    let initial: String =
-        super::base_name(cwd).chars().next().map(|ch| ch.to_uppercase().collect()).unwrap_or_default();
-    div()
-        .flex_none()
-        .size(px(size))
-        .rounded(px(size * 0.28))
-        .bg(c(theme::project_color(cwd)))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(size * 0.62))
-        .font_weight(FontWeight::BOLD)
-        .text_color(gpui::white())
-        .child(initial)
+pub(super) fn project_mark(cwd: &str) -> Div {
+    dot(theme::project_color(cwd), 8.0)
 }
 
 impl Rireki {
@@ -116,12 +104,12 @@ impl Rireki {
             .gap_1()
             .px_2()
             .py_0p5()
-            .rounded_md()
+            .radius_md()
             .border_1()
             .border_color(c(if active { theme::ACCENT } else { theme::LINE }))
             .bg(c(if active { theme::ACCENT_BG } else { theme::PANEL }))
             .text_color(c(theme::TEXT))
-            .text_xs()
+            .text_small()
             .whitespace_nowrap()
             .cursor_pointer()
             .hover(|s| s.bg(c(theme::HOVER)))
@@ -152,7 +140,7 @@ impl Rireki {
             .items_center()
             .justify_center()
             .size(px(26.0))
-            .rounded_md()
+            .radius_md()
             .child(icons::icon(icon, if enabled { theme::MUTED } else { theme::SUBTLE }).size_4())
             .tooltip(tip(tip_text, key))
             .when(enabled, |d| {
@@ -180,7 +168,7 @@ impl Rireki {
             .items_center()
             .p(px(2.0))
             .gap(px(2.0))
-            .rounded_md()
+            .radius_md()
             .bg(c(theme::BACKDROP))
             .border_1()
             .border_color(c(theme::LINE))
@@ -190,8 +178,8 @@ impl Rireki {
                     .id(ElementId::NamedInteger(id.into(), i as u64))
                     .px_2()
                     .py(px(1.0))
-                    .rounded(px(4.0))
-                    .text_xs()
+                    .radius_sm()
+                    .text_small()
                     .whitespace_nowrap()
                     .cursor_pointer()
                     .text_color(c(if on { theme::TEXT } else { theme::MUTED }))
@@ -211,7 +199,7 @@ impl Rireki {
         div()
             .id(id)
             .p_1()
-            .rounded_sm()
+            .radius_sm()
             .bg(c(theme::PANEL))
             .border_1()
             .border_color(c(theme::LINE))

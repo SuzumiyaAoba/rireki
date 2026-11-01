@@ -4,6 +4,7 @@ use super::{
     Div, ElementId, FontWeight, Stateful, Usage, UsageScale, UsageSum, c, div, fmt_n, px, stat,
     theme, tilde, tip,
 };
+use crate::theme::Scale as _;
 use gpui::prelude::*;
 
 pub(super) fn usage_total_label(usage: &UsageSum) -> String {
@@ -68,11 +69,11 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
         .gap_2()
         .px_3()
         .py_2p5()
-        .rounded_lg()
+        .radius_md()
         .bg(c(theme::BG))
         .border_1()
         .border_color(c(theme::LINE))
-        .text_xs()
+        .text_small()
         .child(
             div()
                 .flex()
@@ -80,7 +81,7 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
                 .gap_1p5()
                 .child(
                     div()
-                        .text_lg()
+                        .text_heading()
                         .line_height(px(22.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(fmt_tokens(u.total())),
@@ -111,7 +112,7 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
                 .when(u.calls > u.unpriced, |d| {
                     d.child(
                         div()
-                            .text_lg()
+                            .text_heading()
                             .line_height(px(22.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(c(theme::OK))
@@ -126,7 +127,7 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
                     .flex_basis(gpui::relative(n as f32 / total))
                     .flex_shrink()
                     .min_w(px(3.0))
-                    .rounded(px(2.0))
+                    .radius_sm()
                     .bg(c(col))
             }),
         ))
@@ -142,7 +143,7 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
                         .flex()
                         .items_center()
                         .gap_1p5()
-                        .child(div().size(px(8.0)).flex_none().rounded(px(2.0)).bg(c(col)))
+                        .child(div().size(px(8.0)).flex_none().radius_sm().bg(c(col)))
                         .child(
                             div()
                                 .flex_1()
@@ -262,7 +263,7 @@ pub(super) fn usage_meter(
         .flex()
         .flex_col()
         .gap_1()
-        .text_xs()
+        .text_small()
         .child(div().flex().gap_3().children(parts.into_iter().map(
             |(label, value, max, color)| {
                 div()

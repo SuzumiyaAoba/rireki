@@ -10,6 +10,7 @@ use crate::detail::replay::{Playback, SPEEDS};
 use crate::icons::Icon;
 use crate::model::Event;
 use crate::prefs::DetailTab;
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 pub(in crate::app) struct State {
@@ -213,7 +214,7 @@ impl Rireki {
             .flex()
             .flex_col()
             .gap_2()
-            .text_xs();
+            .text_small();
         let mut actions = div().flex().flex_wrap().items_center().gap_1().child(self.icon_button(
             "replay-toggle",
             Some(if playing { Icon::Pause } else { Icon::Play }),

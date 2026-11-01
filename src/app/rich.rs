@@ -12,6 +12,7 @@ use gpui::{
     div, prelude::*, px,
 };
 
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 pub use crate::patch::{FilePatch, is_patch, parse_patch};
 
@@ -338,9 +339,9 @@ pub fn code_frame() -> Div {
         .overflow_hidden()
         .px_2()
         .py_1p5()
-        .rounded_md()
+        .radius_md()
         .bg(c(CODE_BG))
-        .text_xs()
+        .text_small()
         .text_color(c(CODE_TEXT))
         .font_family(MONO)
 }
@@ -427,9 +428,9 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
             .bg(c(0x1f232b))
             .border_b_1()
             .border_color(c(theme::LINE))
-            .text_xs()
+            .text_small()
             .child(
-                div().flex_none().px_1().rounded_sm().bg(c(op_color).opacity(0.15)).text_color(c(op_color)).child(f.op),
+                div().flex_none().px_1().radius_sm().bg(c(op_color).opacity(0.15)).text_color(c(op_color)).child(f.op),
             )
             .child(
                 div()
@@ -453,7 +454,7 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
             div()
                 .w_full()
                 .min_w_0()
-                .rounded_md()
+                .radius_md()
                 .overflow_hidden()
                 .border_1()
                 .border_color(c(theme::LINE))
@@ -823,11 +824,11 @@ pub fn markdown(s: &str, color: u32) -> Div {
                 let cols = rows.iter().map(Vec::len).max().unwrap_or(1);
                 div()
                     .min_w_0()
-                    .rounded_md()
+                    .radius_md()
                     .overflow_hidden()
                     .border_1()
                     .border_color(c(theme::LINE))
-                    .text_xs()
+                    .text_small()
                     .children(rows.into_iter().enumerate().map(|(ri, row)| {
                         div()
                             .flex()

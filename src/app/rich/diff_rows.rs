@@ -1,4 +1,5 @@
 //! 外側のスクロールを保ち、20px の差分行のうち表示付近だけを構築・配置する。
+use crate::theme::Scale as _;
 use super::{MONO, Spans, diff_row};
 use crate::patch::DiffRow;
 use gpui::{
@@ -45,7 +46,7 @@ fn column() -> Div {
         .py_0p5()
         .flex()
         .flex_col()
-        .text_xs()
+        .text_small()
         .line_height(px(ROW_HEIGHT))
         .font_family(MONO)
 }

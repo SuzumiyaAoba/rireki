@@ -8,6 +8,7 @@ use super::{Rireki, RowFilter, Selection, resume_command, rich, tilde, badge, ca
 use crate::app::widgets::{Marquee, tip};
 use crate::icons::{self, Icon};
 use crate::model::{Source, one_line};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -196,13 +197,13 @@ impl Rireki {
                     .child(
                         div().pt_2().flex().items_center().gap_2()
                             .child(label("指示と応答"))
-                            .child(div().text_xs().text_color(c(theme::MUTED)).child("メイン")),
+                            .child(div().text_small().text_color(c(theme::MUTED)).child("メイン")),
                     )
                     .into_any_element()
             }
             Row::NoTurns => div()
                 .pb_3()
-                .text_xs()
+                .text_small()
                 .text_color(c(theme::MUTED))
                 .child("メインレーンに指示は記録されていません")
                 .into_any_element(),
@@ -217,7 +218,7 @@ impl Rireki {
                     .w_full()
                     .min_w_0()
                     .p_2()
-                    .rounded_md()
+                    .radius_md()
                     .border_1()
                     .border_color(c(theme::LINE))
                     .flex()
@@ -228,7 +229,7 @@ impl Rireki {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::SUBTLE))
                             .child(format!(
                                 "指示 {} · {}",
@@ -241,13 +242,13 @@ impl Rireki {
                             })
                             .child(icons::icon(Icon::ChevronRight, theme::MUTED).size_3()),
                     )
-                    .child(div().text_sm().child(Marquee::new(
+                    .child(div().text_body().child(Marquee::new(
                         "prompt",
                         gpui::SharedString::from(events[first].summary.clone()),
                     )))
                     .child(
                         div()
-                            .text_xs()
+                            .text_small()
                             .text_color(c(theme::MUTED))
                             .line_clamp(3)
                             .child(turn.response.map_or_else(
@@ -288,8 +289,8 @@ impl Rireki {
                     .pr_2()
                     .py_1p5()
                     .mb_1()
-                    .rounded_md()
-                    .text_xs()
+                    .radius_md()
+                    .text_small()
                     .child(icons::icon(if lane == 0 { Icon::Layers } else { Icon::Bot }, theme::SUB).size_3())
                     .child(div().flex_1().min_w_0().truncate().child(if lane == 0 {
                         "メイン".into()
@@ -398,7 +399,7 @@ impl Rireki {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .text_xs()
+                        .text_small()
                         .when_some(model, |d, m| {
                             d.child(meta("モデル", div().child(m).into_any_element()))
                         })
@@ -471,11 +472,11 @@ impl Rireki {
             .gap_1()
             .px_2()
             .py_1p5()
-            .rounded_md()
+            .radius_md()
             .border_1()
             .border_color(c(theme::LINE))
             .bg(c(theme::PANEL))
-            .text_xs()
+            .text_small()
             .cursor_pointer()
             .hover(|s| s.bg(c(theme::HOVER)))
             .child(icons::icon(

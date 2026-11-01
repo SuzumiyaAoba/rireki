@@ -3,11 +3,12 @@
 use gpui::{AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, div, point, prelude::*, px, relative};
 
 use super::{Metric, MetricFormat, Rireki, card, card_title, cost_label, fmt_tokens, fmt_usd, percent, series, swatch};
-use crate::app::widgets::{project_tile, tip};
+use crate::app::widgets::{project_mark, tip};
 use crate::app::{fmt_n, tilde};
 use crate::icons::{self, Icon};
 use crate::model::{Source, UsageSum};
 use crate::statistics::{Summary, Totals};
+use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// 一覧に並べる件数。残りは「その他」にまとめる
@@ -43,7 +44,7 @@ impl Rireki {
                 cost_label(&sum.usage)
             );
             row(
-                project_tile(cwd, 16.0).into_any_element(),
+                project_mark(cwd).into_any_element(),
                 self.project_name(cwd),
                 bar([v[0] / max, v[1] / max]),
                 metric.format(v[0] + v[1]),
@@ -53,7 +54,7 @@ impl Rireki {
             .id(ElementId::NamedInteger("statistics-project".into(), i as u64))
             .mx(px(-6.0))
             .px(px(6.0))
-            .rounded_md()
+            .radius_md()
             .cursor_pointer()
             .hover(|d| d.bg(c(theme::HOVER)))
             .tooltip(tip(detail, None))
@@ -80,7 +81,7 @@ impl Rireki {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .text_xs()
+                        .text_small()
                         .text_color(c(theme::ACCENT))
                         .cursor_pointer()
                         .hover(|d| d.text_color(c(theme::TEXT)))
@@ -155,7 +156,7 @@ impl Rireki {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .text_xs()
+                        .text_small()
                         .child(
                             div()
                                 .flex()
@@ -230,7 +231,7 @@ impl Rireki {
                 .h(px(30.0))
                 .border_t_1()
                 .border_color(c(theme::LINE_SOFT))
-                .text_xs()
+                .text_small()
                 .when(strong, |d| d.font_weight(FontWeight::SEMIBOLD))
                 .child(name.flex_1().min_w(px(90.0)))
                 .children(
@@ -256,7 +257,7 @@ impl Rireki {
                             .flex()
                             .gap_2()
                             .pb_1()
-                            .text_size(px(11.0))
+                            .text_axis()
                             .text_color(c(theme::MUTED))
                             .child(div().flex_1().min_w(px(90.0)))
                             .children(heads.iter().zip(&widths).map(|(h, &w)| {
@@ -289,7 +290,7 @@ impl Rireki {
         div()
             .flex()
             .gap_2()
-            .text_size(px(11.0))
+            .text_axis()
             .text_color(c(theme::MUTED))
             .child(div().flex_1().flex().items_center().gap_3().when(sources.len() > 1, |d| {
                 d.children(sources.iter().map(|&i| {
@@ -313,7 +314,7 @@ fn row(mark: AnyElement, name: String, bar: Div, value: String, note: String, no
         .items_center()
         .gap_2()
         .h(px(26.0))
-        .text_xs()
+        .text_small()
         .child(div().flex_none().w(px(16.0)).flex().justify_center().child(mark))
         .child(div().flex_none().w(relative(0.3)).min_w(px(90.0)).truncate().child(name))
         .child(div().flex_1().min_w(px(40.0)).flex().items_center().child(bar))
@@ -345,7 +346,7 @@ fn blank() -> AnyElement {
 }
 
 pub(super) fn empty(text: &'static str) -> Div {
-    div().text_xs().text_color(c(theme::MUTED)).child(text)
+    div().text_small().text_color(c(theme::MUTED)).child(text)
 }
 
 /// 読み込み元ごとに積んだ横棒。長さは一覧の最大に対する割合
@@ -355,18 +356,18 @@ pub(super) fn bar(parts: [f64; 2]) -> Div {
             .into_iter()
             .enumerate()
             .filter(|(_, r)| *r > 0.0)
-            .map(|(i, r)| div().h_full().w(relative(r as f32)).min_w(px(2.0)).rounded(px(2.0)).bg(c(series(i)))),
+            .map(|(i, r)| div().h_full().w(relative(r as f32)).min_w(px(2.0)).radius_sm().bg(c(series(i)))),
     )
 }
 
 /// 一色の割合の帯。全体を同じ色の暗い溝に入れる
 fn meter(r: f64) -> Div {
-    div().w_full().h(px(8.0)).rounded(px(2.0)).bg(c(theme::HEAT[0]).opacity(0.35)).child(
+    div().w_full().h(px(8.0)).radius_sm().bg(c(theme::HEAT[0]).opacity(0.35)).child(
         div()
             .h_full()
             .w(relative(r as f32))
             .min_w(px(if r > 0.0 { 2.0 } else { 0.0 }))
-            .rounded(px(2.0))
+            .radius_sm()
             .bg(c(theme::HEAT[2])),
     )
 }

@@ -16,7 +16,7 @@ use chrono::{Datelike, Duration, Local, NaiveDate};
 use gpui::{AnyElement, ClickEvent, Context, ElementId, FontWeight, SharedString, Window, canvas, div, prelude::*, px};
 
 use super::header::weekday_ja;
-use super::widgets::{dot, project_tile, tip};
+use super::widgets::{dot, project_mark, tip};
 use super::{HOUR_LABEL_W, Rireki, Selection, Track, is_live, local, midnight, now};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -340,7 +340,7 @@ impl Rireki {
                     .flex_none()
                     .items_center()
                     .gap_1()
-                    .child(project_tile(cwd, 12.0))
+                    .child(project_mark(cwd))
                     .child(name)
                     .child(div().text_color(c(theme::SUBTLE)).child(fmt_hm(*secs))),
             );
