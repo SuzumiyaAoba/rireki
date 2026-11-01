@@ -2,7 +2,9 @@
 
 use gpui::{AnyElement, ClickEvent, Context, Div, ElementId, FontWeight, div, point, prelude::*, px, relative};
 
-use super::{Metric, MetricFormat, Rireki, card, card_title, cost_label, fmt_tokens, fmt_usd, percent, series, swatch};
+use super::{
+    Metric, MetricFormat, Rireki, cost_label, fmt_tokens, fmt_usd, percent, section, section_title, series, swatch,
+};
 use crate::app::widgets::{project_mark, tip};
 use crate::app::{fmt_n, tilde};
 use crate::icons::{self, Icon};
@@ -66,13 +68,8 @@ impl Rireki {
             }))
         });
         let more = projects.len() > PROJECTS;
-        let note = if self.focus.is_some() {
-            format!("{}の多い順 · 絞り込み中", metric.label())
-        } else {
-            format!("{} 件 · {}の多い順 · 押すと絞り込み", fmt_n(projects.len()), metric.label())
-        };
-        card()
-            .child(card_title("プロジェクト", note))
+        section()
+            .child(section_title("プロジェクト"))
             .child(list(self.columns(metric.label(), "割合", SHARE_W)).children(rows))
             .when(more, |d| {
                 d.child(
@@ -142,8 +139,8 @@ impl Rireki {
         let usage = &s.total.usage;
         let input = usage.input + usage.cache_read + usage.cache_write;
         let cached = usage.cache_read as f64 / input.max(1) as f64;
-        card()
-            .child(card_title("モデル", if by_cost { "推定料金の多い順" } else { "トークンの多い順" }))
+        section()
+            .child(section_title("モデル"))
             .child(if s.models.is_empty() {
                 empty("この期間のログにはトークン使用量が記録されていません")
             } else {
@@ -243,60 +240,51 @@ impl Rireki {
         };
         let mut sum = s.sources[0].clone();
         sum.merge(&s.sources[1]);
-        card()
-            .child(card_title(
-                if shown.len() > 1 { "読み込み元の比較" } else { "合計と平均" },
-                "サブエージェントを含む · 失敗率はツール呼び出しに対する失敗・拒否・中断の割合",
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
+        section().child(section_title(if shown.len() > 1 { "読み込み元の比較" } else { "合計と平均" })).child(
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .pb_1()
+                        .text_axis()
+                        .text_color(c(theme::MUTED))
+                        .child(div().flex_1().min_w(px(90.0)))
+                        .children(heads.iter().zip(&widths).map(|(h, &w)| {
+                            div().flex_none().w(px(w)).flex().justify_end().whitespace_nowrap().child(*h)
+                        })),
+                )
+                .children(shown.iter().map(|&i| {
+                    let (logo, color) = icons::source_icon([Source::Claude, Source::Codex][i]);
+                    line(
                         div()
                             .flex()
+                            .items_center()
                             .gap_2()
-                            .pb_1()
-                            .text_axis()
-                            .text_color(c(theme::MUTED))
-                            .child(div().flex_1().min_w(px(90.0)))
-                            .children(heads.iter().zip(&widths).map(|(h, &w)| {
-                                div().flex_none().w(px(w)).flex().justify_end().whitespace_nowrap().child(*h)
-                            })),
+                            .child(swatch(series(i)))
+                            .child(icons::icon(logo, color).size(px(14.0)))
+                            .child(["Claude Code", "Codex"][i]),
+                        cells(&s.sources[i]),
+                        false,
                     )
-                    .children(shown.iter().map(|&i| {
-                        let (logo, color) = icons::source_icon([Source::Claude, Source::Codex][i]);
-                        line(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(swatch(series(i)))
-                                .child(icons::icon(logo, color).size(px(14.0)))
-                                .child(["Claude Code", "Codex"][i]),
-                            cells(&s.sources[i]),
-                            false,
-                        )
-                    }))
-                    .when(shown.len() > 1, |d| d.child(line(div().pl(px(16.0)).child("合計"), cells(&sum), true))),
-            )
+                }))
+                .when(shown.len() > 1, |d| d.child(line(div().pl(px(16.0)).child("合計"), cells(&sum), true))),
+        )
     }
 }
 
 impl Rireki {
     /// 数字の列の見出し。両方の読み込み元を表示しているときは、棒の色の凡例を左に置く
     pub(super) fn columns(&self, value: &'static str, note: &'static str, note_w: f32) -> Div {
-        let sources = self.shown_sources();
+        // 読み込み元の凡例は推移の見出しにだけ置く
         div()
             .flex()
             .gap_2()
             .text_axis()
             .text_color(c(theme::MUTED))
-            .child(div().flex_1().flex().items_center().gap_3().when(sources.len() > 1, |d| {
-                d.children(sources.iter().map(|&i| {
-                    div().flex().items_center().gap_1p5().child(swatch(series(i))).child(["Claude", "Codex"][i])
-                }))
-            }))
+            .child(div().flex_1())
             .child(div().flex_none().w(px(NUM_W)).flex().justify_end().whitespace_nowrap().child(value))
             .child(div().flex_none().w(px(note_w)).flex().justify_end().whitespace_nowrap().child(note))
     }
@@ -362,7 +350,7 @@ pub(super) fn bar(parts: [f64; 2]) -> Div {
 
 /// 一色の割合の帯。全体を同じ色の暗い溝に入れる
 fn meter(r: f64) -> Div {
-    div().w_full().h(px(8.0)).radius_sm().bg(c(theme::HEAT[0]).opacity(0.35)).child(
+    div().w_full().h(px(8.0)).radius_sm().bg(c(theme::RAISED)).child(
         div()
             .h_full()
             .w(relative(r as f32))

@@ -6,7 +6,7 @@
 use gpui::{ClickEvent, Context, Div, ElementId, div, prelude::*, px, relative};
 
 use super::lists::{NUM_W, SHARE_W, bar, empty, list};
-use super::{Metric, MetricFormat, Rireki, card, card_title, cost_label, fmt_tokens, percent};
+use super::{Metric, MetricFormat, Rireki, section, section_title, cost_label, fmt_tokens, percent};
 use crate::app::widgets::{dot, lazy_tip};
 use crate::app::{fmt_n, is_live, rel_time, tilde};
 use crate::icons::{self, Icon};
@@ -123,16 +123,9 @@ impl Rireki {
                     }
                 }))
         });
-        let note = if newest {
-            format!("期間内の {} 件 · 開始の新しい順 · 押すと開く", fmt_n(s.sessions.len()))
-        } else if failures {
-            format!("{} 件 · 失敗・拒否・中断の多い順 · 押すと失敗したイベントを開く", fmt_n(matched))
-        } else {
-            format!("{} 件 · {}の多い順 · 押すと開く", fmt_n(matched), metric.label())
-        };
         let more = matched > SESSIONS;
-        card()
-            .child(card_title("セッション", note))
+        section()
+            .child(section_title("セッション"))
             .child(if rows.is_empty() {
                 empty(if failures {
                     "この期間に失敗・拒否・中断したツール呼び出しはありません"

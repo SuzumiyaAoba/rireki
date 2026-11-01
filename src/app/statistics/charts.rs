@@ -10,7 +10,7 @@ use gpui::{
     prelude::*, px, relative, size,
 };
 
-use super::{HoursView, Hover, Metric, MetricFormat, Rireki, card, card_title, percent, series, swatch};
+use super::{HoursView, Hover, Metric, MetricFormat, Rireki, section, section_title, percent, series, swatch};
 use crate::app::header::{Choice, weekday_ja};
 use crate::prefs::SourceFilter;
 use crate::statistics::{Summary, Unit};
@@ -115,7 +115,7 @@ impl Rireki {
                 )
             });
         // 日付は右端（今日）からそろえて間引く
-        let slot = (inner - 34.0 - GUTTER) / n as f32;
+        let slot = (inner - GUTTER) / n as f32;
         let every = (LABEL_W / slot).ceil().max(1.0) as usize;
         let y = |v: f64| PLOT_H - (v / top) as f32 * PLOT_H;
         let gutter =
@@ -193,12 +193,9 @@ impl Rireki {
                 t.pick_days(from, to, w);
                 cx.notify();
             }));
-        card()
+        section()
             .child(
-                card_title(
-                    format!("{}の推移", metric.label()),
-                    format!("{unit} · 指標は上のタイルで切り替え · 列を押すとタイムラインで開く"),
-                )
+                section_title(format!("{}の推移（{unit}）", metric.label()))
                 .flex_wrap()
                 .child(legend),
             )
@@ -211,7 +208,7 @@ impl Rireki {
             return self.radial_hours_card(s, width, cx);
         }
         let metric = self.statistics_state.metric;
-        let cell_w = (width - 34.0 - DAY_W - TOTAL_W - 25.0 * GRID_GAP) / 24.0;
+        let cell_w = (width - DAY_W - TOTAL_W - 25.0 * GRID_GAP) / 24.0;
         let cell_h = (cell_w * 1.2).clamp(CELL_H.0, CELL_H.1);
         let grid_h = MARGIN_H + GRID_GAP + 7.0 * cell_h + 6.0 * GRID_GAP;
         let values: Vec<f64> = s.hours.iter().map(|a| metric.amount(a)).collect();
@@ -296,9 +293,9 @@ impl Rireki {
             .child("少")
             .children(theme::HEAT.iter().map(|&h| div().size(px(10.0)).radius_sm().bg(c(h))))
             .child("多");
-        card()
+        section()
             .child(
-                card_title("時間帯", format!("{} · 曜日 × 時刻（ローカル時間）", metric.label()))
+                section_title("時間帯")
                     .flex_wrap()
                     .child(self.hours_view_switch(cx)),
             )

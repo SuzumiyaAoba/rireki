@@ -9,7 +9,7 @@ use gpui::{
 };
 
 use super::charts::WEEKDAYS;
-use super::{Hover, Metric, MetricFormat, Rireki, card, card_title, percent};
+use super::{Hover, Metric, MetricFormat, Rireki, section, section_title, percent};
 use crate::app::widgets::tip;
 use crate::statistics::{HOURS, Summary};
 use crate::theme::Scale as _;
@@ -21,7 +21,7 @@ const RING_GAP: f32 = 2.0;
 const HOUR_ANGLE: f32 = TAU / 24.0;
 const ANGLE_GAP: f32 = 0.028;
 /// 使用量が 0 の区分も、時計の輪郭が読める暗い青で描く。
-const EMPTY: u32 = 0x16233f;
+const EMPTY: u32 = theme::RAISED;
 
 /// 直前の塗りと選択枠だけを保持する。位置も含め、同じ座標のパスだけを再利用する。
 #[derive(Default)]
@@ -235,7 +235,7 @@ impl Rireki {
                     )
                 })
             });
-        let chart_size = (width - 34.0).min(MAX_SIZE);
+        let chart_size = width.min(MAX_SIZE);
         let area = self.statistics_state.hours_area.clone();
         let cache = self.statistics_state.radial_cache.borrow_mut().get_or_insert_with(Default::default).clone();
         let plot = canvas(
@@ -370,9 +370,9 @@ impl Rireki {
             .when(peak > 0.0, |d| {
                 d.child(format!("（最大 {}{}）", metric.format(peak), metric.unit()))
             });
-        card()
+        section()
             .child(
-                card_title("時間帯", format!("{} · 曜日 × 時刻（ローカル時間）", metric.label()))
+                section_title("時間帯")
                     .flex_wrap()
                     .child(self.hours_view_switch(cx)),
             )
@@ -393,7 +393,7 @@ impl Rireki {
                         .text_center()
                         .text_small()
                         .text_color(c(theme::SUBTLE))
-                        .child("API換算の推定額（USD） · 料金不明の記録は除外"),
+                        .child("料金（USD） · 料金不明の記録は除外"),
                 )
             })
     }

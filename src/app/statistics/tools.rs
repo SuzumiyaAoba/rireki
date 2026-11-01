@@ -12,7 +12,7 @@ use gpui::{
 };
 
 use super::lists::{NUM_W, bar, empty};
-use super::{Metric, Rireki, card, card_title, percent, series, swatch};
+use super::{Metric, Rireki, section, section_title, percent, series, swatch};
 use crate::app::widgets::lazy_tip;
 use crate::app::{fmt_dur, fmt_n};
 use crate::icons::{self, Icon};
@@ -63,7 +63,7 @@ impl Rireki {
         let shown = &tools[..tools.len().min(TOOLS)];
         let rest = &tools[shown.len()..];
         // カードの左右の余白と枠を除いた幅
-        let content = inner - 34.0;
+        let content = inner;
         let layout = Layout {
             name_w: (content * 0.2).clamp(96.0, 180.0),
             fail_bar: content >= 640.0,
@@ -80,15 +80,8 @@ impl Rireki {
             }
             other_row(rest.len(), &calls, scale, &layout).into_any_element()
         });
-        let total = &s.total;
-        let note = format!(
-            "{} 回 · 失敗・拒否・中断 {} · {}",
-            fmt_n(total.tools),
-            percent(total.failures as f64 / total.tools.max(1) as f64),
-            if by_failures { "失敗・拒否・中断の多い順" } else { "呼び出しの多い順" }
-        );
-        card()
-            .child(card_title("ツール", note).flex_wrap().child(self.tools_legend(&layout)))
+        section()
+            .child(section_title("ツール").flex_wrap().child(self.tools_legend(&layout)))
             .child(if s.tools.is_empty() {
                 empty("この期間にツール呼び出しはありません")
             } else {
@@ -138,7 +131,7 @@ impl Rireki {
     fn tool_row(&self, t: &Tool, max: f64, scale: Option<f64>, layout: &Layout) -> gpui::Stateful<Div> {
         let calls = t.total();
         let (icon, color) =
-            if t.agent { (Icon::Bot, 0xa77bf3) } else { (theme::tool_icon(&t.name), theme::tool_color(&t.name)) };
+            if t.agent { (Icon::Bot, theme::AGENT) } else { (theme::tool_icon(&t.name), theme::tool_color(&t.name)) };
         let d = &t.durations;
         // 説明はツールチップを開いたときに作る
         let (name, agent, by_source) = (t.name.clone(), t.agent, [t.sources[0].calls, t.sources[1].calls]);

@@ -8,8 +8,8 @@
 //! - 一覧 (`lists.rs`): プロジェクト・モデル（キャッシュ読込率）と、読み込み元の比較表
 
 mod charts;
-mod lists;
 mod format;
+mod lists;
 use format::{MetricFormat, cost_label, date_range, delta, percent};
 mod profile;
 mod radial;
@@ -30,7 +30,6 @@ use super::detail::{fmt_tokens, fmt_usd};
 use super::header::Choice;
 use super::widgets::tip;
 use super::{HEADER_H, Rireki, fmt_n, tilde};
-use crate::icons::{self, Icon};
 use crate::model::UsageSum;
 use crate::prefs::SourceFilter;
 use crate::theme::Scale as _;
@@ -218,12 +217,10 @@ impl Rireki {
                 .flex()
                 .items_center()
                 .justify_center()
-                .gap_2()
                 .py_16()
                 .text_body()
                 .text_color(c(theme::MUTED))
-                .child(icons::icon(Icon::Refresh, theme::ACCENT).size_4())
-                .child("統計を集計中…"),
+                .child("集計中…"),
         };
         div().flex_1().min_w_0().h_full().flex().flex_col().child(self.statistics_header(width, cx)).child(
             div()
@@ -238,18 +235,13 @@ impl Rireki {
 
     /// 期間とプロジェクトの絞り込み。下のすべての数字はこの範囲で数える
     fn statistics_header(&self, width: f32, cx: &mut Context<Self>) -> Div {
-        let source = match self.source {
-            SourceFilter::All => "Claude Code と Codex",
-            SourceFilter::Claude => "Claude Code",
-            SourceFilter::Codex => "Codex",
-        };
         let range = self
             .statistics_state
             .summary
             .as_ref()
             .map(|s| {
                 format!(
-                    "{} · 稼働 {} / {} 日 · ",
+                    "{} · 稼働 {} / {} 日",
                     date_range(s.from, s.to),
                     fmt_n(s.active_days),
                     fmt_n(s.days() as usize)
@@ -280,17 +272,18 @@ impl Rireki {
             .border_b_1()
             .border_color(c(theme::LINE))
             .text_body()
-            .child(icons::icon(Icon::Chart, theme::ACCENT).size_4())
             .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("統計"))
             .children(self.focus_chip(cx))
             .child(
                 div()
+                    .id("statistics-range")
                     .flex_1()
                     .min_w_0()
                     .truncate()
                     .text_small()
                     .text_color(c(theme::MUTED))
-                    .when(width >= 640.0, |d| d.child(format!("{range}{source}"))),
+                    .when(width >= 640.0, |d| d.child(range))
+                    .tooltip(tip("集計はローカル時間で行い、サブエージェントは起動元のセッションに含みます。", None)),
             )
             .child(periods)
     }
@@ -315,34 +308,21 @@ impl Rireki {
             .flex_col()
             .gap(px(GAP))
             .p(px(PAD))
-            .when(stale, |d| d.opacity(0.55))
+            .when(stale, |d| d.opacity(theme::alpha::STALE))
             .when(self.loading.is_some(), |d| {
                 d.child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
+                        .id("statistics-loading")
                         .text_small()
                         .text_color(c(theme::MUTED))
-                        .child(icons::icon(Icon::Refresh, theme::ACCENT).size_3())
-                        .child("履歴を読み込み中です。読み込み済みの分だけを集計しています"),
+                        .child("読み込み中…")
+                        .tooltip(tip("読み込み済みの分だけを集計しています", None)),
                 )
             })
             .child(self.metric_tiles(s, inner, cx));
         if s.total.sessions == 0 {
             body = body.child(
-                card()
-                    .items_center()
-                    .py_12()
-                    .gap_2()
-                    .child(icons::icon(Icon::Chart, theme::SUBTLE).size_6())
-                    .child(div().text_body().font_weight(FontWeight::SEMIBOLD).child("この期間の履歴はありません"))
-                    .child(
-                        div()
-                            .text_small()
-                            .text_color(c(theme::MUTED))
-                            .child("期間を広げるか、左の読み込み元やプロジェクトの絞り込みを切り替えてください"),
-                    ),
+                div().py_12().text_center().text_body().text_color(c(theme::MUTED)).child("この期間の履歴はありません"),
             );
         } else {
             // 期間・推移 → どこで（プロジェクト）・どのセッションで → いつ・どのモデルで → どのツールで、の順に読む。
@@ -354,23 +334,27 @@ impl Rireki {
                 .child(self.tools_card(s, inner))
                 .child(self.sources_card(s, inner));
         }
-        body.child(self.statistics_notes(s))
+        body
     }
 
-    /// 指標のタイル。選んだ指標を下のグラフと一覧で表す
+    /// 指標の行。選んだ指標を下のグラフと一覧で表す
     fn metric_tiles(&self, s: &Summary, inner: f32, cx: &mut Context<Self>) -> Div {
-        // 6 枚が並ばない幅では 3 枚ずつ、さらに狭ければ 2 枚ずつにする
-        let basis = if inner >= 1100.0 {
-            0.15
+        // 6 つが並ばない幅では 3 つずつ、さらに狭ければ 2 つずつにする
+        let (basis, per_row) = if inner >= 1100.0 {
+            (0.15, 6)
         } else if inner >= 560.0 {
-            0.3
+            (0.3, 3)
         } else {
-            0.45
+            (0.45, 2)
         };
-        div().flex().flex_wrap().gap(px(GAP)).children(
-            Metric::ALL
-                .into_iter()
-                .map(|metric| self.metric_tile(metric, s, cx).flex_1().flex_basis(relative(basis)).min_w(px(150.0))),
+        div().flex().flex_wrap().border_b_1().border_color(c(theme::LINE)).children(
+            Metric::ALL.into_iter().enumerate().map(|(i, metric)| {
+                self.metric_tile(metric, s, cx)
+                    .flex_1()
+                    .flex_basis(relative(basis))
+                    .min_w(px(150.0))
+                    .when(i % per_row != 0, |d| d.border_l_1().border_color(c(theme::LINE_SOFT)).pl_4())
+            }),
         )
     }
 
@@ -395,21 +379,15 @@ impl Rireki {
         };
         let both = self.source == SourceFilter::All;
         let split = [metric.total(&s.sources[0]), metric.total(&s.sources[1])];
+        let unpriced = s.total.usage.unpriced;
         div()
             .id(ElementId::NamedInteger("statistics-metric".into(), metric as u64))
             .flex()
             .flex_col()
             .gap_1()
-            .px_4()
             .pt_3()
-            .pb(px(14.0))
-            .radius_md()
-            .border_1()
+            .pr_4()
             .cursor_pointer()
-            .when(selected, |d| d.bg(c(theme::ACCENT_BG).opacity(0.6)).border_color(c(theme::ACCENT)))
-            .when(!selected, |d| {
-                d.bg(c(theme::PANEL)).border_color(c(theme::LINE)).hover(|d| d.border_color(c(theme::SUBTLE)))
-            })
             .child(
                 div()
                     .text_small()
@@ -440,10 +418,29 @@ impl Rireki {
                                 .text_color(c(theme::MUTED))
                                 .child(format!("呼び出しの {}", percent(value / s.total.tools as f64))),
                         )
+                    })
+                    // 料金表にないモデルの呼び出しは料金に含まれないので、常に出す
+                    .when(metric == Metric::Cost && unpriced > 0, |d| {
+                        d.child(
+                            div()
+                                .id("statistics-unpriced")
+                                .min_w_0()
+                                .truncate()
+                                .text_small()
+                                .text_color(c(theme::WARN))
+                                .child(format!("料金不明 {} 回", fmt_n(unpriced as usize)))
+                                .tooltip(tip(
+                                    format!(
+                                        "料金表にないモデルの呼び出しは含めていません。{} に追加できます",
+                                        tilde(&crate::pricing::path().to_string_lossy())
+                                    ),
+                                    None,
+                                )),
+                        )
                     }),
             )
             .child(div().text_small().child(comparison))
-            .when(both && value > 0.0, |d| d.child(split_bar(split).mt_1()))
+            .child(div().h(px(2.0)).mt_2().w_full().when(selected, |d| d.bg(c(theme::ACCENT))))
             .tooltip(tip(
                 {
                     let mut text = metric.help().to_string();
@@ -454,6 +451,13 @@ impl Rireki {
                             percent(split[0] / value),
                             metric.format(split[1]),
                             percent(split[1] / value)
+                        );
+                    }
+                    if matches!(metric, Metric::Tokens | Metric::Cost) && s.total.sessions > 0 {
+                        text += &format!(
+                            "\n使用量の記録があるセッション {} / {}",
+                            fmt_n(s.recorded_sessions),
+                            fmt_n(s.total.sessions)
                         );
                     }
                     if metric == Metric::Failures && value > 0.0 {
@@ -478,76 +482,24 @@ impl Rireki {
                 cx.notify();
             }))
     }
-
-    /// 集計の前提と、料金・使用量の記録の欠け
-    fn statistics_notes(&self, s: &Summary) -> Div {
-        let usage = &s.total.usage;
-        div()
-            .flex()
-            .flex_wrap()
-            .gap_x_4()
-            .gap_y_1()
-            .pt_1()
-            .text_small()
-            .text_color(c(theme::MUTED))
-            .child("ローカル時間で集計 · サブエージェントを含む")
-            .when(s.total.sessions > 0, |d| {
-                d.child(format!(
-                    "使用量の記録があるセッション {} / {}",
-                    fmt_n(s.recorded_sessions),
-                    fmt_n(s.total.sessions)
-                ))
-            })
-            .when(usage.unpriced > 0, |d| {
-                d.child(
-                    div()
-                        .id("statistics-unpriced")
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(icons::icon(Icon::Activity, theme::WARN).size_3())
-                        .child(format!(
-                            "料金不明のモデルの呼び出し {} 回は推定料金に含めていません",
-                            fmt_n(usage.unpriced as usize)
-                        ))
-                        .tooltip(tip(
-                            format!(
-                                "料金表にないモデル。{} に追加できます",
-                                tilde(&crate::pricing::path().to_string_lossy())
-                            ),
-                            None,
-                        )),
-                )
-            })
-    }
 }
 
-/// カードの枠
-fn card() -> Div {
+/// 見出しと本文のまとまり。枠で囲まず、見出しの下に罫線を 1 本引く
+fn section() -> Div {
+    div().min_w_0().flex().flex_col().gap_3()
+}
+
+/// 見出しの行。右に凡例や読み取り値を `child` で足す
+fn section_title(title: impl Into<SharedString>) -> Div {
     div()
-        .min_w_0()
         .flex()
-        .flex_col()
-        .gap_3()
-        .p_4()
-        .radius_md()
-        .bg(c(theme::PANEL))
-        .border_1()
-        .border_color(c(theme::LINE))
-}
-
-/// カードの見出しと補足の行。右に凡例や読み取り値を `child` で足す
-fn card_title(title: impl Into<SharedString>, note: impl Into<SharedString>) -> Div {
-    div().flex().items_start().gap_x_4().gap_y_2().child(
-        div()
-            .flex_1()
-            .min_w(px(160.0))
-            .flex()
-            .flex_col()
-            .gap_0p5()
-            .child(div().text_body().font_weight(FontWeight::SEMIBOLD).child(title.into()))
-            .child(div().text_small().text_color(c(theme::MUTED)).truncate().child(note.into())),
-    )
+        .items_center()
+        .gap_x_4()
+        .gap_y_2()
+        .pb_2()
+        .border_b_1()
+        .border_color(c(theme::LINE_SOFT))
+        .child(div().flex_1().min_w(px(160.0)).text_body().font_weight(FontWeight::SEMIBOLD).child(title.into()))
 }
 
 /// 読み込み元ごとの色
@@ -560,26 +512,10 @@ fn swatch(color: u32) -> Div {
     div().flex_none().size(px(8.0)).radius_sm().bg(c(color))
 }
 
-/// 読み込み元の割合の帯。境目は面の色の隙間で分ける
-fn split_bar(values: [f64; 2]) -> Div {
-    let total = values[0] + values[1];
-    div().flex().gap(px(2.0)).h(px(4.0)).w_full().children(
-        values.into_iter().enumerate().filter(|(_, v)| *v > 0.0).map(move |(i, v)| {
-            div()
-                .h_full()
-                .flex_basis(relative((v / total) as f32))
-                .flex_shrink()
-                .min_w(px(2.0))
-                .radius_sm()
-                .bg(c(series(i)))
-        }),
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::format::short;
+    use super::*;
 
     #[test]
     fn empty_usage_has_no_cost_label() {
