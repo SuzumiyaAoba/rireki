@@ -100,6 +100,22 @@ Linux and Windows builds produce `target/release/rireki` and `target/release/rir
 
 Trackpad pinch zoom is available on macOS. On every OS, use the zoom buttons, `+` / `-`, or Cmd / Ctrl + scroll to zoom.
 
+### UI design / Storybook
+
+The [`design/`](design/README.md) workspace recreates the current native GUI in
+React and Storybook, using fixed sample data. It includes the timeline, calendars,
+statistics, session details, dialogs, and shared UI components. It runs independently
+of the Rust app and does not read local session logs.
+
+```sh
+npm --prefix design ci
+npm --prefix design run storybook
+```
+
+Open `http://127.0.0.1:6007`. Node.js 22.12 or newer and npm 10 or newer are required.
+See the [design workspace guide](design/README.md) for stories, interaction tests,
+and static builds.
+
 ## Releases
 
 The **Create release tag** workflow can be run manually from the repository's **Actions** tab. It tags the selected branch's commit and calls the reusable **Release** workflow, which builds binaries for macOS (Apple Silicon and Intel), Linux (x86_64), and Windows (x86_64 MSVC) and publishes them to GitHub Releases. This uses the built-in `GITHUB_TOKEN`; no GitHub App or additional secrets are required. [Reusable workflows are called directly from a job](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows#calling-a-reusable-workflow), so publishing does not depend on the tag push triggering another workflow.
