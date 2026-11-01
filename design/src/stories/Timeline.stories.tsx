@@ -22,7 +22,7 @@ const meta = {
     initialOverlay: { control: 'select', options: [null, 'display', 'range', 'help', 'mcp'] },
     initialProject: {
       control: 'select',
-      options: [null, 'rireki', 'website', 'dotfiles', 'api-server', 'notes', 'design-system'],
+      options: [null, 'rireki', 'kakeibo-web', 'dotfiles', 'ledger-api', 'zettel', 'kumo-ui'],
     },
     initialSelection: {
       control: 'select',

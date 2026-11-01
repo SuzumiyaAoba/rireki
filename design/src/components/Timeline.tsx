@@ -288,7 +288,7 @@ export function Timeline({
                     </div>
                     {!cost &&
                       session.agents.map((agent, index) => (
-                        <div className="timeline-row" key={agent}>
+                        <div className="timeline-row" key={agent.name}>
                           <button
                             type="button"
                             className="lane-label agent-label"
@@ -301,8 +301,8 @@ export function Timeline({
                           >
                             <span className="tree-line" />
                             <Icon name="Bot" size={12} />
-                            <span className="truncate">{agent}</span>
-                            <span className="lane-count">{6 + index * 3}</span>
+                            <span className="truncate">{agent.name}</span>
+                            <span className="lane-count">{agent.events}</span>
                           </button>
                           {plot(session, session.events.slice(5 + index, 11 + index), true)}
                         </div>

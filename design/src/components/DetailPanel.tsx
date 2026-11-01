@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
-  changedFiles,
-  diffLines,
+  changesFor,
   formatDuration,
   formatNumber,
   formatTime,
@@ -91,7 +90,7 @@ export function DetailPanel({
           [
             ['overview', 'セッション', null],
             ['history', 'イベント', session.events.length],
-            ['files', 'ファイル', changedFiles.length],
+            ['files', 'ファイル', changesFor(session).files.length],
             ['analysis', '分析', null],
           ] as const
         ).map(([value, label, count]) => (
@@ -117,7 +116,7 @@ export function DetailPanel({
       >
         {tab === 'overview' && <Overview session={session} onTab={onTab} onEvent={onEvent} />}
         {tab === 'history' && <History session={session} event={event} onEvent={onEvent} />}
-        {tab === 'files' && <Files />}
+        {tab === 'files' && <Files session={session} />}
         {tab === 'analysis' && (
           <Analysis
             session={session}
@@ -143,6 +142,13 @@ function Overview({
 }: Pick<DetailPanelProps, 'session' | 'onTab' | 'onEvent'>) {
   const failures = session.events.filter((event) => event.status !== 'success').length;
   const turns = session.events.filter((event) => event.kind === 'user');
+  // 次の指示より前に応答があれば、その要約を添える。
+  const reply = (turn: HistoryEvent) => {
+    const next = session.events
+      .slice(session.events.indexOf(turn) + 1)
+      .find((event) => event.kind === 'assistant' || event.kind === 'user');
+    return next?.kind === 'assistant' ? next.summary : undefined;
+  };
   return (
     <div className="overview-content">
       <Facts
@@ -156,7 +162,7 @@ function Overview({
             value: `$${session.cost.toFixed(2)}`,
             hint: 'ログの使用量と料金表による API 換算の推定値（USD）',
           },
-          { label: 'キャッシュヒット率', value: '84.2%' },
+          { label: 'キャッシュヒット率', value: `${(session.cacheHit * 100).toFixed(1)}%` },
           { label: 'トークン', value: formatNumber(session.tokens) },
           {
             label: 'モデル',
@@ -187,12 +193,8 @@ function Overview({
             指示 {i + 1} · {formatTime(turn.start)}
           </span>
           <strong>{i === 0 ? session.title : turn.summary}</strong>
-          <p>{i === 0 ? turn.input : '変更を確認して、テストを実行してください。'}</p>
-          <p className="turn-response">
-            {i === 0
-              ? '既存の実装を確認し、変更とテストを進めます。'
-              : '実装とテストの確認が完了しました。'}
-          </p>
+          <p>{turn.input}</p>
+          {reply(turn) && <p className="turn-response">{reply(turn)}</p>}
         </button>
       ))}
       <Label>レーン</Label>
@@ -211,15 +213,15 @@ function Overview({
         <button
           type="button"
           className="lane-row subagent"
-          key={agent}
+          key={agent.name}
           onClick={() => {
             onEvent(session.events.find((event) => event.kind === 'agent') ?? null);
             onTab('history');
           }}
         >
           <i className="agent-mark" style={{ background: eventGroups.agent.color }} />
-          <span>{agent}</span>
-          <small>6 件</small>
+          <span>{agent.name}</span>
+          <small>{agent.events} 件</small>
         </button>
       ))}
     </div>
@@ -374,7 +376,8 @@ export function EventRow({
   );
 }
 
-function Files() {
+function Files({ session }: { session: Session }) {
+  const { files: changedFiles, diff: diffLines } = changesFor(session);
   const [opened, setOpened] = useState<string[]>([changedFiles[0].path]);
   const [unified, setUnified] = useState(false);
   return (
@@ -414,7 +417,7 @@ function Files() {
             {open && (
               <>
                 <div className="diff-meta">
-                  <span>変更 1 · 09:42</span>
+                  <span>変更 1 · {formatTime(session.start + 0.4)}</span>
                   <CopyButton
                     text={diffLines
                       .map(
@@ -543,11 +546,14 @@ function Analysis({
           <strong>{formatTokens(session.tokens)}</strong>
         </div>
         <div className="usage-meter">
-          <i style={{ width: '18%' }} />
-          <i style={{ width: '68%' }} />
-          <i style={{ width: '14%' }} />
+          <i style={{ width: `${session.usage.input}%` }} />
+          <i style={{ width: `${session.usage.cache}%` }} />
+          <i style={{ width: `${session.usage.output}%` }} />
         </div>
-        <small>入力 18% · キャッシュ 68% · 出力 14%</small>
+        <small>
+          入力 {session.usage.input}% · キャッシュ {session.usage.cache}% · 出力{' '}
+          {session.usage.output}%
+        </small>
       </div>
       <Label>
         イベント <span>{visible.length} 件</span>
