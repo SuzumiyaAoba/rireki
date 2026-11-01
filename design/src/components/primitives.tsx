@@ -235,12 +235,21 @@ export function CopyButton({ text, label = 'コピー' }: { text: string; label?
   );
 }
 
-export function Stat({ label, value, color }: { label: string; value: ReactNode; color?: string }) {
+// ラベルと値を 2 列に並べる。失敗など注意の要る値だけ tone で色を付ける。
+export function Facts({
+  items,
+}: {
+  items: Array<{ label: string; value: ReactNode; tone?: 'err'; hint?: string }>;
+}) {
   return (
-    <div className="stat">
-      <span>{label}</span>
-      <strong style={{ color }}>{value}</strong>
-    </div>
+    <dl className="facts">
+      {items.map((item) => (
+        <div key={item.label} title={item.hint}>
+          <dt>{item.label}</dt>
+          <dd className={item.tone}>{item.value}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 

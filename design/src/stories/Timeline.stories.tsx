@@ -56,17 +56,17 @@ export const SidebarClosed: Story = {
 export const Search: Story = { name: '検索結果', args: { initialQuery: 'apply_patch' } };
 
 export const SessionNavigation: Story = {
-  name: '操作：セッションから履歴・差分へ',
+  name: '操作：セッションからイベント・差分へ',
   play: async ({ canvas, userEvent }) => {
     const sidebar = within(canvas.getByRole('complementary', { name: '履歴ナビゲーション' }));
     await userEvent.click(sidebar.getByRole('button', { name: /タイムラインの表示を改善/ }));
     const detail = within(canvas.getByRole('complementary', { name: 'セッション詳細' }));
-    await expect(detail.getByText('セッションの集計')).toBeVisible();
-    await userEvent.click(detail.getByRole('tab', { name: /履歴/ }));
+    await expect(detail.getByText('経過時間')).toBeVisible();
+    await userEvent.click(detail.getByRole('tab', { name: /イベント/ }));
     await userEvent.click(detail.getAllByRole('button', { name: /Read/ })[0]);
     await expect(detail.getByText('入力', { exact: true })).toBeVisible();
     await expect(detail.getByText(/file_path/)).toBeVisible();
-    await userEvent.click(detail.getByRole('tab', { name: /変更/ }));
+    await userEvent.click(detail.getByRole('tab', { name: /ファイル/ }));
     await expect(detail.getByText('src/app/timeline.rs', { exact: true })).toBeVisible();
     await expect(detail.getByText('3 ファイルを変更')).toBeVisible();
   },
@@ -103,7 +103,7 @@ export const SearchInteraction: Story = {
     const sidebar = within(canvas.getByRole('complementary', { name: '履歴ナビゲーション' }));
     await userEvent.click(sidebar.getAllByRole('button', { name: /apply_patch/ })[0]);
     const detail = within(canvas.getByRole('complementary', { name: 'セッション詳細' }));
-    await expect(detail.getByRole('tab', { name: /履歴/ })).toHaveAttribute(
+    await expect(detail.getByRole('tab', { name: /イベント/ })).toHaveAttribute(
       'aria-selected',
       'true',
     );

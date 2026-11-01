@@ -28,7 +28,7 @@ export const DrillDown: Story = {
     await expect(canvas.getByText('失敗・拒否・中断の推移')).toBeVisible();
     await userEvent.click(canvas.getByRole('button', { name: /タイムラインの表示を改善/ }));
     const detail = within(canvas.getByRole('complementary', { name: 'セッション詳細' }));
-    await expect(detail.getByText('セッションの集計')).toBeVisible();
+    await expect(detail.getByText('経過時間')).toBeVisible();
     await expect(canvas.getByRole('button', { name: 'タイムライン' })).toHaveAttribute(
       'aria-pressed',
       'true',

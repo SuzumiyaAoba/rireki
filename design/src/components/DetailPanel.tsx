@@ -10,7 +10,7 @@ import {
   type HistoryEvent,
   type Session,
 } from '../data';
-import { eventKinds } from '../tokens';
+import { eventGroups, eventKinds } from '../tokens';
 import {
   StatusText,
   Button,
@@ -20,9 +20,9 @@ import {
   Icon,
   IconButton,
   ProjectMark,
+  Facts,
   Segmented,
   SourceLogo,
-  Stat,
 } from './primitives';
 
 interface DetailPanelProps {
@@ -60,7 +60,7 @@ export function DetailPanel({
             onTab('overview');
           }}
         />
-        <span className="detail-heading">セッション詳細</span>
+        <span className="detail-spacer" />
         <IconButton icon="LocateFixed" label="選択位置を表示" onClick={onLocate} />
         <IconButton
           icon={fullscreen ? 'Minimize' : 'Maximize'}
@@ -79,27 +79,19 @@ export function DetailPanel({
         <div className="context-meta">
           <SourceLogo source={session.source} size={12} />
           <span>{session.source === 'claude' ? 'Claude Code' : 'Codex'}</span>
-          <span>·</span>
           <ProjectMark name={session.project} />
           <span>{session.project}</span>
+          <small>
+            {formatTime(session.start)}–{formatTime(session.end)}
+          </small>
         </div>
-      </div>
-      <div className="detail-scope">
-        <Icon
-          name={tab === 'overview' ? 'Layers' : event ? eventKinds[event.kind].icon : 'ListTree'}
-          size={13}
-        />
-        <span>{tab === 'overview' ? 'セッション全体' : event ? event.name : 'メインのレーン'}</span>
-        <small>
-          {formatTime(session.start)}–{formatTime(session.end)}
-        </small>
       </div>
       <div className="detail-tabs" role="tablist" aria-label="詳細のタブ">
         {(
           [
-            ['overview', '概要', null],
-            ['history', '履歴', session.events.length],
-            ['files', '変更', changedFiles.length],
+            ['overview', 'セッション', null],
+            ['history', 'イベント', session.events.length],
+            ['files', 'ファイル', changedFiles.length],
             ['analysis', '分析', null],
           ] as const
         ).map(([value, label, count]) => (
@@ -153,109 +145,83 @@ function Overview({
   const turns = session.events.filter((event) => event.kind === 'user');
   return (
     <div className="overview-content">
-      <Label>セッションの集計</Label>
-      <div className="stat-row">
-        <Stat label="経過時間" value={formatDuration(session.end - session.start)} />
-        <Stat label="ターン" value={turns.length} />
-        <Stat label="失敗等" value={failures} color={failures ? 'var(--err)' : undefined} />
-      </div>
-      <div className="stat-row">
-        <Stat label="API換算料金" value={`$${session.cost.toFixed(2)}`} />
-        <Stat label="キャッシュヒット率" value="84.2%" />
-      </div>
+      <Facts
+        items={[
+          { label: '開始', value: `2026/10/${26 + session.day} ${formatTime(session.start)}` },
+          { label: '経過時間', value: formatDuration(session.end - session.start) },
+          { label: 'ターン', value: turns.length },
+          { label: '失敗等', value: failures, tone: failures ? 'err' : undefined },
+          {
+            label: '料金',
+            value: `$${session.cost.toFixed(2)}`,
+            hint: 'ログの使用量と料金表による API 換算の推定値（USD）',
+          },
+          { label: 'キャッシュヒット率', value: '84.2%' },
+          { label: 'トークン', value: formatNumber(session.tokens) },
+          {
+            label: 'モデル',
+            value: session.source === 'claude' ? 'claude-sonnet-4-5' : 'gpt-5-codex',
+          },
+          { label: '作業ディレクトリ', value: `~/projects/${session.project}` },
+          { label: 'セッション ID', value: <code>{session.id}</code> },
+        ]}
+      />
       <div className="detail-actions">
         <CopyButton
           label="再開コマンドをコピー"
           text={`${session.source === 'claude' ? 'claude --resume' : 'codex resume'} ${session.id}`}
         />
-        <Button
-          icon="Layers"
-          onClick={() => {
-            onEvent(null);
-            onTab('history');
-          }}
-        >
-          メインの履歴
-        </Button>
       </div>
-      <Label>
-        指示と応答 <span>メイン</span>
-      </Label>
+      <Label>指示と応答</Label>
       {turns.map((turn, i) => (
         <button
           type="button"
-          className="turn-card"
+          className="turn-row"
           key={turn.id}
           onClick={() => {
             onEvent(turn);
             onTab('history');
           }}
         >
-          <div className="turn-meta">
+          <span className="turn-meta">
             指示 {i + 1} · {formatTime(turn.start)}
-            <Icon name="ChevronRight" size={12} />
-          </div>
+          </span>
           <strong>{i === 0 ? session.title : turn.summary}</strong>
           <p>{i === 0 ? turn.input : '変更を確認して、テストを実行してください。'}</p>
-          <div className="turn-response">
-            <Icon name="MessageSquare" size={12} />
-            <span>
-              {i === 0
-                ? '既存の実装を確認し、変更とテストを進めます。'
-                : '実装とテストの確認が完了しました。'}
-            </span>
-          </div>
+          <p className="turn-response">
+            {i === 0
+              ? '既存の実装を確認し、変更とテストを進めます。'
+              : '実装とテストの確認が完了しました。'}
+          </p>
         </button>
       ))}
-      <Label>エージェント</Label>
+      <Label>レーン</Label>
       <button
         type="button"
-        className="agent-card"
+        className="lane-row"
         onClick={() => {
           onEvent(null);
           onTab('history');
         }}
       >
-        <Icon name="GitBranch" />
         <span>メイン</span>
         <small>{session.events.length} 件</small>
-        <Icon name="ChevronRight" size={12} />
       </button>
       {session.agents.map((agent) => (
         <button
           type="button"
-          className="agent-card subagent"
+          className="lane-row subagent"
           key={agent}
           onClick={() => {
             onEvent(session.events.find((event) => event.kind === 'agent') ?? null);
             onTab('history');
           }}
         >
-          <Icon name="Bot" />
+          <i className="agent-mark" style={{ background: eventGroups.agent.color }} />
           <span>{agent}</span>
           <small>6 件</small>
-          <Icon name="ChevronRight" size={12} />
         </button>
       ))}
-      <Label>セッション情報</Label>
-      <dl className="session-info">
-        <dt>開始</dt>
-        <dd>
-          2026/10/{26 + session.day} {formatTime(session.start)}
-        </dd>
-        <dt>最終更新</dt>
-        <dd>{formatTime(session.end)}</dd>
-        <dt>作業ディレクトリ</dt>
-        <dd>~/projects/{session.project}</dd>
-        <dt>モデル</dt>
-        <dd>{session.source === 'claude' ? 'claude-sonnet-4-5' : 'gpt-5-codex'}</dd>
-        <dt>トークン</dt>
-        <dd>{formatNumber(session.tokens)}</dd>
-        <dt>セッション ID</dt>
-        <dd>
-          <code>{session.id}</code>
-        </dd>
-      </dl>
     </div>
   );
 }
@@ -297,7 +263,7 @@ function History({
   return (
     <div className="history-content">
       <div className="history-toolbar">
-        <strong>{event ? event.name : 'イベントの履歴'}</strong>
+        <strong>{event?.name}</strong>
         <span>{event ? `${index + 1} / ${session.events.length}` : `${visible.length} 件`}</span>
         <IconButton
           icon={playing ? 'Pause' : 'Play'}
@@ -321,7 +287,6 @@ function History({
       {event ? (
         <div className="single-event">
           <div className="event-meta">
-            <Icon name="Clock" size={12} />
             10/{26 + session.day} {formatTime(event.start)}
             <span>·</span>
             {Math.round(event.duration * 3600)}秒
@@ -340,7 +305,6 @@ function History({
             <CodeBox title="結果" text={event.output} error={event.status === 'failed'} />
           )}
           <Button
-            icon="ListTree"
             onClick={() => {
               setPlaying(false);
               onEvent(null);
@@ -358,11 +322,9 @@ function History({
               onClick={() => setFailedOnly(!failedOnly)}
               className={failedOnly ? 'active' : ''}
             >
-              <Icon name="CircleAlert" size={12} />
               失敗等のみ
             </button>
             <button type="button" aria-pressed={reversed} onClick={() => setReversed(!reversed)}>
-              <Icon name={reversed ? 'ArrowUp' : 'ArrowDown'} size={12} />
               {reversed ? '新しい順' : '古い順'}
             </button>
           </div>
@@ -408,7 +370,6 @@ export function EventRow({
           <Highlight text={event.summary} query={query} />
         </span>
       </span>
-      <Icon name="ChevronRight" size={12} />
     </button>
   );
 }
@@ -421,17 +382,19 @@ function Files() {
       <div className="files-summary">
         <div>
           <strong>{changedFiles.length} ファイルを変更</strong>
-          <span className="added">+55</span>
-          <span className="removed">−19</span>
+          <span className="added">+{changedFiles.reduce((sum, file) => sum + file.added, 0)}</span>
+          <span className="removed">
+            −{changedFiles.reduce((sum, file) => sum + file.removed, 0)}
+          </span>
         </div>
-        <Button icon="FilePen" onClick={() => setUnified(!unified)}>
+        <Button onClick={() => setUnified(!unified)}>
           {unified ? 'ファイルごとに表示' : 'すべて展開'}
         </Button>
       </div>
       {changedFiles.map((file) => {
         const open = unified || opened.includes(file.path);
         return (
-          <section className="file-card" key={file.path}>
+          <section className="file-block" key={file.path}>
             <button
               type="button"
               className="file-heading"
@@ -444,7 +407,6 @@ function Files() {
               }}
             >
               <Icon name={open ? 'ChevronDown' : 'ChevronRight'} size={12} />
-              <Icon name="FilePen" size={13} />
               <span className="truncate">{file.path}</span>
               <small className="added">+{file.added}</small>
               <small className="removed">−{file.removed}</small>
@@ -519,26 +481,23 @@ function Analysis({
   return (
     <div className="analysis-content">
       <div className="analysis-heading">
-        <Label>選択範囲の分析</Label>
-        <Button icon="Copy" onClick={exportJson}>
-          JSON を保存
-        </Button>
+        <Button onClick={exportJson}>JSON を保存</Button>
       </div>
-      <div className="stat-row">
-        <Stat label="イベント" value={visible.length} />
-        <Stat
-          label="ツール"
-          value={
-            visible.filter((event) => !['user', 'assistant', 'thinking'].includes(event.kind))
-              .length
-          }
-        />
-        <Stat
-          label="失敗等"
-          value={visible.filter((event) => event.status !== 'success').length}
-          color="var(--err)"
-        />
-      </div>
+      <Facts
+        items={[
+          {
+            label: 'ツール',
+            value: visible.filter(
+              (event) => !['user', 'assistant', 'thinking'].includes(event.kind),
+            ).length,
+          },
+          {
+            label: '失敗等',
+            value: visible.filter((event) => event.status !== 'success').length,
+            tone: 'err',
+          },
+        ]}
+      />
       <label className="analysis-search">
         <Icon name="Search" />
         <input

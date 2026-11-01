@@ -9,7 +9,7 @@ import {
   ProjectMark,
   Segmented,
   SourceLogo,
-  Stat,
+  Facts,
 } from '../components/primitives';
 
 const meta = {
@@ -86,10 +86,14 @@ export const Stats: Story = {
   name: '詳細の集計',
   render: () => (
     <div className="component-preview">
-      <div className="stat-row" style={{ width: 420 }}>
-        <Stat label="経過時間" value="2時間 21分" />
-        <Stat label="ターン" value="2" />
-        <Stat label="失敗等" value="1" color="var(--err)" />
+      <div style={{ width: 360 }}>
+        <Facts
+          items={[
+            { label: '経過時間', value: '2時間 21分' },
+            { label: 'ターン', value: '2' },
+            { label: '失敗等', value: '1', tone: 'err' },
+          ]}
+        />
       </div>
     </div>
   ),

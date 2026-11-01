@@ -11,15 +11,15 @@ const meta = {
     docs: {
       description: {
         component:
-          'src/app/detail.rs と detail/ 以下に対応する概要、履歴、変更、分析。全画面化、イベントの移動、差分の開閉、分析の絞り込みを操作できます。',
+          'src/app/detail.rs と detail/ 以下に対応するセッション、イベント、ファイル、分析。全画面化、イベントの移動、差分の開閉、分析の絞り込みを操作できます。',
       },
     },
   },
 } satisfies Meta<typeof RirekiApp>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const Overview: Story = { name: '概要' };
-export const History: Story = { name: '履歴', args: { initialTab: 'history' } };
+export const Overview: Story = { name: 'セッション' };
+export const History: Story = { name: 'イベント', args: { initialTab: 'history' } };
 export const Event: Story = {
   name: 'ツールの入力・結果',
   args: { initialTab: 'history', initialEvent: 2 },
@@ -28,7 +28,7 @@ export const FailedEvent: Story = {
   name: '失敗したツール',
   args: { initialTab: 'history', initialEvent: 13 },
 };
-export const Files: Story = { name: '変更と差分', args: { initialTab: 'files' } };
+export const Files: Story = { name: 'ファイルと差分', args: { initialTab: 'files' } };
 export const Analysis: Story = { name: '分析', args: { initialTab: 'analysis' } };
 export const Fullscreen: Story = { name: '全画面', args: { initialFullscreen: true } };
 export const Live: Story = { name: '進行中のセッション', args: { initialSelection: 'demo-03' } };
@@ -55,9 +55,9 @@ export const FilterAnalysis: Story = {
 export const KeyboardAndFullscreen: Story = {
   name: '操作：ショートカットと全画面',
   play: async ({ canvas, userEvent }) => {
-    await userEvent.click(canvas.getByRole('tab', { name: '概要' }));
+    await userEvent.click(canvas.getByRole('tab', { name: 'セッション' }));
     await userEvent.keyboard('3');
-    await expect(canvas.getByRole('tab', { name: /変更/ })).toHaveAttribute(
+    await expect(canvas.getByRole('tab', { name: /ファイル/ })).toHaveAttribute(
       'aria-selected',
       'true',
     );
