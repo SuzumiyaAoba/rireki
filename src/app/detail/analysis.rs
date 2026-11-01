@@ -10,7 +10,7 @@ use gpui::{
     Window, div, list, prelude::*, px,
 };
 
-use super::{badge, cache_hit_stat, fmt_tokens, label, stat, usage_view};
+use super::{status_text, cache_hit_fact, fmt_tokens, label, fact, usage_view};
 use crate::app::widgets::{event_icon, tip};
 use crate::app::{Rireki, fmt_dur, fmt_n, local};
 use crate::detail::{
@@ -336,7 +336,7 @@ impl Rireki {
                 .min_w_0()
                 .flex_1()
                 .min_h_0()
-                .when(state.busy, |d| d.opacity(0.5)),
+                .when(state.busy, |d| d.opacity(theme::alpha::STALE)),
             );
         } else {
             body = body.child(div().text_small().text_color(c(theme::MUTED)).child("集計中…"));
@@ -458,7 +458,7 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(badge(name.clone(), theme::ACCENT))
+                    .child(status_text(name.clone(), theme::ACCENT))
                     .child(
                         div()
                             .text_small()
@@ -664,22 +664,26 @@ impl Rireki {
                 .flex_col()
                 .gap_3()
                 .pb_3()
-                .child(label(if self.analysis_state.filter == Filter::default() {
-                    "選択範囲の集計"
-                } else { "絞り込んだイベントの集計" }))
+                .when(self.analysis_state.filter != Filter::default(), |d| {
+                    d.child(label("絞り込んだイベントの集計"))
+                })
                 .child(
                     div()
                         .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(stat("選択期間", fmt_dur(analysis.span), None))
-                        .child(stat("イベント", fmt_n(analysis.indices.len()), None))
-                        .child(stat("失敗・拒否・中断", fmt_n(analysis.failures),
+                        .flex_col()
+                        .child(fact("選択期間", fmt_dur(analysis.span), None))
+                        .child(fact("イベント", fmt_n(analysis.indices.len()), None))
+                        .child(fact("失敗・拒否・中断", fmt_n(analysis.failures),
                             (analysis.failures > 0).then_some(theme::ERR)))
-                        .child(stat("API換算料金", super::usage_cost_label(&analysis.usage), None))
-                        .child(cache_hit_stat("analysis-cache-hit", &analysis.usage))
+                        .child(fact("結果なし", fmt_n(analysis.pending), None))
                         .child(
-                            stat(
+                            fact("料金", super::usage_cost_label(&analysis.usage), None)
+                                .id("analysis-cost")
+                                .tooltip(tip("ログの使用量と料金表による API 換算の推定値", None)),
+                        )
+                        .child(cache_hit_fact("analysis-cache-hit", &analysis.usage))
+                        .child(
+                            fact(
                                 "ツール失敗率",
                                 rate,
                                 (analysis.failed_tools > 0).then_some(theme::ERR),
@@ -690,42 +694,30 @@ impl Rireki {
                                 None,
                             )),
                         )
-                        .child(stat("トークン", super::usage_total_label(&analysis.usage), None)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(stat("平均ツール時間", tool_time(analysis.average()), None))
+                        .child(fact("トークン", super::usage_total_label(&analysis.usage), None))
                         .child(
-                            stat("P95 ツール時間", tool_time(analysis.p95_seconds), None)
+                            fact("ツール時間の合計", fmt_dur(analysis.tool_seconds), None)
+                                .id("analysis-tool-total")
+                                .tooltip(tip(
+                                    "時間集計は結果のあるツールが対象です。合計は同時実行の重なりを含みます。",
+                                    None,
+                                )),
+                        )
+                        .child(fact("平均ツール時間", tool_time(analysis.average()), None))
+                        .child(
+                            fact("P95 ツール時間", tool_time(analysis.p95_seconds), None)
                                 .id("analysis-p95")
                                 .tooltip(tip("完了したツールの95%がこの時間以下です", None)),
                         )
-                        .child(stat(
-                            "最長ツール時間",
-                            tool_time(analysis.max_seconds),
-                            None,
-                        )),
-                )
-                .child(div().text_small().text_color(c(theme::MUTED)).child(format!(
-                    "範囲 {} · ツール合計 {} · 失敗等 {} 件 · 結果なし {} 件",
-                    fmt_dur(analysis.span),
-                    fmt_dur(analysis.tool_seconds),
-                    fmt_n(analysis.failures),
-                    fmt_n(analysis.pending)
-                )))
-                .child(div().text_small().text_color(c(theme::SUBTLE)).child(
-                    "時間集計は結果のあるツールが対象です。合計は同時実行の重なりを含みます。",
-                ));
+                        .child(fact("最長ツール時間", tool_time(analysis.max_seconds), None)),
+                );
         if !analysis.tools.is_empty() {
             let peak = analysis.tools.first().map_or(0.0, |tool| tool.seconds);
             let mut tools = div()
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(label("ツール別の時間 · 上位8件（クリックで絞り込み）"));
+                .child(label("ツール別の時間"));
             for tool in analysis.tools.iter().take(8) {
                 let name = tool.name.clone();
                 let on = self.analysis_state.filter.name.as_ref() == Some(&name);
@@ -804,7 +796,7 @@ impl Rireki {
         }
         if analysis.usage.calls > 0 {
             out = out.child(div().flex().flex_col().gap_1().text_small()
-                .child(label("モデル別のトークン・API換算料金"))
+                .child(label("モデル別のトークン・料金"))
                 .child(super::model_table(&analysis.models)))
                 .child(self.icon_button("analysis-usage-toggle", Some(Icon::ChevronDown),
                     if self.expanded.contains("analysis-usage") { "キャッシュ内訳を閉じる" } else { "キャッシュ内訳を表示" },
@@ -817,8 +809,7 @@ impl Rireki {
                         app.detail_changed(cx);
                     }))
                 .when(self.expanded.contains("analysis-usage"), |d| d.child(usage_view(&analysis.usage))
-                    .child(stat("最大コンテキスト", fmt_tokens(analysis.peak_context), None)))
-                .child(div().text_small().text_color(c(theme::SUBTLE)).child("トークン・料金は記録された使用量を集計しています。"));
+                    .child(fact("最大コンテキスト", fmt_tokens(analysis.peak_context), None)));
         }
         if analysis.indices.is_empty() {
             out = out.child(

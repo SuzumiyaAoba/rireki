@@ -1,7 +1,7 @@
 //! 使用量、料金、モデル別集計の表示と共通フォーマット。
 
 use super::{
-    Div, ElementId, FontWeight, Stateful, Usage, UsageScale, UsageSum, c, div, fmt_n, px, stat,
+    Div, ElementId, FontWeight, Stateful, Usage, UsageScale, UsageSum, c, div, fact, fmt_n, px,
     theme, tilde, tip,
 };
 use crate::theme::Scale as _;
@@ -36,7 +36,12 @@ pub(in crate::app) fn fmt_tokens(n: u64) -> String {
 }
 
 /// 使用量の内訳の色: 入力・キャッシュ読込・キャッシュ書込・出力
-pub(super) const USAGE_COLORS: [u32; 4] = [0x5b9cf5, 0x3f6a9e, 0xd29a4a, 0x7fd18b];
+pub(super) const USAGE_COLORS: [u32; 4] = [
+    theme::HEAT[1],
+    theme::HEAT[2],
+    theme::HEAT[3],
+    theme::HEAT[4],
+];
 
 pub(super) const CACHE_HIT_TOOLTIP: &str = "入力全体（キャッシュなし・キャッシュ読込・キャッシュ書込の合計）のうち、キャッシュから読んだ割合。入力トークンの記録がない場合は —";
 
@@ -44,8 +49,8 @@ pub(super) fn fmt_cache_hit_rate(rate: Option<f64>) -> String {
     rate.map_or_else(|| "—".into(), |r| format!("{:.1}%", r * 100.0))
 }
 
-pub(super) fn cache_hit_stat(id: &'static str, usage: &UsageSum) -> Stateful<Div> {
-    stat(
+pub(super) fn cache_hit_fact(id: &'static str, usage: &UsageSum) -> Stateful<Div> {
+    fact(
         "キャッシュヒット率",
         fmt_cache_hit_rate(usage.cache_hit_rate()),
         None,
@@ -67,12 +72,6 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
         .flex()
         .flex_col()
         .gap_2()
-        .px_3()
-        .py_2p5()
-        .radius_md()
-        .bg(c(theme::BG))
-        .border_1()
-        .border_color(c(theme::LINE))
         .text_small()
         .child(
             div()
@@ -171,7 +170,7 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
                     .child(format!("出力のうち推論 {}", fmt_tokens(u.reasoning))),
             )
         })
-        .child(cache_hit_stat("usage-cache-hit", u))
+        .child(cache_hit_fact("usage-cache-hit", u))
 }
 
 /// 料金（USD）。1 ドル以上は桁区切りを入れる
@@ -209,7 +208,7 @@ pub(super) fn model_table(models: &[(String, UsageSum)]) -> Div {
                     if u.unpriced > 0 && u.cost == 0.0 {
                         div().text_color(c(theme::SUBTLE)).child("不明")
                     } else {
-                        div().text_color(c(theme::OK)).child(usage_cost_label(u))
+                        div().child(usage_cost_label(u))
                     },
                 ))
         }))

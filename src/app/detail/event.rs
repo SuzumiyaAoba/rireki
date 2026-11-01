@@ -2,9 +2,9 @@
 
 use super::{
     AnyElement, ClickEvent, Context, Div, Event, FOLD_DIFF, FOLD_LINES, Icon, Kind,
-    MARKDOWN_OUTPUT, Marquee, Rireki, Selection, SharedString, Stateful, Status, UsageScale, badge,
-    c, div, fmt_dur, fmt_n, icons, is_live, label, local, one_line, px, rich, status_label, theme,
-    tip, usage_input, usage_meter,
+    MARKDOWN_OUTPUT, Marquee, Rireki, Selection, SharedString, Stateful, Status, UsageScale, c,
+    div, fmt_dur, fmt_n, icons, is_live, label, local, one_line, px, rich, status_label,
+    status_text, theme, tip, usage_input, usage_meter,
 };
 use crate::theme::Scale as _;
 use gpui::prelude::*;
@@ -93,13 +93,12 @@ impl Rireki {
                     .gap_1p5()
                     .px_2()
                     .py_1p5()
-                    .radius_md()
-                    .bg(c(theme::event_color(u)).opacity(0.07))
-                    .border_l_2()
-                    .border_color(c(theme::event_color(u)).opacity(0.7))
+                    .radius_sm()
+                    .border_l_1()
+                    .border_color(c(theme::LINE))
                     .text_small()
                     .cursor_pointer()
-                    .hover(|d| d.bg(c(theme::event_color(u)).opacity(0.12)))
+                    .hover(|d| d.bg(c(theme::HOVER)))
                     .child(
                         div()
                             .flex_none()
@@ -360,7 +359,7 @@ impl Rireki {
                         .child(format!("{} 行", fmt_n(lines))),
                 )
             })
-            .when_some(status.clone(), |d, (l, col)| d.child(badge(l, col)));
+            .when_some(status.clone(), |d, (l, col)| d.child(status_text(l, col)));
         let body: AnyElement = if output.is_empty() {
             let note = match e.status {
                 Status::Pending if live => "結果はまだありません",
@@ -424,7 +423,7 @@ impl Rireki {
             |d| {
                 d.pl_2()
                     .border_l_2()
-                    .border_color(c(status.map_or(theme::ERR, |s| s.1)).opacity(0.6))
+                    .border_color(c(status.map_or(theme::ERR, |s| s.1)))
             },
         )
     }

@@ -2,9 +2,9 @@
 
 use super::{
     AnyElement, ClickEvent, Context, DETAIL_MAX, DetailListKey, DetailRow, Div, ElementId, Event,
-    FontWeight, Icon, Kind, Marquee, Rireki, Selection, SharedString, Stateful, Window, badge, c,
-    div, event_icon, fmt_dur, fmt_n, is_live, label, list, local, one_line, px, rich, status_label,
-    theme, tip, usage_meter,
+    FontWeight, Icon, Kind, Marquee, Rireki, Selection, SharedString, Stateful, Window, c, div,
+    event_icon, fmt_dur, fmt_n, is_live, label, list, local, one_line, px, rich, status_label,
+    status_text, theme, tip, usage_meter,
 };
 use crate::theme::Scale as _;
 use gpui::prelude::*;
@@ -300,9 +300,8 @@ impl Rireki {
             .px_2p5()
             .py_2()
             .radius_md()
-            .bg(c(color).opacity(0.08))
             .border_1()
-            .border_color(c(color).opacity(0.25))
+            .border_color(c(theme::LINE))
             .flex()
             .flex_col()
             .gap_1()
@@ -323,7 +322,7 @@ impl Rireki {
                     )
                     .child(div().flex_1())
                     .when(failures > 0, |d| {
-                        d.child(badge(format!("失敗等 {}", failures), theme::ERR))
+                        d.child(status_text(format!("失敗等 {}", failures), theme::ERR))
                     })
                     .child(
                         div()
@@ -405,7 +404,7 @@ impl Rireki {
                         ))
                     })
                     .when(!foldable, |d| d.child(label(e.name.to_string())))
-                    .when_some(status, |d, (l, color)| d.child(badge(l, color)))
+                    .when_some(status, |d, (l, color)| d.child(status_text(l, color)))
                     .child(div().flex_1())
                     .when(e.end > e.start, |d| {
                         d.child(
@@ -560,7 +559,7 @@ impl Rireki {
                             .rounded_full()
                             .bg(c(theme::PANEL))
                             .border_1()
-                            .border_color(c(color).opacity(0.5))
+                            .border_color(c(theme::LINE))
                             .child(
                                 div()
                                     .size_full()
@@ -568,7 +567,6 @@ impl Rireki {
                                     .items_center()
                                     .justify_center()
                                     .rounded_full()
-                                    .bg(c(color).opacity(0.16))
                                     .child(event_icon(
                                         theme::event_icon(e),
                                         color,

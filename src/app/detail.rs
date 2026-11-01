@@ -134,16 +134,9 @@ fn status_label(e: &Event, live: bool, output: &str) -> Option<(String, u32)> {
     }
 }
 
-fn badge(label: impl Into<SharedString>, color: u32) -> Div {
-    div()
-        .flex_none()
-        .px_1p5()
-        .radius_sm()
-        .bg(c(color).opacity(0.15))
-        .text_small()
-        .text_color(c(color))
-        .whitespace_nowrap()
-        .child(label.into())
+/// 状態は色付きの文字で示す。塗りは使わない
+fn status_text(label: impl Into<SharedString>, color: u32) -> Div {
+    div().flex_none().text_small().text_color(c(color)).whitespace_nowrap().child(label.into())
 }
 
 /// 小見出し（「入力」「結果」など）
@@ -151,30 +144,21 @@ fn label(text: impl Into<SharedString>) -> Div {
     div().flex_none().text_small().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::MUTED)).child(text.into())
 }
 
-/// 集計の 1 項目。並べたときに行の幅を等分する
-fn stat(name: &'static str, value: String, color: Option<u32>) -> Div {
+/// 集計の 1 項目。ラベルと値を 2 列に並べ、罫線で区切る
+fn fact(name: &'static str, value: String, color: Option<u32>) -> Div {
     div()
-        .flex_1()
-        .min_w(px(88.0))
+        .w_full()
         .flex()
-        .flex_col()
-        .gap_0p5()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .py_1()
+        .border_b_1()
+        .border_color(c(theme::LINE_SOFT))
         .whitespace_nowrap()
-        .px_2p5()
-        .py_2()
-        .radius_md()
-        .bg(c(theme::BG))
-        .border_1()
-        .border_color(c(theme::LINE))
-        .child(
-            div()
-                .text_heading()
-                .line_height(px(22.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(c(color.unwrap_or(theme::TEXT)))
-                .child(value),
-        )
-        .child(div().truncate().text_small().text_color(c(theme::SUBTLE)).child(name))
+        .text_small()
+        .child(div().truncate().text_color(c(theme::MUTED)).child(name))
+        .child(div().text_color(c(color.unwrap_or(theme::TEXT))).child(value))
 }
 
 fn detail_tab_index(tab: DetailTab) -> usize {
@@ -221,15 +205,8 @@ impl Rireki {
             DetailTab::Analysis => gpui::AnyView::from(self.analysis_content_view.clone())
                 .cached(StyleRefinement::default().w_full().flex_1().min_h_0())
                 .into_any_element(),
-            DetailTab::Files if files == 0 => div().p_3().child(
-                div().w_full().p_4().flex().flex_col().items_center().gap_2()
-                    .radius_md().bg(c(theme::BG)).border_1().border_color(c(theme::LINE))
-                    .child(div().size(px(36.0)).rounded_full().flex().items_center().justify_center()
-                        .bg(c(theme::RAISED)).child(icons::icon(Icon::FilePen, theme::MUTED).size_4()))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("変更されたファイルはありません"))
-                    .child(div().text_small().text_center().text_color(c(theme::MUTED))
-                        .child("この範囲にはファイル編集が記録されていません")),
-            ).into_any_element(),
+            DetailTab::Files if files == 0 => div().p_3().text_center().text_color(c(theme::MUTED))
+                .child("変更されたファイルはありません").into_any_element(),
             DetailTab::Files => div().flex_1().min_h_0().p_3().flex().flex_col()
                 .child(self.files_list(sel, self.cache(sel).unwrap(), window, cx)).into_any_element(),
             DetailTab::Events if sel.first == sel.last => div().id("detail-scroll")
@@ -256,12 +233,9 @@ impl Rireki {
         let title = if overview { "セッション全体 · 全エージェント".to_string() } else {
             format!("{} · {} 件", if whole { "レーン全体" } else { "選択範囲" }, fmt_n(events.len()))
         };
-        div().flex_none().px_3().py_2().flex().flex_col().gap_1().text_small()
-            .bg(c(theme::BG)).border_b_1().border_color(c(theme::LINE))
-            .child(div().flex().items_center().gap_2()
-                .child(div().text_color(c(theme::MUTED)).child("対象"))
-                .child(div().id("detail-scope-title").flex_1().min_w_0().truncate().font_weight(FontWeight::MEDIUM)
-                    .text_color(c(theme::TEXT)).tooltip(tip(title.clone(), None)).child(title))
+        div().flex_none().px_3().pb_2().flex().items_center().gap_2().text_small()
+            .child(div().id("detail-scope-title").flex_1().min_w_0().truncate()
+                .text_color(c(theme::TEXT)).tooltip(tip(title.clone(), None)).when(!overview, |d| d.child(title)))
                 .when(!overview && !whole, |d| d.child(self.icon_button(
                     "scope-lane", Some(Icon::Layers), "レーン全体", false, cx,
                     move |app, w, cx| {
@@ -271,9 +245,8 @@ impl Rireki {
                         app.navigate(Selection { first: 0, last: n - 1, ..sel }, w, cx);
                         app.set_detail_tab(tab, cx);
                     },
-                ).tooltip(tip("このレーンの全イベントを見る", None)))))
-            .child(div().flex().items_center().gap_1p5().text_color(c(theme::MUTED))
-                .child(icons::icon(Icon::Clock, theme::MUTED).size_3().flex_none())
+                ).tooltip(tip("このレーンの全イベントを見る", None))))
+            .child(div().flex_none().text_color(c(theme::SUBTLE))
                 .child(format!("{} – {}", local(start).format("%Y/%m/%d %H:%M:%S"),
                     local(end).format(if local(start).date_naive() == local(end).date_naive() {
                         "%H:%M:%S"
@@ -285,9 +258,9 @@ impl Rireki {
         div().flex_none().px_2().border_b_1().border_color(c(theme::LINE)).child(
             div()
                 .flex()
-                .child(self.tab_button(DetailTab::Session, "概要", None, "1", tab, true, cx))
-                .child(self.tab_button(DetailTab::Events, "履歴", n_events, "2", tab, true, cx))
-                .child(self.tab_button(DetailTab::Files, "変更", files, "3", tab, true, cx))
+                .child(self.tab_button(DetailTab::Session, "セッション", None, "1", tab, true, cx))
+                .child(self.tab_button(DetailTab::Events, "イベント", n_events, "2", tab, true, cx))
+                .child(self.tab_button(DetailTab::Files, "ファイル", files, "3", tab, true, cx))
                 .child(self.tab_button(DetailTab::Analysis, "分析", None, "4", tab, true, cx)),
         )
     }
@@ -330,10 +303,7 @@ impl Rireki {
             .when_some(count.filter(|&n| n > 0), |d, n| {
                 d.child(
                     div()
-                        .px_1p5()
-                        .rounded_full()
-                        .bg(c(if on { theme::ACCENT_BG } else { theme::LINE_SOFT }))
-                        .text_color(c(if on { theme::ACCENT } else { theme::MUTED }))
+                        .text_color(c(theme::MUTED))
                         .text_axis()
                         .child(if n > 999 { "999+".into() } else { fmt_n(n) }),
                 )
@@ -436,8 +406,7 @@ impl Rireki {
                 !self.back.is_empty(), cx, |t, w, cx| t.go_back(w, cx)))
             .child(self.ghost_button("d-forward", Icon::ArrowRight, "進む", Some(crate::platform::shortcut("⌘]", "Ctrl+]")),
                 !self.forward.is_empty(), cx, |t, w, cx| t.go_forward(w, cx)))
-            .child(div().flex_1().min_w_0().pl_1().font_weight(FontWeight::SEMIBOLD)
-                .text_color(c(theme::MUTED)).child("セッション詳細"))
+            .child(div().flex_1().min_w_0())
             .child(self.ghost_button("d-locate", Icon::Locate, "選択位置を表示", None, true, cx,
                 |t, w, cx| { t.detail_fullscreen = false;
                     if let Some(sel) = t.selected { t.reveal(sel, true, w); }
@@ -454,7 +423,7 @@ impl Rireki {
         let lane = &s.lanes[sel.lane];
         let single = sel.first == sel.last;
         let e = &lane.events[sel.first];
-        let title = if single { e.name.to_string() } else { "イベントの履歴".into() };
+        let title = if single { e.name.to_string() } else { String::new() };
         let pos = if single { fmt_n(sel.first + 1) } else {
             format!("{}–{}", fmt_n(sel.first + 1), fmt_n(sel.last + 1))
         };
@@ -464,7 +433,7 @@ impl Rireki {
             .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD)
                 .text_color(c(theme::MUTED)).child(title))
             .when(single, |d| d.when_some(status_label(e, is_live(s.end), output),
-                |d, (text, color)| d.child(badge(text, color))))
+                |d, (text, color)| d.child(status_text(text, color))))
             .child(self.ghost_button("d-prev", Icon::ChevronUp, "前のイベント", Some("K"),
                 !single || if self.detail_reversed { sel.first + 1 < lane.events.len() } else { sel.first > 0 },
                 cx, |t, w, cx| t.step_event(-1, w, cx)).size(px(22.0)))
@@ -497,7 +466,6 @@ impl Rireki {
                     .child(s.source.label())
                     .tooltip(tip(s.source.label(), None)),
             )
-            .child(div().text_color(c(theme::SUBTLE)).child("·"))
             .child(project_mark(&s.cwd))
             .child(
                 div()
@@ -511,15 +479,13 @@ impl Rireki {
         if sel.lane != 0 {
             let (session, parent_id) = (sel.session, lane.spawned_by.clone());
             meta = meta
-                .child(div().text_color(c(theme::SUBTLE)).child("·"))
-                .child(icons::icon(Icon::Bot, theme::SUB).size_3().flex_none())
+                .child(icons::icon(Icon::Bot, theme::MUTED).size_3().flex_none())
                 .child(
                     div()
                         .flex_shrink()
                         .min_w(px(24.0))
                         .max_w(px(120.0))
                         .truncate()
-                        .text_color(c(theme::SUB))
                         .child(lane.name.clone()),
                 )
                 .when_some(parent_id, |d, id| {
@@ -555,7 +521,7 @@ impl Rireki {
                     .child(Marquee::new("title", one_line(&title, usize::MAX)))
                     .tooltip(tip("セッションの概要を表示", Some("1")))
                     .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.set_detail_tab(DetailTab::Session, cx))))
-                .when(is_live(s.end), |d| d.child(badge("進行中", theme::LIVE))))
+                .when(is_live(s.end), |d| d.child(status_text("進行中", theme::LIVE))))
             .child(meta)
     }
 

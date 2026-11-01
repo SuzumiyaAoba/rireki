@@ -4,8 +4,8 @@ use std::cell::RefCell;
 
 use gpui::{AnyElement, ClickEvent, ClipboardItem, Context, Div, ListAlignment, ListOffset, ListState, Stateful, Window, div, list, prelude::*, px};
 
-use super::{Rireki, RowFilter, Selection, resume_command, rich, tilde, badge, cache_hit_stat, fmt_dur, fmt_n, label, local, stat, usage_cost_label};
-use crate::app::widgets::{Marquee, tip};
+use super::{Rireki, RowFilter, Selection, resume_command, rich, tilde, status_text, cache_hit_fact, fmt_dur, fmt_n, label, local, fact, usage_cost_label};
+use crate::app::widgets::{Marquee, dot, tip};
 use crate::icons::{self, Icon};
 use crate::model::{Source, one_line};
 use crate::theme::Scale as _;
@@ -134,16 +134,13 @@ impl Rireki {
                     .flex_col()
                     .gap_2()
                     .pb_3()
-                    .child(label("セッションの集計"))
-                    // 幅によって最後の項目だけが次の行に残らないよう、関連する数字を行ごとにまとめる。
                     .child(
-                        div().flex().gap_2()
-                            .child(stat("経過時間", fmt_dur((s.end - s.start).max(0.0)), None))
-                            .child(stat("ターン", fmt_n(summary.total.stats.turns), None))
+                        div().flex().flex_col()
+                            .child(fact("経過時間", fmt_dur((s.end - s.start).max(0.0)), None))
+                            .child(fact("ターン", fmt_n(summary.total.stats.turns), None))
                             .child(
-                                stat("失敗等", fmt_n(failures), (failures > 0).then_some(theme::ERR))
+                                fact("失敗等", fmt_n(failures), (failures > 0).then_some(theme::ERR))
                                     .id("overview-failures")
-                                    .relative()
                                     .tooltip(tip(
                                         if failures > 0 {
                                             "失敗・拒否・中断の合計。押すと最も多いレーンを表示"
@@ -153,21 +150,19 @@ impl Rireki {
                                         None,
                                     ))
                                     .when(failures > 0, |d| {
-                                        d.border_color(c(theme::ERR).opacity(0.4))
-                                            .child(div().absolute().top_2().right_2()
-                                                .child(icons::icon(Icon::ChevronRight, theme::ERR).size_3()))
-                                            .cursor_pointer()
+                                        d.cursor_pointer()
                                             .hover(|s| s.bg(c(theme::HOVER)))
                                             .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
                                                 t.open_failures(session, w, cx)
                                             }))
                                     }),
-                            ),
-                    )
-                    .child(
-                        div().flex().gap_2()
-                            .child(stat("API換算料金", usage_cost_label(&summary.total.usage), None))
-                            .child(cache_hit_stat("overview-cache-hit", &summary.total.usage)),
+                            )
+                            .child(
+                                fact("料金", usage_cost_label(&summary.total.usage), None)
+                                    .id("overview-cost")
+                                    .tooltip(tip("ログの使用量と料金表による API 換算の推定値", None)),
+                            )
+                            .child(cache_hit_fact("overview-cache-hit", &summary.total.usage)),
                     )
                     .child(
                         div().flex().flex_wrap().gap_1p5().pt_1()
@@ -184,21 +179,9 @@ impl Rireki {
                                     t.flash_copied("copy-resume", cx);
                                 })),
                             )
-                            .when(!s.lanes[0].events.is_empty(), |d| {
-                                d.child(
-                                    self.action_button("all-events", Icon::Layers, "メインの履歴")
-                                        .tooltip(tip("メインのレーン全体を履歴に表示", None))
-                                        .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
-                                            t.open_lane_filtered(session, 0, None, w, cx)
-                                        })),
-                                )
-                            }),
+                            ,
                     )
-                    .child(
-                        div().pt_2().flex().items_center().gap_2()
-                            .child(label("指示と応答"))
-                            .child(div().text_small().text_color(c(theme::MUTED)).child("メイン")),
-                    )
+                    .child(div().pt_2().child(label("指示と応答")))
                     .into_any_element()
             }
             Row::NoTurns => div()
@@ -217,10 +200,9 @@ impl Rireki {
                     .id(("overview-turn", first))
                     .w_full()
                     .min_w_0()
-                    .p_2()
-                    .radius_md()
-                    .border_1()
-                    .border_color(c(theme::LINE))
+                    .py_2()
+                    .border_b_1()
+                    .border_color(c(theme::LINE_SOFT))
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -238,9 +220,8 @@ impl Rireki {
                             ))
                             .child(div().flex_1())
                             .when(turn.failures > 0, |d| {
-                                d.child(badge(format!("失敗等 {}", turn.failures), theme::ERR))
-                            })
-                            .child(icons::icon(Icon::ChevronRight, theme::MUTED).size_3()),
+                                d.child(status_text(format!("失敗等 {}", turn.failures), theme::ERR))
+                            }),
                     )
                     .child(div().text_body().child(Marquee::new(
                         "prompt",
@@ -273,7 +254,7 @@ impl Rireki {
                 // 仮想リストでは行の margin が間隔にならないため、余白を行の内側に含める。
                 div().w_full().min_w_0().pb_2().child(card).into_any_element()
             }
-            Row::Agents => div().pt_2().pb_2().child(label("エージェント構成")).into_any_element(),
+            Row::Agents => div().pt_2().pb_2().child(label("レーン")).into_any_element(),
             Row::Lane(lane, depth) => {
                 let l = &s.lanes[lane];
                 let failures = summary.lanes[lane].stats.failures();
@@ -291,7 +272,7 @@ impl Rireki {
                     .mb_1()
                     .radius_md()
                     .text_small()
-                    .child(icons::icon(if lane == 0 { Icon::Layers } else { Icon::Bot }, theme::SUB).size_3())
+                    .child(if lane == 0 { div().flex_none().size(px(8.0)) } else { dot(theme::AGENT, 8.0) })
                     .child(div().flex_1().min_w_0().truncate().child(if lane == 0 {
                         "メイン".into()
                     } else {
