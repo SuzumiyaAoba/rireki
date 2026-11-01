@@ -165,7 +165,7 @@ impl Rireki {
                             .child(cache_hit_fact("overview-cache-hit", &summary.total.usage)),
                     )
                     .child(
-                        div().flex().flex_wrap().gap_1p5().pt_1()
+                        div().flex().flex_wrap().gap_2().pt_1()
                             .child(
                                 self.action_button(
                                     "resume",
@@ -268,7 +268,7 @@ impl Rireki {
                     .gap_2()
                     .pl(px(8.0 + depth as f32 * 14.0))
                     .pr_2()
-                    .py_1p5()
+                    .py_2()
                     .mb_1()
                     .radius_md()
                     .text_small()
@@ -350,7 +350,7 @@ impl Rireki {
         let actions = div()
             .flex()
             .flex_wrap()
-            .gap_1p5()
+            .gap_2()
             .when(!origin.is_empty(), |d| {
                 d.child(
                     self.action_button("reveal-log", Icon::FolderOpen, "ログを表示")
@@ -364,7 +364,7 @@ impl Rireki {
             div()
                 .flex()
                 .flex_col()
-                .gap_1p5()
+                .gap_2()
                 .pt_2()
                 .border_t_1()
                 .border_color(c(theme::LINE))
@@ -452,7 +452,7 @@ impl Rireki {
             .items_center()
             .gap_1()
             .px_2()
-            .py_1p5()
+            .py_2()
             .radius_md()
             .border_1()
             .border_color(c(theme::LINE))

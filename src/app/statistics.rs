@@ -370,7 +370,7 @@ impl Rireki {
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap_x_1p5()
+                    .gap_x_2()
                     .child(div().flex_none().text_color(c(theme::TEXT)).child(delta(value, before)))
                     .child(div().text_color(c(theme::MUTED)).child(label))
             }

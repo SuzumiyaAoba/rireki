@@ -432,7 +432,7 @@ impl Rireki {
             format!("{}–{}", fmt_n(sel.first + 1), fmt_n(sel.last + 1))
         };
         let output = self.cache(sel).and_then(|d| d.texts.first()).map_or("", |t| t.1.as_str());
-        div().flex_none().flex().items_center().gap_1p5().text_small()
+        div().flex_none().flex().items_center().gap_2().text_small()
             .when(single, |d| d.child(event_icon(theme::event_icon(e), theme::event_color(e), 13.0)))
             .child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::SEMIBOLD)
                 .text_color(c(theme::MUTED)).child(title))
@@ -457,7 +457,7 @@ impl Rireki {
             .flex_none()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap_2()
             .min_w_0()
             .text_small()
             .text_color(c(theme::MUTED))
@@ -517,7 +517,7 @@ impl Rireki {
                     )
                 });
         }
-        div().flex_none().px_3().pt_3().pb_2().flex().flex_col().gap_1p5()
+        div().flex_none().px_3().pt_3().pb_2().flex().flex_col().gap_2()
             .child(div().flex().items_center().gap_2()
                 .child(div().id("ctx-session").flex_1().min_w_0().text_heading()
                     .font_weight(FontWeight::SEMIBOLD).cursor_pointer()
@@ -565,7 +565,7 @@ impl Rireki {
                 .flex()
                 .items_center()
                 .gap_1()
-                .px_1p5()
+                .px_2()
                 .py(px(1.0))
                 .radius_md()
                 .border_1()
@@ -603,7 +603,7 @@ impl Rireki {
             chips = chips.child(chip("chip-failed".into(), format!("失敗等 {}", st.failures()),
                 None, filter == Some(RowFilter::Failed), Some(RowFilter::Failed)));
         }
-        div().flex().flex_col().gap_1p5().pb_2().border_b_1().border_color(c(theme::LINE))
+        div().flex().flex_col().gap_2().pb_2().border_b_1().border_color(c(theme::LINE))
             .child(label("イベントで絞り込む"))
             .child(chips)
     }

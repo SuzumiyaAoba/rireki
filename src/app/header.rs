@@ -25,7 +25,7 @@ const PAD: f32 = 12.0;
 const ITEM_GAP: f32 = 8.0;
 /// 幅がとても狭いときの余白と間隔
 const DENSE_PAD: f32 = 8.0;
-const DENSE_GAP: f32 = 6.0;
+const DENSE_GAP: f32 = 4.0;
 
 /// 部品の推定幅。配置を決めるときだけ使う（実際の幅は描画で決まる）
 const NAV_W: f32 = 102.0;
@@ -78,7 +78,7 @@ fn text_w(s: &str, size: f32) -> f32 {
 
 /// 期間の表記のボタンの推定幅（矢印・余白と、`icon` ならアイコンを含む。太字の分を少し足す）
 fn title_w(s: &str, icon: bool) -> f32 {
-    text_w(s, 14.0) * 1.04 + if icon { 54.0 } else { 34.0 }
+    text_w(s, 14.0) * 1.04 + if icon { 56.0 } else { 34.0 }
 }
 
 /// 表示の切り替え（イベント / 料金）のラベル
@@ -460,7 +460,7 @@ impl Rireki {
             .flex()
             .min_w_0()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(8.0))
             .h(px(CONTROL_H))
             .px_2()
             .radius_md()
@@ -599,7 +599,7 @@ impl Rireki {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap_1p5()
+                .gap_2()
                 .pl_1()
                 .pr(px(2.0))
                 .h(px(CONTROL_H))
@@ -620,7 +620,7 @@ impl Rireki {
                 .child(
                     div()
                         .id("focus-clear")
-                        .p(px(3.0))
+                        .p(px(4.0))
                         .radius_sm()
                         .cursor_pointer()
                         .hover(|s| s.bg(c(theme::HOVER)))

@@ -100,7 +100,7 @@ impl Rireki {
                 div()
                     .flex()
                     .items_center()
-                    .gap_1p5()
+                    .gap_2()
                     .child(swatch(series(i)))
                     .child(div().text_color(c(theme::MUTED)).child(["Claude", "Codex"][i]))
                     .child(metric.format(shown[i]))
@@ -109,7 +109,7 @@ impl Rireki {
                 d.child(
                     div()
                         .flex()
-                        .gap_1p5()
+                        .gap_2()
                         .child(div().text_color(c(theme::MUTED)).child("計"))
                         .child(metric.format(shown[0] + shown[1])),
                 )
@@ -237,7 +237,7 @@ impl Rireki {
         };
         let readout = div()
             .flex()
-            .gap_1p5()
+            .gap_2()
             .child(div().font_weight(FontWeight::SEMIBOLD).child(head))
             .when_some(shown, |d, v| d.child(value(v)));
         let label = |text: String| div().text_axis().text_color(c(theme::MUTED)).child(text);

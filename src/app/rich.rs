@@ -338,7 +338,7 @@ pub fn code_frame() -> Div {
         .min_w_0()
         .overflow_hidden()
         .px_2()
-        .py_1p5()
+        .py_2()
         .radius_md()
         .bg(c(CODE_BG))
         .text_small()
@@ -422,7 +422,7 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
         let head = div()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap_2()
             .px_2()
             .py_1()
             .bg(c(theme::RAISED))
@@ -773,7 +773,7 @@ fn inline_text(s: &str) -> StyledText {
 
 /// Markdown の表示。`color` は本文の文字の色
 pub fn markdown(s: &str, color: u32) -> Div {
-    let mut col = div().flex().flex_col().gap_1p5().min_w_0().whitespace_normal().text_color(c(color));
+    let mut col = div().flex().flex_col().gap_2().min_w_0().whitespace_normal().text_color(c(color));
     for (i, b) in blocks(s).into_iter().enumerate() {
         col = col.child(match b {
             Block::Heading(level, text) => div()
@@ -807,7 +807,7 @@ pub fn markdown(s: &str, color: u32) -> Div {
                 };
                 div()
                     .flex()
-                    .gap_1p5()
+                    .gap_2()
                     .min_w_0()
                     .pl(px(depth as f32 * 16.0))
                     .child(div().flex_none().min_w(px(12.0)).text_color(c(mark_color)).child(mark))
@@ -839,7 +839,7 @@ pub fn markdown(s: &str, color: u32) -> Div {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .px_1p5()
+                                    .px_2()
                                     .py_1()
                                     .when(ci > 0, |d| d.border_l_1().border_color(c(theme::LINE)))
                                     .child(inline_text(row.get(ci).map_or("", String::as_str)))
@@ -863,7 +863,7 @@ fn diff_row(r: &crate::patch::DiffRow, spans: &Spans, gutter: f32, numbers: bool
         div()
             .w(px(gutter))
             .flex_none()
-            .pr_1p5()
+            .pr_2()
             .flex()
             .justify_end()
             .text_color(c(theme::SUBTLE))

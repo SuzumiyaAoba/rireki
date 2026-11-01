@@ -46,6 +46,22 @@ pub const LOGO_CODEX: u32 = 0xd0d0d0;
 /// モーダルの背後に敷く幕の透明度。黒に重ねる
 pub const SCRIM: f32 = 0.45;
 
+/// 塗りの上に載せる文字・アイコンの色。BACKDROP と TEXT のうち、対比の高い方を選ぶ
+pub fn ink_on(fill: u32) -> u32 {
+    fn luminance(hex: u32) -> f32 {
+        let channel = |shift: u32| {
+            let v = ((hex >> shift) & 0xff) as f32 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+    let contrast = |ink: u32| {
+        let (a, b) = (luminance(fill), luminance(ink));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    };
+    if contrast(BACKDROP) >= contrast(TEXT) { BACKDROP } else { TEXT }
+}
+
 /// 角丸は 4 段。正円は点だけに使う
 pub mod radius {
     pub const SM: f32 = 3.0;
@@ -285,6 +301,25 @@ mod tests {
     }
 
     #[test]
+    fn ink_stays_readable_on_every_category_color() {
+        let contrast = |a: u32, b: u32| {
+            let l = |hex: u32| {
+                let ch = |s: u32| {
+                    let v = ((hex >> s) & 0xff) as f32 / 255.0;
+                    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+                };
+                0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+            };
+            let (x, y) = (l(a), l(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        for category in &CATEGORIES {
+            let ink = ink_on(category.color);
+            assert!(contrast(ink, category.color) >= 3.0, "{} の上の文字", category.key);
+        }
+    }
+
+    #[test]
     fn scales_match_tokens() {
         let radius = section("radius");
         assert_eq!(number(radius, "sm"), radius::SM);
@@ -362,6 +397,30 @@ mod tests {
                 let next = &code[at + ".opacity(".len()..];
                 if next.starts_with(|c: char| c.is_ascii_digit()) && !next.starts_with("0.0)") {
                     found.push(format!("{name}: 透明度の直書き {}", &next[..next.find(')').unwrap_or(8)]));
+                }
+            }
+            // 余白は 4px の倍数（1〜2px の区切りのすき間を除く）。rem 指定の 0.5・1.5・2.5・3.5 は使わない
+            for m in [
+                "p", "px", "py", "pt", "pb", "pl", "pr", "m", "mx", "my", "mt", "mb", "ml", "mr", "gap", "gap_x",
+                "gap_y",
+            ] {
+                for odd in ["0p5", "1p5", "2p5", "3p5"] {
+                    if code.contains(&format!(".{m}_{odd}(")) {
+                        found.push(format!("{name}: 余白 .{m}_{odd}()"));
+                    }
+                }
+                let call = format!(".{m}(px(");
+                for (at, _) in code.match_indices(&call) {
+                    let rest = &code[at + call.len()..];
+                    let Ok(value) = rest[..rest.find(')').unwrap_or(0)].parse::<f32>() else { continue };
+                    let line_start = code[..at].rfind('\n').map_or(0, |n| n + 1);
+                    let line_end = code[at..].find('\n').map_or(code.len(), |n| at + n);
+                    if code[line_start..line_end].contains("余白の例外") {
+                        continue;
+                    }
+                    if value < 0.0 || (value > 2.0 && value % 4.0 != 0.0) {
+                        found.push(format!("{name}: 余白 {call}{value})"));
+                    }
                 }
             }
             if !RAW_COLORS.contains(&name) {

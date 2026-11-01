@@ -112,7 +112,7 @@ impl Rireki {
                     div()
                         .flex()
                         .items_center()
-                        .gap_1p5()
+                        .gap_2()
                         .pb_1()
                         .child(label(format!(
                             "記録された編集 · {} ファイル",
@@ -234,7 +234,7 @@ impl Rireki {
             list = list.child(
                 div()
                     .id("more-files")
-                    .px_1p5()
+                    .px_2()
                     .text_small()
                     .text_color(c(theme::ACCENT))
                     .cursor_pointer()
@@ -419,9 +419,9 @@ impl Rireki {
                             .id(ElementId::NamedInteger("edit-head".into(), *i as u64))
                             .flex()
                             .items_center()
-                            .gap_1p5()
+                            .gap_2()
                             .px_1()
-                            .py_0p5()
+                            .py_1()
                             .radius_md()
                             .text_small()
                             .cursor_pointer()
@@ -429,7 +429,7 @@ impl Rireki {
                             .child(
                                 div()
                                     .flex_none()
-                                    .px_1p5()
+                                    .px_2()
                                     .rounded_full()
                                     .bg(c(theme::LINE_SOFT))
                                     .text_color(c(theme::MUTED))
@@ -506,7 +506,7 @@ impl Rireki {
             );
         }
         div()
-            .ml(px(10.0))
+            .ml(px(12.0))
             .pb_3()
             .pl_3()
             .when(matches!(row, FileRow::History(_)), |d| d.pt_1())

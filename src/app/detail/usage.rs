@@ -77,7 +77,7 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
             div()
                 .flex()
                 .items_end()
-                .gap_1p5()
+                .gap_2()
                 .child(
                     div()
                         .text_heading()
@@ -140,7 +140,7 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
                         .pr_3()
                         .flex()
                         .items_center()
-                        .gap_1p5()
+                        .gap_2()
                         .child(div().size(px(8.0)).flex_none().radius_sm().bg(c(col)))
                         .child(
                             div()
@@ -187,7 +187,7 @@ pub(super) fn model_table(models: &[(String, UsageSum)]) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap_0p5()
+        .gap_1()
         .children(models.iter().map(|(m, u)| {
             div()
                 .flex()
@@ -269,7 +269,7 @@ pub(super) fn usage_meter(
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap_0p5()
+                    .gap_1()
                     .child(
                         div()
                             .flex()

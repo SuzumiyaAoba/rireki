@@ -88,7 +88,7 @@ impl Rireki {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_0p5()
+                    .gap_1()
                     .child(columns(&layout, scale))
                     .children(rows)
                     .children(other)
@@ -107,7 +107,7 @@ impl Rireki {
     fn tools_legend(&self, layout: &Layout) -> Div {
         let sources = self.shown_sources();
         let item = |mark: Div, text: &'static str| {
-            div().flex().items_center().gap_1p5().child(mark).child(div().text_color(c(theme::MUTED)).child(text))
+            div().flex().items_center().gap_2().child(mark).child(div().text_color(c(theme::MUTED)).child(text))
         };
         div()
             .flex_none()
@@ -364,7 +364,7 @@ impl Axis {
                 } else if i == last {
                     d.right_0()
                 } else {
-                    d.left(relative(x)).ml(px(-16.0)).w(px(32.0)).flex().justify_center()
+                    d.left(relative(x)).ml(px(-16.0)).w(px(32.0)).flex().justify_center() // 余白の例外: 目盛りの文字を位置の中央に置く
                 }
             }),
         )

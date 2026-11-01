@@ -54,8 +54,6 @@ impl Rireki {
                 SHARE_W,
             )
             .id(ElementId::NamedInteger("statistics-project".into(), i as u64))
-            .mx(px(-6.0))
-            .px(px(6.0))
             .radius_md()
             .cursor_pointer()
             .hover(|d| d.bg(c(theme::HOVER)))
@@ -168,7 +166,7 @@ impl Rireki {
                                 .flex()
                                 .flex_wrap()
                                 .gap_x_3()
-                                .gap_y_0p5()
+                                .gap_y_1()
                                 .text_color(c(theme::MUTED))
                                 .child(format!("入力 {}", fmt_tokens(usage.input)))
                                 .child(format!("キャッシュ読込 {}", fmt_tokens(usage.cache_read)))

@@ -322,13 +322,14 @@ impl Rireki {
                                         ib,
                                         b.icon.path().into(),
                                         gpui::TransformationMatrix::unit(),
-                                        if waterfall { col } else { c(theme::BACKDROP) },
+                                        if chip { col } else { c(theme::ink_on(b.color)) },
                                         cx,
                                     );
                                     text_x = if waterfall { 6.0 + ICON + 5.0 } else { 3.0 + ICON + 3.0 };
                                 }
                                 let Some(label) = &b.label else { continue };
-                                label_paint = Some((label, b.duration.as_ref(), r, text_x, h));
+                                label_paint =
+                                    Some((label, b.duration.as_ref(), r, text_x, h, if chip { theme::TEXT } else { theme::ink_on(b.color) }));
                             }
                         };
                         if plain(&blocks[first]) {
@@ -337,8 +338,8 @@ impl Rireki {
                             // SVGの画素丸めを含む範囲で、本体とアイコンをまとめる。
                             window.paint_layer(layer.dilate(px(3.0 / window.scale_factor())), paint);
                         }
-                        if let Some((label, duration, r, text_x, h)) = label_paint {
-                            let foreground = if waterfall { c(theme::TEXT) } else { c(theme::BACKDROP) };
+                        if let Some((label, duration, r, text_x, h, ink)) = label_paint {
+                            let foreground = c(ink);
                             let run = TextRun {
                                 len: label.len(),
                                 font: font.clone(),
@@ -386,7 +387,7 @@ impl Rireki {
                                         &line,
                                         point(r.right() - line.width - px(6.0), r.top() + px(top)),
                                         line_h,
-                                        if waterfall { c(theme::MUTED) } else { foreground },
+                                        if ink == theme::TEXT && waterfall { c(theme::MUTED) } else { foreground },
                                         window,
                                         cx,
                                     );
@@ -539,7 +540,7 @@ impl Rireki {
                                     .text_color(c(theme::TEXT))
                                     .child(self.project_name(cwd)),
                             )
-                            .child(div().flex_none().px_1p5().radius_sm().bg(c(theme::BG))
+                            .child(div().flex_none().px_2().radius_sm().bg(c(theme::BG))
                                 .text_axis().text_color(c(theme::MUTED)).child(fmt_n(sessions.len())))
                             // 右寄せは ml_auto ではなく詰め物で行う（auto マージンがあると gap が効かない）
                             .child(div().flex_1())
@@ -643,7 +644,7 @@ impl Rireki {
                     .h(px(ROW_H))
                     .flex()
                     .items_center()
-                    .gap_1p5()
+                    .gap_2()
                     .px_3()
                     .pl(px(indent))
                     .border_t_1()

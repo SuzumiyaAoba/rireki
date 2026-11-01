@@ -103,7 +103,7 @@ impl Rireki {
             .items_center()
             .gap_1()
             .px_2()
-            .py_0p5()
+            .py_1()
             .radius_md()
             .border_1()
             .border_color(c(if active { theme::ACCENT } else { theme::LINE }))

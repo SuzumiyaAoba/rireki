@@ -91,7 +91,7 @@ impl Rireki {
             .flex()
             .flex_col()
             .gap_1()
-            .px_2p5()
+            .px_3()
             .py_2()
             .radius_md()
             .bg(c(theme::RAISED))
@@ -104,7 +104,7 @@ impl Rireki {
                 div()
                     .flex()
                     .items_center()
-                    .gap_1p5()
+                    .gap_2()
                     .child(event_icon(ic, color, 14.0))
                     .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(color)).child(head))
                     .when_some(outcome, |d, (label, color)| d.child(div().text_color(c(color)).child(label)))
@@ -113,7 +113,7 @@ impl Rireki {
             )
             .when(!body.is_empty(), |d| d.child(Marquee::new("hover-body", one_line(&body, usize::MAX)).on_show()))
             .when(!counts.is_empty(), |d| {
-                d.child(div().flex().flex_wrap().gap_x_2().gap_y_0p5().children(counts.iter().take(6).map(
+                d.child(div().flex().flex_wrap().gap_x_2().gap_y_1().children(counts.iter().take(6).map(
                     |&(name, n, col, ic)| {
                         div()
                             .flex()
@@ -172,7 +172,7 @@ impl Rireki {
                 .child(div().w(px(72.0)).flex_none().text_small().text_color(c(theme::MUTED)).child(label))
                 .child(control)
         };
-        let divider = || div().mx_2().my_1p5().h(px(1.0)).bg(c(theme::LINE));
+        let divider = || div().mx_2().my_2().h(px(1.0)).bg(c(theme::LINE));
         let metric = self.tool_segmented(
             "display-metric",
             &[
@@ -243,7 +243,7 @@ impl Rireki {
             .items_start()
             .gap_2()
             .px_2()
-            .py_1p5()
+            .py_2()
             .radius_md()
             .cursor_pointer()
             .hover(|s| s.bg(c(theme::HOVER)))
@@ -359,7 +359,7 @@ impl Rireki {
                     div().flex().items_center().gap_3().text_small().child(div().flex_1().child(v)).child(
                         div()
                             .flex_none()
-                            .px_1p5()
+                            .px_2()
                             .radius_sm()
                             .bg(c(theme::BG))
                             .border_1()

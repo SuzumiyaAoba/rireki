@@ -58,8 +58,6 @@ impl Rireki {
                 .items_center()
                 .gap_2()
                 .h(px(40.0))
-                .mx(px(-6.0))
-                .px(px(6.0))
                 .radius_md()
                 .text_small()
                 .cursor_pointer()

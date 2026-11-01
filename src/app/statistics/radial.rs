@@ -324,7 +324,7 @@ impl Rireki {
                         .items_center()
                         .gap_1()
                         .px_1()
-                        .py_0p5()
+                        .py_1()
                         .radius_sm()
                         .text_small()
                         .text_color(c(if selected { theme::TEXT } else { theme::MUTED }))

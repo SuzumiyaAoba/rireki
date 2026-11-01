@@ -297,7 +297,7 @@ impl Rireki {
         };
         let content = div()
             .my_1()
-            .px_2p5()
+            .px_3()
             .py_2()
             .radius_md()
             .border_1()
@@ -311,7 +311,7 @@ impl Rireki {
                 div()
                     .flex()
                     .items_center()
-                    .gap_1p5()
+                    .gap_2()
                     .text_small()
                     .child(
                         div()
@@ -372,7 +372,7 @@ impl Rireki {
             .pr_1()
             .flex()
             .flex_col()
-            .gap_1p5()
+            .gap_2()
             .child(
                 div()
                     .flex()

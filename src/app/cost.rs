@@ -280,7 +280,7 @@ impl Rireki {
                     .h(px(ROW_H))
                     .flex()
                     .items_center()
-                    .gap_1p5()
+                    .gap_2()
                     .px_2()
                     .text_small()
                     .whitespace_nowrap()

@@ -43,7 +43,7 @@ fn column() -> Div {
     div()
         .flex_none()
         .min_w_full()
-        .py_0p5()
+        .py_1()
         .flex()
         .flex_col()
         .text_small()

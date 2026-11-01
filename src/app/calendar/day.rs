@@ -222,7 +222,7 @@ impl Rireki {
                 div()
                     .flex()
                     .items_center()
-                    .gap_1p5()
+                    .gap_2()
                     .text_body()
                     .text_color(c(if is_today {
                         theme::ACCENT
