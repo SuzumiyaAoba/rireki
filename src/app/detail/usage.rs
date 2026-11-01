@@ -71,7 +71,7 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
         .rounded_lg()
         .bg(c(theme::BG))
         .border_1()
-        .border_color(c(theme::BORDER))
+        .border_color(c(theme::LINE))
         .text_xs()
         .child(
             div()
@@ -286,7 +286,7 @@ pub(super) fn usage_meter(
                             .w_full()
                             .h(px(4.0))
                             .rounded_full()
-                            .bg(c(theme::GRID))
+                            .bg(c(theme::LINE_SOFT))
                             .when(value > 0, |d| {
                                 d.child(
                                     div()

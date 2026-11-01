@@ -277,7 +277,7 @@ impl Rireki {
             .gap_2()
             .px_3()
             .border_b_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .text_sm()
             .child(icons::icon(Icon::Chart, theme::ACCENT).size_4())
             .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("統計"))
@@ -407,7 +407,7 @@ impl Rireki {
             .cursor_pointer()
             .when(selected, |d| d.bg(c(theme::ACCENT_BG).opacity(0.6)).border_color(c(theme::ACCENT)))
             .when(!selected, |d| {
-                d.bg(c(theme::PANEL)).border_color(c(theme::BORDER)).hover(|d| d.border_color(c(theme::SUBTLE)))
+                d.bg(c(theme::PANEL)).border_color(c(theme::LINE)).hover(|d| d.border_color(c(theme::SUBTLE)))
             })
             .child(
                 div()
@@ -532,7 +532,7 @@ fn card() -> Div {
         .rounded_lg()
         .bg(c(theme::PANEL))
         .border_1()
-        .border_color(c(theme::BORDER))
+        .border_color(c(theme::LINE))
 }
 
 /// カードの見出しと補足の行。右に凡例や読み取り値を `child` で足す

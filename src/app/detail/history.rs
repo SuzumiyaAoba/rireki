@@ -547,7 +547,7 @@ impl Rireki {
                             .bottom_0()
                             .left(px(10.5))
                             .w(px(1.0))
-                            .bg(c(theme::BORDER)),
+                            .bg(c(theme::LINE)),
                     )
                     .child(
                         div()

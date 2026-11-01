@@ -65,7 +65,7 @@ impl Rireki {
             .child(self.source_tile(SourceFilter::All, cx))
             .child(self.source_tile(SourceFilter::Claude, cx))
             .child(self.source_tile(SourceFilter::Codex, cx))
-            .child(div().w(px(28.0)).h(px(1.0)).my_2().bg(c(theme::BORDER)))
+            .child(div().w(px(28.0)).h(px(1.0)).my_2().bg(c(theme::LINE)))
             .child(self.nav_item(
                 "nav-timeline",
                 Icon::Timeline,

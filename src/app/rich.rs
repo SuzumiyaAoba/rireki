@@ -426,7 +426,7 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
             .py_1()
             .bg(c(0x1f232b))
             .border_b_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .text_xs()
             .child(
                 div().flex_none().px_1().rounded_sm().bg(c(op_color).opacity(0.15)).text_color(c(op_color)).child(f.op),
@@ -456,7 +456,7 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
                 .rounded_md()
                 .overflow_hidden()
                 .border_1()
-                .border_color(c(theme::BORDER))
+                .border_color(c(theme::LINE))
                 .bg(c(CODE_BG))
                 .child(head)
                 .child(horizontal_scroll(ElementId::NamedInteger("diff".into(), i as u64)).w_full().child(
@@ -789,7 +789,7 @@ pub fn markdown(s: &str, color: u32) -> Div {
             Block::Code(lang, code) => code_frame()
                 .relative()
                 .border_1()
-                .border_color(c(theme::BORDER))
+                .border_color(c(theme::LINE))
                 .child(horizontal_scroll(ElementId::NamedInteger("code".into(), i as u64)).child(
                     div().flex_none().min_w_full()
                         .child(styled(if code.is_empty() { " ".into() } else { code }, Spans::new())),
@@ -815,10 +815,10 @@ pub fn markdown(s: &str, color: u32) -> Div {
             Block::Quote(text) => div()
                 .pl_2()
                 .border_l_2()
-                .border_color(c(theme::BORDER))
+                .border_color(c(theme::LINE))
                 .text_color(c(theme::MUTED))
                 .child(inline_text(&text)),
-            Block::Rule => div().my_1().h(px(1.0)).bg(c(theme::BORDER)),
+            Block::Rule => div().my_1().h(px(1.0)).bg(c(theme::LINE)),
             Block::Table(rows) => {
                 let cols = rows.iter().map(Vec::len).max().unwrap_or(1);
                 div()
@@ -826,13 +826,13 @@ pub fn markdown(s: &str, color: u32) -> Div {
                     .rounded_md()
                     .overflow_hidden()
                     .border_1()
-                    .border_color(c(theme::BORDER))
+                    .border_color(c(theme::LINE))
                     .text_xs()
                     .children(rows.into_iter().enumerate().map(|(ri, row)| {
                         div()
                             .flex()
                             .min_w_0()
-                            .when(ri > 0, |d| d.border_t_1().border_color(c(theme::BORDER)))
+                            .when(ri > 0, |d| d.border_t_1().border_color(c(theme::LINE)))
                             .when(ri == 0, |d| d.bg(c(0x1f232b)).font_weight(FontWeight::SEMIBOLD))
                             .children((0..cols).map(|ci| {
                                 div()
@@ -840,7 +840,7 @@ pub fn markdown(s: &str, color: u32) -> Div {
                                     .min_w_0()
                                     .px_1p5()
                                     .py_1()
-                                    .when(ci > 0, |d| d.border_l_1().border_color(c(theme::BORDER)))
+                                    .when(ci > 0, |d| d.border_l_1().border_color(c(theme::LINE)))
                                     .child(inline_text(row.get(ci).map_or("", String::as_str)))
                             }))
                     }))

@@ -290,7 +290,7 @@ fn failure_bar(calls: &Calls, scale: Option<f64>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |b, _, window, _| {
-            window.paint_quad(fill(b, c(theme::GRID)).corner_radii(px(2.0)));
+            window.paint_quad(fill(b, c(theme::LINE_SOFT)).corner_radii(px(2.0)));
             let width = f32::from(b.size.width);
             let mut x = 0.0;
             for (fraction, color) in parts {
@@ -390,7 +390,7 @@ impl Axis {
             move |b, _, window, _| {
                 let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
                 for &x in &ticks[..n] {
-                    window.paint_quad(fill(rect(b, (x * w).min(w - 1.0), 0.0, 1.0, h), c(theme::GRID)));
+                    window.paint_quad(fill(rect(b, (x * w).min(w - 1.0), 0.0, 1.0, h), c(theme::LINE_SOFT)));
                 }
                 let Some((a, z)) = points else {
                     return;

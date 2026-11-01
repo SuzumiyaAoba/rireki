@@ -93,9 +93,9 @@ impl Rireki {
             .px_2p5()
             .py_2()
             .rounded_lg()
-            .bg(c(theme::ELEVATED))
+            .bg(c(theme::RAISED))
             .border_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .shadow_lg()
             .text_xs()
             .text_color(c(theme::TEXT))
@@ -173,7 +173,7 @@ impl Rireki {
                 .child(div().w(px(72.0)).flex_none().text_xs().text_color(c(theme::MUTED)).child(label))
                 .child(control)
         };
-        let divider = || div().mx_2().my_1p5().h(px(1.0)).bg(c(theme::BORDER));
+        let divider = || div().mx_2().my_1p5().h(px(1.0)).bg(c(theme::LINE));
         let metric = self.tool_segmented(
             "display-metric",
             &[
@@ -275,7 +275,7 @@ impl Rireki {
                     .h(px(16.0))
                     .p(px(2.0))
                     .rounded_full()
-                    .bg(c(if on { theme::ACCENT } else { theme::BORDER }))
+                    .bg(c(if on { theme::ACCENT } else { theme::LINE }))
                     .child(div().size(px(12.0)).rounded_full().bg(gpui::white())),
             )
             .child(
@@ -307,9 +307,9 @@ impl Rireki {
                         .flex()
                         .flex_col()
                         .rounded_lg()
-                        .bg(c(theme::ELEVATED))
+                        .bg(c(theme::RAISED))
                         .border_1()
-                        .border_color(c(theme::BORDER))
+                        .border_color(c(theme::LINE))
                         .shadow_lg()
                         .text_color(c(theme::TEXT))
                         .child(heading("表示オプション"))
@@ -388,7 +388,7 @@ impl Rireki {
                             .rounded_sm()
                             .bg(c(theme::BG))
                             .border_1()
-                            .border_color(c(theme::BORDER))
+                            .border_color(c(theme::LINE))
                             .text_color(c(theme::MUTED))
                             .child(k),
                     )
@@ -420,9 +420,9 @@ impl Rireki {
                     .flex_col()
                     .gap_4()
                     .rounded_xl()
-                    .bg(c(theme::ELEVATED))
+                    .bg(c(theme::RAISED))
                     .border_1()
-                    .border_color(c(theme::BORDER))
+                    .border_color(c(theme::LINE))
                     .shadow_lg()
                     .text_color(c(theme::TEXT))
                     .child(

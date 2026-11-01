@@ -232,7 +232,7 @@ impl Rireki {
             grid = grid.child(div().absolute().left(px(x)).top_0().bottom_0().w(px(1.0)).bg(c(if major {
                 0x353b47
             } else {
-                theme::GRID
+                theme::LINE_SOFT
             })));
         }
         let nx = x_of(now());
@@ -379,7 +379,7 @@ impl Rireki {
                         .top(px(y))
                         .h(px(ROW_H))
                         .border_b_1()
-                        .border_color(c(theme::GRID))
+                        .border_color(c(theme::LINE_SOFT))
                         .when(directory, |d| d.bg(c(0x1b1e25).opacity(0.6)))
                         .when(selected, |d| d.bg(c(theme::ACCENT).opacity(0.07))),
                 );
@@ -410,13 +410,13 @@ impl Rireki {
                     .child("API コストを集計中…"),
             );
         }
-        div().flex().flex_col().child(div().flex().border_b_1().border_color(c(theme::BORDER))
+        div().flex().flex_col().child(div().flex().border_b_1().border_color(c(theme::LINE))
             .child(div().w(px(self.label_w)).h(px(AXIS_H)).flex_none().px_2().flex().items_center()
-                .text_xs().text_color(c(theme::MUTED)).border_r_1().border_color(c(theme::BORDER))
+                .text_xs().text_color(c(theme::MUTED)).border_r_1().border_color(c(theme::LINE))
                 .child("表示期間の合計 · API 換算 USD")
                 .id("cost-explanation").tooltip(tip("記録されたトークン使用量をモデル別の API 料金で換算。サブスクリプションの請求額とは異なります。使用量のない呼び出しと料金不明のモデルは金額に含みません。", None)))
             .child(axis))
-            .child(div().flex().child(labels.border_r_1().border_color(c(theme::BORDER))).child(plot))
+            .child(div().flex().child(labels.border_r_1().border_color(c(theme::LINE))).child(plot))
             .into_any_element()
     }
 
@@ -518,7 +518,7 @@ impl Rireki {
         let detail = summary.as_ref()
             .map_or_else(|| self.counts.clone(), |s| usage_tip(&s.usage));
         div().h(px(FOOTER_H)).flex_none().flex().items_center().gap_3().px_3()
-            .border_t_1().border_color(c(theme::BORDER)).text_xs().text_color(c(theme::MUTED))
+            .border_t_1().border_color(c(theme::LINE)).text_xs().text_color(c(theme::MUTED))
             .child(div().id("cost-total").flex_1().min_w_0().truncate().child(self.counts.clone()).tooltip(tip(detail, None)))
             .when(summary.is_some() && self.main_width(window) >= 900.0, |d| d.child(
                 div().id("cost-scale").flex_none().whitespace_nowrap()

@@ -308,7 +308,7 @@ impl Rireki {
                         .w_full()
                         .h(px(3.0))
                         .rounded_full()
-                        .bg(c(theme::BORDER))
+                        .bg(c(theme::LINE))
                         .child(div().w(relative(progress as f32)).h_full().rounded_full().bg(c(theme::ACCENT))),
                 );
         } else {

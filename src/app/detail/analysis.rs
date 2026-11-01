@@ -364,7 +364,7 @@ impl Rireki {
                 .rounded_md()
                 .bg(c(theme::BG))
                 .border_1()
-                .border_color(c(theme::BORDER))
+                .border_color(c(theme::LINE))
                 .child(icons::icon(Icon::Search, theme::MUTED).size_3p5())
                 .child(div().flex_1().min_w_0().child(state.input.clone()))
                 .child(self.ghost_button(
@@ -567,7 +567,7 @@ impl Rireki {
             .p_2()
             .rounded_md()
             .border_b_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .text_xs()
             .child(
                 div()
@@ -770,7 +770,7 @@ impl Rireki {
                                 .h(px(3.0))
                                 .w_full()
                                 .rounded_full()
-                                .bg(c(theme::GRID))
+                                .bg(c(theme::LINE_SOFT))
                                 .child(
                                     div()
                                         .h_full()

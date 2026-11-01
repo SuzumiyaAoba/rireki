@@ -80,8 +80,8 @@ const RAIL_W: f32 = 68.0;
 /// 内容パネルの右と下の余白。地の色を額縁のように見せる
 const GAP: f32 = 6.0;
 /// 内容パネルの角の丸み。端に接する子要素は内側の丸み（1px の枠線を除いた分）に合わせる
-const PANEL_RADIUS: f32 = 10.0;
-const INNER_RADIUS: f32 = PANEL_RADIUS - 1.0;
+const PANEL_RADIUS: f32 = theme::radius::PANEL;
+const INNER_RADIUS: f32 = theme::radius::INNER;
 const HEADER_H: f32 = 46.0;
 const FOOTER_H: f32 = 26.0;
 /// タイムラインの上のミニマップの高さ
@@ -440,7 +440,7 @@ impl Render for Rireki {
             .flex()
             .rounded(px(PANEL_RADIUS))
             .border_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .bg(c(theme::BG))
             .overflow_hidden();
         // 開閉中は中身を開ききった幅で描き、外側の箱の幅で切り取る（中身を押しつぶさない）

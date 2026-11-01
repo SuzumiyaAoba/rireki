@@ -50,7 +50,7 @@ impl Rireki {
             .h(px(DAY_HEAD_H))
             .flex_none()
             .border_b_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .child(div().w(px(HOUR_LABEL_W)).flex_none());
         let origin = self.hit_origin.clone();
         let mut body = div()
@@ -84,7 +84,7 @@ impl Rireki {
                             .right_0()
                             .top(px(y))
                             .h(px(1.0))
-                            .bg(c(theme::GRID)),
+                            .bg(c(theme::LINE_SOFT)),
                     )
                     .child(
                         div()
@@ -116,7 +116,7 @@ impl Rireki {
                     .top_0()
                     .bottom_0()
                     .w(px(1.0))
-                    .bg(c(theme::BORDER)),
+                    .bg(c(theme::LINE)),
             );
             if is_today {
                 body = body.child(

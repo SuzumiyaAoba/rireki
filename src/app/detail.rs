@@ -164,7 +164,7 @@ fn stat(name: &'static str, value: String, color: Option<u32>) -> Div {
         .rounded_lg()
         .bg(c(theme::BG))
         .border_1()
-        .border_color(c(theme::BORDER))
+        .border_color(c(theme::LINE))
         .child(
             div()
                 .text_lg()
@@ -185,7 +185,7 @@ impl Rireki {
         let panel = div().id("detail-panel").size_full().flex().flex_col()
             .when(self.detail_fullscreen, |d| d.rounded(px(INNER_RADIUS)))
             .when(!self.detail_fullscreen, |d| d.rounded_r(px(INNER_RADIUS)).border_l_1())
-            .bg(c(theme::PANEL)).border_color(c(theme::BORDER)).text_sm().text_color(c(theme::TEXT))
+            .bg(c(theme::PANEL)).border_color(c(theme::LINE)).text_sm().text_color(c(theme::TEXT))
             .on_scroll_wheel(cx.listener(|app, _: &gpui::ScrollWheelEvent, _, _| app.cancel_detail_follow()));
         let Some(sel) = self.shown_detail_selection() else { return panel.into_any_element(); };
         let files = self.cache(sel).map(|d| d.files.len());
@@ -222,9 +222,9 @@ impl Rireki {
                 .into_any_element(),
             DetailTab::Files if files == 0 => div().p_3().child(
                 div().w_full().p_4().flex().flex_col().items_center().gap_2()
-                    .rounded_lg().bg(c(theme::BG)).border_1().border_color(c(theme::BORDER))
+                    .rounded_lg().bg(c(theme::BG)).border_1().border_color(c(theme::LINE))
                     .child(div().size(px(36.0)).rounded_full().flex().items_center().justify_center()
-                        .bg(c(theme::ELEVATED)).child(icons::icon(Icon::FilePen, theme::MUTED).size_4()))
+                        .bg(c(theme::RAISED)).child(icons::icon(Icon::FilePen, theme::MUTED).size_4()))
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("変更されたファイルはありません"))
                     .child(div().text_xs().text_center().text_color(c(theme::MUTED))
                         .child("この範囲にはファイル編集が記録されていません")),
@@ -256,7 +256,7 @@ impl Rireki {
             format!("{} · {} 件", if whole { "レーン全体" } else { "選択範囲" }, fmt_n(events.len()))
         };
         div().flex_none().px_3().py_2().flex().flex_col().gap_1().text_xs()
-            .bg(c(theme::BG)).border_b_1().border_color(c(theme::BORDER))
+            .bg(c(theme::BG)).border_b_1().border_color(c(theme::LINE))
             .child(div().flex().items_center().gap_2()
                 .child(div().text_color(c(theme::MUTED)).child("対象"))
                 .child(div().id("detail-scope-title").flex_1().min_w_0().truncate().font_weight(FontWeight::MEDIUM)
@@ -281,7 +281,7 @@ impl Rireki {
 
     fn detail_tabs(&self, sel: Selection, tab: DetailTab, files: Option<usize>, cx: &mut Context<Self>) -> Div {
         let n_events = (sel.first != sel.last).then(|| sel.last - sel.first + 1);
-        div().flex_none().px_2().border_b_1().border_color(c(theme::BORDER)).child(
+        div().flex_none().px_2().border_b_1().border_color(c(theme::LINE)).child(
             div()
                 .flex()
                 .child(self.tab_button(DetailTab::Session, "概要", None, "1", tab, true, cx))
@@ -331,7 +331,7 @@ impl Rireki {
                     div()
                         .px_1p5()
                         .rounded_full()
-                        .bg(c(if on { theme::ACCENT_BG } else { theme::GRID }))
+                        .bg(c(if on { theme::ACCENT_BG } else { theme::LINE_SOFT }))
                         .text_color(c(if on { theme::ACCENT } else { theme::MUTED }))
                         .text_size(px(10.0))
                         .child(if n > 999 { "999+".into() } else { fmt_n(n) }),
@@ -430,7 +430,7 @@ impl Rireki {
     /// 共通見出しにはセッションと選択の履歴、表示操作を置く。
     fn detail_header(&self, cx: &mut Context<Self>) -> Div {
         div().h(px(HEADER_H)).flex_none().flex().items_center().gap_1().px_2()
-            .border_b_1().border_color(c(theme::BORDER))
+            .border_b_1().border_color(c(theme::LINE))
             .child(self.ghost_button("d-back", Icon::ArrowLeft, "戻る", Some(crate::platform::shortcut("⌘[", "Ctrl+[")),
                 !self.back.is_empty(), cx, |t, w, cx| t.go_back(w, cx)))
             .child(self.ghost_button("d-forward", Icon::ArrowRight, "進む", Some(crate::platform::shortcut("⌘]", "Ctrl+]")),
@@ -598,7 +598,7 @@ impl Rireki {
                 .py(px(1.0))
                 .rounded_md()
                 .border_1()
-                .border_color(c(if on { theme::ACCENT } else { theme::BORDER }))
+                .border_color(c(if on { theme::ACCENT } else { theme::LINE }))
                 .bg(c(if on { theme::ACCENT_BG } else { theme::BG }))
                 .text_xs()
                 .cursor_pointer()
@@ -632,7 +632,7 @@ impl Rireki {
             chips = chips.child(chip("chip-failed".into(), format!("失敗等 {}", st.failures()),
                 None, filter == Some(RowFilter::Failed), Some(RowFilter::Failed)));
         }
-        div().flex().flex_col().gap_1p5().pb_2().border_b_1().border_color(c(theme::BORDER))
+        div().flex().flex_col().gap_1p5().pb_2().border_b_1().border_color(c(theme::LINE))
             .child(label("イベントで絞り込む"))
             .child(chips)
     }
@@ -651,7 +651,7 @@ fn diff_bar(added: usize, removed: usize) -> Div {
         } else if i < green + red {
             c(theme::ERR)
         } else {
-            c(theme::GRID)
+            c(theme::LINE_SOFT)
         };
         div().size(px(6.0)).rounded(px(1.0)).bg(col)
     }))

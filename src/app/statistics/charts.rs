@@ -354,7 +354,7 @@ fn paint_trend(
     }
     for &t in ticks {
         let y = (h - (t / top) as f32 * h).min(h - 1.0);
-        window.paint_quad(fill(rect(0.0, y, w, 1.0), c(if t == 0.0 { theme::BORDER } else { theme::GRID })));
+        window.paint_quad(fill(rect(0.0, y, w, 1.0), c(if t == 0.0 { theme::LINE } else { theme::LINE_SOFT })));
     }
     for (i, v) in values.iter().enumerate() {
         let x = i as f32 * slot + (slot - bar) / 2.0;
@@ -427,7 +427,7 @@ fn paint_hours(
             let v = values[d * 24 + h];
             // 最大に対する割合を 5 段階に分ける。0 は空のマス
             let color =
-                if v > 0.0 { theme::HEAT[((v / max * 5.0).ceil() as usize).clamp(1, 5) - 1] } else { theme::GRID };
+                if v > 0.0 { theme::HEAT[((v / max * 5.0).ceil() as usize).clamp(1, 5) - 1] } else { theme::LINE_SOFT };
             let q = fill(rect(h as f32 * pitch, y, cell_w, cell_h), c(color)).corner_radii(px(3.0));
             window.paint_quad(if hover == Some(Hover::Hour(d * 24 + h)) {
                 q.border_widths(px(1.0)).border_color(c(theme::TEXT))

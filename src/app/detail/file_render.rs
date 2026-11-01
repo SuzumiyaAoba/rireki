@@ -317,7 +317,7 @@ impl Rireki {
             .rounded_md()
             .bg(c(theme::BG))
             .border_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .child(
                 div()
                     .absolute()
@@ -325,7 +325,7 @@ impl Rireki {
                     .right_0()
                     .bottom(px(6.0))
                     .h(px(1.0))
-                    .bg(c(theme::GRID)),
+                    .bg(c(theme::LINE_SOFT)),
             );
         for (n, (i, ps)) in edits
             .iter()
@@ -430,7 +430,7 @@ impl Rireki {
                                     .flex_none()
                                     .px_1p5()
                                     .rounded_full()
-                                    .bg(c(theme::GRID))
+                                    .bg(c(theme::LINE_SOFT))
                                     .text_color(c(theme::MUTED))
                                     .child(format!("#{}", n + 1)),
                             )

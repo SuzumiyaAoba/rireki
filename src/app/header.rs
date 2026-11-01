@@ -244,7 +244,7 @@ fn tool_frame(bg: u32) -> Div {
         .h(px(CONTROL_H))
         .rounded_md()
         .border_1()
-        .border_color(c(theme::BORDER))
+        .border_color(c(theme::LINE))
         .bg(c(bg))
 }
 
@@ -402,7 +402,7 @@ impl Rireki {
                 .text_xs()
                 .whitespace_nowrap()
                 .text_color(c(if on { theme::TEXT } else { theme::MUTED }))
-                .when(on, |d| d.bg(c(theme::ELEVATED)).font_weight(FontWeight::SEMIBOLD))
+                .when(on, |d| d.bg(c(theme::RAISED)).font_weight(FontWeight::SEMIBOLD))
                 .when(!on, |d| d.cursor_pointer().hover(|s| s.bg(c(theme::HOVER)).text_color(c(theme::TEXT))))
                 .child(item.label)
                 .when(!item.tip.is_empty(), |d| d.tooltip(tip(item.tip, item.key)))
@@ -555,7 +555,7 @@ impl Rireki {
             .px(px(if label { 8.0 } else { 6.0 }))
             .rounded_md()
             .border_1()
-            .border_color(c(if open { theme::ACCENT } else { theme::BORDER }))
+            .border_color(c(if open { theme::ACCENT } else { theme::LINE }))
             .bg(c(if open { theme::ACCENT_BG } else { theme::PANEL }))
             .text_xs()
             .cursor_pointer()
@@ -645,7 +645,7 @@ impl Rireki {
             .gap(px(if plan.dense { DENSE_GAP } else { ITEM_GAP }))
             .px(px(if plan.dense { DENSE_PAD } else { PAD }))
             .border_b_1()
-            .border_color(c(theme::BORDER));
+            .border_color(c(theme::LINE));
         if !self.sidebar_open {
             row = row.child(self.ghost_button(
                 "sidebar-open",
@@ -718,7 +718,7 @@ impl Rireki {
             .gap_3()
             .px_3()
             .border_t_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .text_xs()
             .text_color(c(theme::MUTED))
             .child(div().flex_none().whitespace_nowrap().child(left))

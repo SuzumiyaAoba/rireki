@@ -62,9 +62,9 @@ impl Rireki {
             .flex()
             .flex_col()
             .rounded_l(px(INNER_RADIUS))
-            .bg(c(theme::SIDEBAR))
+            .bg(c(theme::BG))
             .border_r_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .text_size(px(13.0))
             .child(self.search_box(window, cx))
             .child(body)
@@ -83,7 +83,7 @@ impl Rireki {
             .gap_1()
             .px_2()
             .border_b_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .child(
                 div()
                     .id("search-box")
@@ -97,7 +97,7 @@ impl Rireki {
                     .rounded_md()
                     .bg(c(theme::BACKDROP))
                     .border_1()
-                    .border_color(c(if focused { theme::ACCENT } else { theme::BORDER }))
+                    .border_color(c(if focused { theme::ACCENT } else { theme::LINE }))
                     .cursor_text()
                     .child(icons::icon(Icon::Search, if focused { theme::ACCENT } else { theme::MUTED }))
                     .child(input)
@@ -344,7 +344,7 @@ impl Rireki {
                                     .rounded_full()
                                     .bg(c(theme::LIVE))
                                     .border_1()
-                                    .border_color(c(theme::SIDEBAR)),
+                                    .border_color(c(theme::BG)),
                             )
                         },
                     ))

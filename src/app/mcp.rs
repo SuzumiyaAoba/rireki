@@ -104,7 +104,7 @@ impl Rireki {
             .rounded_xl()
             .bg(c(theme::PANEL))
             .border_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .shadow_lg()
             .text_sm()
             .text_color(c(theme::TEXT))
@@ -117,7 +117,7 @@ impl Rireki {
                     .gap_3()
                     .p_6()
                     .border_b_1()
-                    .border_color(c(theme::BORDER))
+                    .border_color(c(theme::LINE))
                     .child(
                         div()
                             .flex_none()
@@ -159,7 +159,7 @@ impl Rireki {
                             .justify_center()
                             .rounded_md()
                             .cursor_pointer()
-                            .hover(|s| s.bg(c(theme::ELEVATED)))
+                            .hover(|s| s.bg(c(theme::RAISED)))
                             .tooltip(tip("閉じる", Some("esc")))
                             .child(icons::icon(Icon::X, theme::MUTED).size_4())
                             .on_click(
@@ -216,7 +216,7 @@ impl Rireki {
                     .py_4()
                     .bg(c(theme::BG))
                     .border_t_1()
-                    .border_color(c(theme::BORDER))
+                    .border_color(c(theme::LINE))
                     .child(
                         div()
                             .flex_1()
@@ -323,7 +323,7 @@ impl Rireki {
             .rounded_lg()
             .bg(c(theme::BG))
             .border_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .child(
                 div()
                     .flex()
@@ -383,7 +383,7 @@ impl Rireki {
                                 .rounded_md()
                                 .bg(c(theme::BACKDROP))
                                 .border_1()
-                                .border_color(c(theme::BORDER))
+                                .border_color(c(theme::LINE))
                                 .child(
                                     div()
                                         .flex_1()
@@ -473,7 +473,7 @@ impl Rireki {
                             } else if focus.is_focused(window) {
                                 theme::ACCENT
                             } else {
-                                theme::BORDER
+                                theme::LINE
                             }))
                             .on_mouse_down(MouseButton::Left, move |_, window, _| {
                                 window.focus(&focus);
@@ -540,7 +540,7 @@ fn mcp_tools() -> Div {
                     div()
                         .px_1p5()
                         .rounded_md()
-                        .bg(c(theme::ELEVATED))
+                        .bg(c(theme::RAISED))
                         .text_xs()
                         .text_color(c(theme::MUTED))
                         .child(TOOLS.len().to_string()),
@@ -550,7 +550,7 @@ fn mcp_tools() -> Div {
             div()
                 .rounded_lg()
                 .border_1()
-                .border_color(c(theme::BORDER))
+                .border_color(c(theme::LINE))
                 .overflow_hidden()
                 .children(TOOLS.iter().enumerate().map(|(i, &(icon, name, description))| {
                     div()
@@ -559,7 +559,7 @@ fn mcp_tools() -> Div {
                         .gap_3()
                         .px_3()
                         .py_2p5()
-                        .when(i > 0, |d| d.border_t_1().border_color(c(theme::BORDER)))
+                        .when(i > 0, |d| d.border_t_1().border_color(c(theme::LINE)))
                         .child(icons::icon(icon, theme::MUTED).size_4().flex_none())
                         .child(div().flex_1().min_w_0().text_xs().child(description))
                         .child(

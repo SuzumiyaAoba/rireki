@@ -475,11 +475,11 @@ impl Rireki {
                     .child(label),
             );
             axis = axis.child(div().absolute().left(px(x)).bottom_0().w(px(1.0)).h(px(5.0))
-                .bg(c(if major { theme::MUTED } else { theme::BORDER })));
+                .bg(c(if major { theme::MUTED } else { theme::LINE })));
             grid.lines.push((x, if major {
                 0x353b47
             } else {
-                theme::GRID
+                theme::LINE_SOFT
             }));
         }
         let nx = x_of(now());
@@ -489,7 +489,7 @@ impl Rireki {
                 .child(div().absolute().left(px(nx - 3.0)).bottom_0().size(px(7.0)).rounded_full().bg(c(theme::NOW)));
         }
 
-        let mut labels = div().relative().w(px(self.label_w)).flex_none().h(px(ph)).bg(c(theme::SIDEBAR)).overflow_hidden();
+        let mut labels = div().relative().w(px(self.label_w)).flex_none().h(px(ph)).bg(c(theme::BG)).overflow_hidden();
         let mut plot = div().relative().w(px(pw)).h(px(ph)).overflow_hidden();
         let mut blocks: Vec<BlockPaint> = Vec::new();
         let mut row_y_of_lane = std::collections::HashMap::new();
@@ -531,7 +531,7 @@ impl Rireki {
                             .px_3()
                             .bg(c(theme::PANEL))
                             .border_t_1()
-                            .border_color(c(theme::BORDER))
+                            .border_color(c(theme::LINE))
                             .when(dim, |d| d.opacity(0.45))
                             .text_xs()
                             .whitespace_nowrap()
@@ -603,7 +603,7 @@ impl Rireki {
                                 cx.notify();
                             })),
                     );
-                    grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::PANEL)).border_top(c(theme::BORDER)));
+                    grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::PANEL)).border_top(c(theme::LINE)));
                     // 折りたたみ中はグループ内のメインレーンを 1 行に重ねて描く
                     if directory {
                         self.paint_packed_blocks(packed, y, &mut blocks);
@@ -622,7 +622,7 @@ impl Rireki {
                     continue;
                 }
                 Row::Packed(packed) => {
-                    grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::BG)).border_top(c(theme::GRID).opacity(0.45)));
+                    grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::BG)).border_top(c(theme::LINE_SOFT).opacity(0.45)));
                     self.paint_packed_blocks(packed, y, &mut blocks);
                     continue;
                 }
@@ -659,7 +659,7 @@ impl Rireki {
                     .px_3()
                     .pl(px(indent))
                     .border_t_1()
-                    .border_color(c(if new_session { theme::BORDER } else { theme::GRID }))
+                    .border_color(c(if new_session { theme::LINE } else { theme::LINE_SOFT }))
                     .when(lane_selected, |d| d.bg(c(theme::ACCENT_BG)))
                     .when(lane_hovered && !lane_selected, |d| d.bg(c(theme::HOVER)))
                     .when(!tr.active, |d| d.opacity(0.4))
@@ -671,7 +671,7 @@ impl Rireki {
                     .when(!sub, |d| d.child(icons::icon(badge, badge_color)))
                     .when(sub, |d| d.child(icons::icon(Icon::Bot, theme::SUB).size_3()))
                     .children((0..tr.depth).map(|depth| div().absolute().left(px(12.0 + depth as f32 * 16.0))
-                        .top_0().h_full().w(px(1.0)).bg(c(theme::BORDER))))
+                        .top_0().h_full().w(px(1.0)).bg(c(theme::LINE))))
                     .child(
                         div()
                             .flex_1()
@@ -691,7 +691,7 @@ impl Rireki {
                     })),
             );
             grid.rows.push(grid::RowBackground::new(y, ROW_H, c(theme::BG).opacity(0.0))
-                .border_top(c(if new_session { theme::BORDER } else { theme::GRID }).opacity(0.65)));
+                .border_top(c(if new_session { theme::LINE } else { theme::LINE_SOFT }).opacity(0.65)));
             if !tr.active {
                 // 表示範囲外のレーンはグレーアウトする
                 grid.rows.push(grid::RowBackground::new(y, ROW_H, c(0x000000).opacity(0.18)));
@@ -788,7 +788,7 @@ impl Rireki {
                             .bg(c(theme::PANEL))
                             .text_color(c(theme::MUTED))
                             .border_r_1()
-                            .border_color(c(theme::BORDER))
+                            .border_color(c(theme::LINE))
                             .child(icons::icon(if directory { Icon::Folder } else { Icon::Layers }, theme::SUBTLE).size_3())
                             .child(div().flex_1().min_w_0().truncate().child(if directory {
                                 "ディレクトリ"
@@ -803,9 +803,9 @@ impl Rireki {
                     )
                     .child(axis)
                     .border_b_1()
-                    .border_color(c(theme::BORDER)),
+                    .border_color(c(theme::LINE)),
             )
-            .child(div().flex().child(labels.border_r_1().border_color(c(theme::BORDER))).child(plot))
+            .child(div().flex().child(labels.border_r_1().border_color(c(theme::LINE))).child(plot))
             .into_any_element();
         if let Some((measurements, started)) = measurements.as_ref().zip(build_started) {
             let mut value = measurements.get();
@@ -944,7 +944,7 @@ impl Rireki {
             .h(px(ph))
             .bg(c(0x15181e).opacity(0.85))
             .border_l_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .cursor_pointer()
             .child(map)
             .tooltip(tip("表示範囲内のレーンの位置（クリック・ドラッグで移動）", None))
@@ -1019,7 +1019,7 @@ impl Rireki {
                         .py_1()
                         .rounded_md()
                         .border_1()
-                        .border_color(c(theme::BORDER))
+                        .border_color(c(theme::LINE))
                         .bg(c(theme::PANEL))
                         .text_xs()
                         .text_color(c(theme::TEXT))

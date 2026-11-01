@@ -27,7 +27,7 @@ impl Rireki {
             .h(px(MONTH_HEAD_H))
             .flex_none()
             .border_b_1()
-            .border_color(c(theme::BORDER))
+            .border_color(c(theme::LINE))
             .children((0..7).map(|i| {
                 let wd = (first + Duration::days(i)).weekday();
                 div()
@@ -64,7 +64,7 @@ impl Rireki {
                     .overflow_hidden()
                     .border_r_1()
                     .border_b_1()
-                    .border_color(c(theme::GRID))
+                    .border_color(c(theme::LINE_SOFT))
                     .when(day.active > 0.0, |d| {
                         d.bg(c(theme::HEAT[2]).opacity(0.05 + 0.2 * heat))
                     })

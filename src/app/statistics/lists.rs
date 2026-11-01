@@ -149,7 +149,7 @@ impl Rireki {
                 list(self.columns("トークン", "料金", COST_W)).children(rows).children(other)
             })
             .when(usage.calls > 0, |d| {
-                d.child(div().h(px(1.0)).bg(c(theme::BORDER))).child(
+                d.child(div().h(px(1.0)).bg(c(theme::LINE))).child(
                     div()
                         .id("statistics-cache")
                         .flex()
@@ -229,7 +229,7 @@ impl Rireki {
                 .gap_2()
                 .h(px(30.0))
                 .border_t_1()
-                .border_color(c(theme::GRID))
+                .border_color(c(theme::LINE_SOFT))
                 .text_xs()
                 .when(strong, |d| d.font_weight(FontWeight::SEMIBOLD))
                 .child(name.flex_1().min_w(px(90.0)))
