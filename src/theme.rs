@@ -38,13 +38,13 @@ pub const ERR: u32 = 0xf07c7c;
 pub const WARN: u32 = 0xe0a24a;
 /// 差分の追加と削除。赤緑の慣習に従う例外
 pub const DIFF_ADD: u32 = 0x7fd18b;
-#[allow(dead_code)] // 画面の作り直しで使い始めたら外す
 pub const DIFF_DEL: u32 = 0xf07c7c;
 /// ロゴの地色。ブランドの色なので他には使わない
 pub const LOGO_CLAUDE: u32 = 0xd97757;
 pub const LOGO_CODEX: u32 = 0xd0d0d0;
-/// 画面の作り直しが終わるまでの移行用。置き換えたら削除する
-pub const OK: u32 = DIFF_ADD;
+
+/// モーダルの背後に敷く幕の透明度。黒に重ねる
+pub const SCRIM: f32 = 0.45;
 
 /// 角丸は 4 段。正円は点だけに使う
 pub mod radius {
@@ -64,7 +64,6 @@ pub mod size {
 }
 
 /// 透明度は意味ごとに 1 つ。これ以外の透明度で色を作らない
-#[allow(dead_code)] // 画面の作り直しで使い始めたら外す
 pub mod alpha {
     pub const DISABLED: f32 = 0.4;
     pub const STALE: f32 = 0.55;

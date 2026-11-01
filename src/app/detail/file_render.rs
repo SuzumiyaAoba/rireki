@@ -121,7 +121,7 @@ impl Rireki {
                         .child(
                             div()
                                 .text_small()
-                                .text_color(c(theme::OK))
+                                .text_color(c(theme::DIFF_ADD))
                                 .child(format!("+{}", fmt_n(added))),
                         )
                         .child(
@@ -208,7 +208,7 @@ impl Rireki {
                 .child(
                     div()
                         .flex_none()
-                        .text_color(c(theme::OK))
+                        .text_color(c(theme::DIFF_ADD))
                         .child(format!("+{}", f.added)),
                 )
                 .child(
@@ -339,7 +339,7 @@ impl Rireki {
                 .fold((0, 0), |(a, r), p| (a + p.added, r + p.removed));
             let frac = (((e.start - start) / span) as f32).clamp(0.0, 1.0);
             let h = 6.0 + 18.0 * ((a + r) as f32 / max_lines as f32).sqrt();
-            let col = if a >= r { theme::OK } else { theme::ERR };
+            let col = if a >= r { theme::DIFF_ADD } else { theme::DIFF_DEL };
             strip = strip.child(
                 div()
                     .id(ElementId::NamedInteger("edit-mark".into(), *i as u64))
@@ -452,7 +452,7 @@ impl Rireki {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_color(c(theme::OK))
+                                    .text_color(c(theme::DIFF_ADD))
                                     .child(format!("+{a}")),
                             )
                             .child(

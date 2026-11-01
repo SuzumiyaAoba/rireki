@@ -22,11 +22,11 @@ mod diff_rows;
 /// 等幅フォント
 pub const MONO: &str = crate::platform::MONO;
 /// コードや出力の箱の地の色と文字の色
-pub const CODE_BG: u32 = 0x15171c;
+pub const CODE_BG: u32 = theme::BG;
 pub const CODE_TEXT: u32 = 0xc5c9d1;
 const KEY: u32 = 0x8ab4f8;
-const ADD: u32 = 0x7fd18b;
-const DEL: u32 = 0xf07c7c;
+const ADD: u32 = theme::DIFF_ADD;
+const DEL: u32 = theme::DIFF_DEL;
 const HUNK: u32 = 0x6fa8dc;
 const FILE: u32 = 0xe0b341;
 const INLINE_CODE: u32 = 0xe6c07b;
@@ -294,7 +294,7 @@ pub fn mono_spans(text: &str) -> (String, Spans) {
             spans.push((r, bold(theme::TEXT)));
         } else if let Some(mark) = ["✓ ", "▶ ", "○ "].iter().find(|m| l.starts_with(**m)) {
             let col = match *mark {
-                "✓ " => theme::OK,
+                "✓ " => theme::TEXT,
                 "▶ " => theme::ACCENT,
                 _ => theme::SUBTLE,
             };
@@ -425,12 +425,12 @@ pub fn diff_view<'a>(files: impl IntoIterator<Item = &'a FilePatch>, cwd: &str, 
             .gap_1p5()
             .px_2()
             .py_1()
-            .bg(c(0x1f232b))
+            .bg(c(theme::RAISED))
             .border_b_1()
             .border_color(c(theme::LINE))
             .text_small()
             .child(
-                div().flex_none().px_1().radius_sm().bg(c(op_color).opacity(0.15)).text_color(c(op_color)).child(f.op),
+                div().flex_none().text_color(c(op_color)).child(f.op),
             )
             .child(
                 div()
@@ -490,7 +490,7 @@ impl Inline {
             } else {
                 None
             },
-            background_color: self.code.then(|| c(0x2b303b)),
+            background_color: self.code.then(|| c(theme::HOVER)),
             font_weight: self.bold.then_some(FontWeight::BOLD),
             font_style: self.italic.then_some(FontStyle::Italic),
             underline: self.link.then_some(UnderlineStyle { thickness: px(1.0), color: None, wavy: false }),
@@ -802,7 +802,7 @@ pub fn markdown(s: &str, color: u32) -> Div {
                 let (mark, mark_color) = match &marker {
                     Marker::Bullet => ("•".to_string(), theme::MUTED),
                     Marker::Number(n) => (n.clone(), theme::MUTED),
-                    Marker::Task(true) => ("☑".to_string(), theme::OK),
+                    Marker::Task(true) => ("☑".to_string(), theme::TEXT),
                     Marker::Task(false) => ("☐".to_string(), theme::MUTED),
                 };
                 div()
@@ -834,7 +834,7 @@ pub fn markdown(s: &str, color: u32) -> Div {
                             .flex()
                             .min_w_0()
                             .when(ri > 0, |d| d.border_t_1().border_color(c(theme::LINE)))
-                            .when(ri == 0, |d| d.bg(c(0x1f232b)).font_weight(FontWeight::SEMIBOLD))
+                            .when(ri == 0, |d| d.bg(c(theme::RAISED)).font_weight(FontWeight::SEMIBOLD))
                             .children((0..cols).map(|ci| {
                                 div()
                                     .flex_1()
@@ -854,9 +854,9 @@ pub fn markdown(s: &str, color: u32) -> Div {
 
 fn diff_row(r: &crate::patch::DiffRow, spans: &Spans, gutter: f32, numbers: bool) -> (Div, gpui::TextLayout) {
     let (bg, fg, mark) = match r.kind {
-        '+' => (Some(c(ADD).opacity(0.10)), ADD, "+"),
-        '-' => (Some(c(DEL).opacity(0.10)), DEL, "−"),
-        '@' => (Some(c(HUNK).opacity(0.08)), HUNK, ""),
+        '+' => (Some(c(ADD).opacity(theme::alpha::DIFF)), ADD, "+"),
+        '-' => (Some(c(DEL).opacity(theme::alpha::DIFF)), DEL, "−"),
+        '@' => (Some(c(HUNK).opacity(theme::alpha::DIFF)), HUNK, ""),
         _ => (None, CODE_TEXT, ""),
     };
     let num = |n: Option<u32>| {

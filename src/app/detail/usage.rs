@@ -114,7 +114,6 @@ pub(in crate::app) fn usage_view(u: &UsageSum) -> Div {
                             .text_heading()
                             .line_height(px(22.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(c(theme::OK))
                             .child(fmt_usd(u.cost)),
                     )
                 }),

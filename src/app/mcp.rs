@@ -116,39 +116,19 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .gap_3()
-                    .p_6()
+                    .px_5()
+                    .py_4()
                     .border_b_1()
                     .border_color(c(theme::LINE))
                     .child(
                         div()
-                            .flex_none()
-                            .size(px(44.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .radius_md()
-                            .bg(c(theme::ACCENT_BG))
-                            .child(icons::icon(Icon::Plug, theme::ACCENT).size(px(22.0))),
-                    )
-                    .child(
-                        div()
+                            .id("mcp-title")
                             .flex_1()
                             .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_heading()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("MCP サーバー"),
-                            )
-                            .child(
-                                div()
-                                    .text_small()
-                                    .text_color(c(theme::MUTED))
-                                    .child("Claude Code / Codex の履歴をエージェントに接続"),
-                            ),
+                            .text_heading()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("MCP サーバー")
+                            .tooltip(tip("読み込んだすべての履歴が対象です。画面の絞り込みは反映されません。", None)),
                     )
                     .child(
                         div()
@@ -176,64 +156,25 @@ impl Rireki {
                     .flex()
                     .flex_col()
                     .gap_5()
-                    .px_6()
-                    .py_5()
+                    .px_5()
+                    .py_4()
                     .child(self.mcp_connection(window, cx))
                     .child(mcp_tools())
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_start()
-                            .gap_2()
-                            .text_small()
-                            .text_color(c(theme::MUTED))
-                            .child(icons::icon(Icon::Layers, theme::MUTED).size_4().flex_none())
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        "読み込んだすべての履歴が対象です。画面の絞り込みは反映されません。",
-                                    )
-                                    .when(self.loading.is_some(), |d| {
-                                        d.child(div().text_color(c(theme::ACCENT)).child(
-                                            "履歴を読み込み中… 取得結果は読み込みに合わせて更新されます。",
-                                        ))
-                                    }),
-                            ),
-                    ),
+                    .when(self.loading.is_some(), |d| {
+                        d.child(div().flex_none().text_small().text_color(c(theme::MUTED)).child("履歴を読み込み中…"))
+                    }),
             )
             .child(
                 div()
                     .flex_none()
                     .flex()
                     .items_center()
+                    .justify_end()
                     .gap_4()
-                    .px_6()
+                    .px_5()
                     .py_4()
-                    .bg(c(theme::BG))
                     .border_t_1()
                     .border_color(c(theme::LINE))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .text_small()
-                            .text_color(c(theme::MUTED))
-                            .child(if running {
-                                "この画面を閉じても接続を維持します。"
-                            } else {
-                                "起動後、この画面を閉じても接続を維持します。"
-                            })
-                            .child("アプリを終了するとサーバーも停止します。"),
-                    )
                     .child(
                         div()
                             .id("mcp-toggle")
@@ -247,30 +188,11 @@ impl Rireki {
                             .px_4()
                             .radius_md()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .bg(
-                                c(if running { theme::ERR } else { theme::ACCENT }).opacity(if running {
-                                    0.1
-                                } else {
-                                    1.0
-                                }),
-                            )
+                            .bg(c(if running { theme::PANEL } else { theme::ACCENT }))
                             .text_color(c(if running { theme::ERR } else { theme::BACKDROP }))
                             .border_1()
-                            .border_color(c(if running { theme::ERR } else { theme::ACCENT }).opacity(0.3))
-                            .when(self.mcp_busy, |d| d.opacity(0.5))
-                            .child(
-                                icons::icon(
-                                    if self.mcp_busy {
-                                        Icon::Hourglass
-                                    } else if running {
-                                        Icon::Pause
-                                    } else {
-                                        Icon::Play
-                                    },
-                                    if running { theme::ERR } else { theme::BACKDROP },
-                                )
-                                .size_4(),
-                            )
+                            .border_color(c(if running { theme::ERR } else { theme::ACCENT }))
+                            .when(self.mcp_busy, |d| d.opacity(theme::alpha::DISABLED))
                             .child(if self.mcp_busy {
                                 "切り替え中…"
                             } else if running {
@@ -280,7 +202,8 @@ impl Rireki {
                             })
                             .when(!self.mcp_busy, |d| {
                                 d.cursor_pointer()
-                                    .hover(|s| s.opacity(0.85))
+                                    .hover(|s| s.border_color(c(theme::TEXT)))
+                                    .tooltip(tip("アプリを終了するまで、この画面を閉じても接続を維持します。", None))
                                     .on_click(cx.listener(|app, _: &ClickEvent, _, cx| app.toggle_mcp(cx)))
                             }),
                     ),
@@ -294,7 +217,7 @@ impl Rireki {
             .flex()
             .items_center()
             .justify_center()
-            .bg(gpui::black().opacity(0.45))
+            .bg(gpui::black().opacity(theme::SCRIM))
             .occlude()
             .on_mouse_down(MouseButton::Left, cx.listener(close))
             .child(panel)
@@ -320,45 +243,15 @@ impl Rireki {
             .flex()
             .flex_col()
             .gap_4()
-            .p_4()
-            .radius_md()
-            .bg(c(theme::BG))
-            .border_1()
-            .border_color(c(theme::LINE))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child("接続設定"))
-                            .child(
-                                div()
-                                    .text_small()
-                                    .text_color(c(theme::MUTED))
-                                    .child("Streamable HTTP · この端末のみ · 読み取り専用"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .px_2p5()
-                            .py_1()
-                            .rounded_full()
-                            .bg(c(color).opacity(0.1))
-                            .text_small()
-                            .text_color(c(color))
-                            .child(dot(color, 6.0))
-                            .child(state),
-                    ),
+                    .gap_2()
+                    .child(dot(color, 8.0))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(state))
+                    .child(div().flex_1())
+                    .child(div().text_small().text_color(c(theme::MUTED)).child("Streamable HTTP")),
             );
         if let Some(server) = &self.mcp_server {
             connection = connection
@@ -387,11 +280,16 @@ impl Rireki {
                                 .border_color(c(theme::LINE))
                                 .child(
                                     div()
+                                        .id("mcp-url")
                                         .flex_1()
                                         .min_w_0()
                                         .font_family(MONO)
                                         .text_body()
-                                        .child(server.url()),
+                                        .child(server.url())
+                                        .tooltip(tip(
+                                            "この端末からの接続だけを受け付け、履歴の読み取り以外は行いません。",
+                                            None,
+                                        )),
                                 )
                                 .child(self.mcp_copy_button(
                                     "copy-mcp-url",
@@ -407,12 +305,7 @@ impl Rireki {
                         .items_center()
                         .gap_3()
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_small()
-                                .text_color(c(theme::MUTED))
-                                .child("接続先の MCP 設定に追加してください。"),
+                            div().flex_1(),
                         )
                         .child(self.mcp_copy_button(
                             "copy-mcp-config",
@@ -428,11 +321,9 @@ impl Rireki {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .gap_2()
                     .text_small()
                     .text_color(c(theme::MUTED))
-                    .child(icons::icon(Icon::Hourglass, theme::WARN).size_4())
-                    .child("サーバーの状態を切り替えています…"),
+                    .child("切り替えています…"),
             );
         } else {
             let focus = self.mcp_port.read(cx).focus_handle(cx);
@@ -447,14 +338,7 @@ impl Rireki {
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap_1()
-                            .child("ポート番号")
-                            .child(
-                                div()
-                                    .text_small()
-                                    .text_color(c(theme::MUTED))
-                                    .child("使用中の場合は別の番号に変更できます。"),
-                            ),
+                            .child("ポート番号"),
                     )
                     .child(
                         div()
@@ -489,13 +373,8 @@ impl Rireki {
                 div()
                     .flex()
                     .items_start()
-                    .gap_2()
-                    .p_3()
-                    .radius_md()
-                    .bg(c(theme::ERR).opacity(0.08))
                     .text_small()
                     .text_color(c(theme::ERR))
-                    .child(icons::icon(Icon::X, theme::ERR).size_4().flex_none())
                     .child(div().flex_1().min_w_0().child(error.clone())),
             );
         }
@@ -520,7 +399,7 @@ impl Rireki {
             .px_2p5()
             .radius_md()
             .text_small()
-            .text_color(c(if done { theme::OK } else { theme::TEXT }))
+            .text_color(c(theme::TEXT))
             .child(if done { "コピーしました" } else { label })
     }
 }
@@ -536,39 +415,24 @@ fn mcp_tools() -> Div {
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(div().font_weight(FontWeight::SEMIBOLD).child("利用できるツール"))
-                .child(
-                    div()
-                        .px_1p5()
-                        .radius_md()
-                        .bg(c(theme::RAISED))
-                        .text_small()
-                        .text_color(c(theme::MUTED))
-                        .child(TOOLS.len().to_string()),
-                ),
+                .child(div().font_weight(FontWeight::SEMIBOLD).child("ツール")),
         )
         .child(
             div()
-                .radius_md()
-                .border_1()
-                .border_color(c(theme::LINE))
-                .overflow_hidden()
-                .children(TOOLS.iter().enumerate().map(|(i, &(icon, name, description))| {
+                .children(TOOLS.iter().enumerate().map(|(i, &(_, name, description))| {
                     div()
                         .flex()
                         .items_center()
                         .gap_3()
-                        .px_3()
-                        .py_2p5()
-                        .when(i > 0, |d| d.border_t_1().border_color(c(theme::LINE)))
-                        .child(icons::icon(icon, theme::MUTED).size_4().flex_none())
+                        .py_2()
+                        .when(i > 0, |d| d.border_t_1().border_color(c(theme::LINE_SOFT)))
                         .child(div().flex_1().min_w_0().text_small().child(description))
                         .child(
                             div()
                                 .flex_none()
                                 .font_family(MONO)
                                 .text_axis()
-                                .text_color(c(theme::ACCENT))
+                                .text_color(c(theme::MUTED))
                                 .child(name),
                         )
                 })),

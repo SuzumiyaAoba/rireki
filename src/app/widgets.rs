@@ -207,7 +207,7 @@ impl Rireki {
             .hover(|s| s.bg(c(theme::HOVER)))
             .child(icons::icon(
                 if done { Icon::Check } else { Icon::Copy },
-                if done { theme::OK } else { theme::MUTED },
+                if done { theme::TEXT } else { theme::MUTED },
             ))
             .tooltip(tip(if done { "コピーしました" } else { "コピー" }, None))
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {

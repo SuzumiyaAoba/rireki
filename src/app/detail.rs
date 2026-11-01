@@ -614,9 +614,9 @@ fn diff_bar(added: usize, removed: usize) -> Div {
     let red = if total == 0 { 0 } else { 5 - green };
     div().flex_none().flex().gap(px(1.0)).children((0..5).map(move |i| {
         let col = if i < green {
-            c(theme::OK)
+            c(theme::DIFF_ADD)
         } else if i < green + red {
-            c(theme::ERR)
+            c(theme::DIFF_DEL)
         } else {
             c(theme::LINE_SOFT)
         };

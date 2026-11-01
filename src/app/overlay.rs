@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use super::header::Choice;
-use super::widgets::{Marquee, event_icon, kbd};
+use super::widgets::{Marquee, event_icon, kbd, tip};
 use super::{Popover, Rireki, fmt_dur, local};
 use crate::icons::{self, Icon};
 use crate::layout::{self, Block, Granularity};
@@ -107,8 +107,7 @@ impl Rireki {
                     .gap_1p5()
                     .child(event_icon(ic, color, 14.0))
                     .child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(color)).child(head))
-                    .when_some(outcome, |d, (label, color)| d.child(div().px_1().radius_sm()
-                        .bg(c(color).opacity(0.12)).text_color(c(color)).child(label)))
+                    .when_some(outcome, |d, (label, color)| d.child(div().text_color(c(color)).child(label)))
                     .child(div().flex_1())
                     .when(end > start, |d| d.child(div().text_color(c(theme::MUTED)).child(fmt_dur(end - start)))),
             )
@@ -162,7 +161,6 @@ impl Rireki {
                 .text_color(c(theme::MUTED))
                 .child(text)
         };
-        let note = |text: &'static str| div().px_2().pb_1().text_small().text_color(c(theme::MUTED)).child(text);
         // 見出しと切り替えを横に並べた行
         let labeled = |label: &'static str, control: Div| {
             div()
@@ -179,7 +177,7 @@ impl Rireki {
             "display-metric",
             &[
                 Choice { value: false, label: "イベント", tip: "", key: None },
-                Choice { value: true, label: "API コスト", tip: "", key: None },
+                Choice { value: true, label: "料金", tip: "", key: None },
             ],
             cost,
             cx,
@@ -204,17 +202,7 @@ impl Rireki {
                 }
             },
         );
-        let metric_note = if cost {
-            "区間ごとの API 換算料金（USD）を棒で表示"
-        } else {
-            "ツール呼び出しやメッセージをブロックで表示"
-        };
-        let rows_note = match (self.directory_timeline, cost) {
-            (false, _) => "セッションとサブエージェントを 1 行ずつ並べる",
-            (true, false) => "メインのイベントだけを詰めて並べる",
-            (true, true) => "ディレクトリごとに全セッションの料金を合計",
-        };
-        // ブロックのまとめ方は、API コストの表示では使わない
+        // ブロックのまとめ方は、料金の表示では使わない
         let grans =
             Granularity::ALL.into_iter().map(|g| {
                 let on = self.gran == g;
@@ -239,13 +227,7 @@ impl Rireki {
                             .text_color(c(if cost { theme::SUBTLE } else { theme::TEXT }))
                             .child(g.label()),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_color(c(if cost { theme::SUBTLE } else { theme::MUTED }))
-                            .child(g.description()),
-                    )
+                    .tooltip(tip(if cost { "料金の表示ではまとめ方を選べません" } else { g.description() }, None))
                     .when(!cost, |d| {
                         d.on_click(cx.listener(move |t, _: &ClickEvent, _, cx| {
                             t.gran = g;
@@ -285,12 +267,7 @@ impl Rireki {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().text_small().child("表示範囲内のセッションだけ"))
-                    .child(div().text_small().text_color(c(theme::MUTED)).child(if on {
-                        "範囲にイベントのないセッションを隠す"
-                    } else {
-                        "範囲外のセッションもグレーで並べる"
-                    })),
+                    .child(div().text_small().child("表示範囲内のセッションだけ")),
             )
             .child(kbd("V").flex_none())
             .on_click(cx.listener(|t, _: &ClickEvent, _, cx| t.toggle_in_view_only(cx)));
@@ -313,14 +290,11 @@ impl Rireki {
                         .border_color(c(theme::LINE))
                         .shadow_lg()
                         .text_color(c(theme::TEXT))
-                        .child(heading("表示オプション"))
                         .child(labeled("表示する値", metric))
-                        .child(note(metric_note).pl(px(88.0)))
                         .child(labeled("行", rows))
-                        .child(note(rows_note).pl(px(88.0)))
                         .child(divider())
                         .child(heading(if cost {
-                            "ブロックのまとめ方（API コストの表示では使いません）"
+                            "ブロックのまとめ方（料金の表示では使いません）"
                         } else {
                             "ブロックのまとめ方"
                         }))
@@ -364,7 +338,7 @@ impl Rireki {
                 &[
                     ("クリック", "詳細を開く"),
                     ("J · K", "次 / 前のイベント"),
-                    ("1 · 2 · 3 · 4", "詳細のタブ（概要 / 履歴 / 変更 / 分析）"),
+                    ("1 · 2 · 3 · 4", "詳細のタブ（セッション / イベント / ファイル / 分析）"),
                     (crate::platform::shortcut("⇧⌘↵", "Ctrl+Shift+Enter"), "詳細の全画面表示 / 通常表示"),
                     (crate::platform::shortcut("⌘F（分析タブ）", "Ctrl+F（分析タブ）"), "選択範囲のイベントを検索"),
                     (crate::platform::shortcut("⌘[ ⌘]", "Ctrl+[ Ctrl+]"), "選択の履歴を戻る / 進む"),
@@ -408,7 +382,7 @@ impl Rireki {
             .flex()
             .items_center()
             .justify_center()
-            .bg(gpui::black().opacity(0.45))
+            .bg(gpui::black().opacity(theme::SCRIM))
             .occlude()
             .on_mouse_down(MouseButton::Left, cx.listener(close))
             .child(

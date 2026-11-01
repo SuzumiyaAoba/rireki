@@ -170,7 +170,7 @@ impl Rireki {
                             4.0 + 18.0 * (n as f32 / max).sqrt()
                         }))
                         .radius_sm()
-                        .bg(c(theme::ACCENT).opacity(if in_month { 0.9 } else { 0.4 })),
+                        .bg(c(theme::ACCENT).opacity(if in_month { 1.0 } else { theme::alpha::DISABLED })),
                 )
                 .on_click(cx.listener(move |t, _: &ClickEvent, w, cx| {
                     if t.mode != Mode::Timeline {
@@ -398,7 +398,7 @@ impl Rireki {
                             bounds.origin + point(px(i as f32 * bw), px(h - 2.0 - bh)),
                             size(px(bw.max(1.0)), px(bh)),
                         );
-                        paint(window, fill(r, c(theme::ACCENT).opacity(0.75)));
+                        paint(window, fill(r, c(theme::ACCENT)));
                     }
                     // 今見ている範囲
                     if let Some((a, e)) = span {
@@ -409,10 +409,10 @@ impl Rireki {
                             let x1 = x1.max(x0 + 2.0).min(w);
                             let r = Bounds::new(bounds.origin + point(px(x0), px(0.0)), size(px(x1 - x0), px(h)));
                             paint(window,
-                                fill(r, gpui::white().opacity(0.08))
+                                fill(r, c(theme::RAISED))
                                     .corner_radii(px(3.0))
                                     .border_widths(px(1.0))
-                                    .border_color(gpui::white().opacity(0.7)),
+                                    .border_color(c(theme::TEXT)),
                             );
                         }
                     }

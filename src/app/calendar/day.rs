@@ -127,7 +127,7 @@ impl Rireki {
                         .w(px(col_w))
                         .top_0()
                         .bottom_0()
-                        .bg(c(theme::ACCENT).opacity(0.05)),
+                        .bg(c(theme::ACCENT).opacity(theme::alpha::RANGE)),
                 );
             }
             let cols = &columns[d];
@@ -354,15 +354,9 @@ impl Rireki {
             .when(!from_prev, |d| d.rounded_t(radius))
             .when(!to_next, |d| d.rounded_b(radius))
             .overflow_hidden()
-            .bg(c(color).opacity(if selected || hovered { 0.42 } else { 0.24 }))
+            .bg(c(if selected || hovered { theme::HOVER } else { theme::RAISED }))
             .border_1()
-            .border_color(if selected {
-                gpui::white()
-            } else if hovered {
-                gpui::white().opacity(0.6)
-            } else {
-                c(color).opacity(0.55)
-            })
+            .border_color(c(if selected || hovered { theme::TEXT } else { color }))
             .child(
                 div()
                     .absolute()
@@ -425,7 +419,7 @@ impl Rireki {
                     .px_1()
                     .radius_sm()
                     .when(hovered || selected, |d| {
-                        d.bg(gpui::white().opacity(if selected { 0.16 } else { 0.08 }))
+                        d.bg(c(if selected { theme::HOVER } else { theme::RAISED }))
                     })
                     .text_small()
                     .child(dot(USER, 5.0))

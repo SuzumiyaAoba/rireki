@@ -463,7 +463,7 @@ impl Rireki {
             .child(icons::icon(
                 icon,
                 if icon == Icon::Check {
-                    theme::OK
+                    theme::TEXT
                 } else {
                     theme::MUTED
                 },
