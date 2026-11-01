@@ -411,7 +411,7 @@ export function RirekiApp({
           {!isFullscreen &&
             (view === 'statistics' ? (
               <Statistics
-                sessions={scoped}
+                sessions={loading ? filterSessions(source, project) : scoped}
                 project={project}
                 loading={loading}
                 onProject={setProject}

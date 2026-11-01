@@ -142,11 +142,8 @@ export function McpDialog({
         <h3 className="detail-label">ツール</h3>
         <div className="mcp-tools">
           {mcpTools.map((tool) => (
-            <div key={tool.name}>
-              <span>
-                <code>{tool.name}</code>
-                <small>{tool.description}</small>
-              </span>
+            <div key={tool.name} title={tool.description}>
+              <code>{tool.name}</code>
             </div>
           ))}
         </div>

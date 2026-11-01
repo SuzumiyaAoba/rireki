@@ -468,7 +468,7 @@ const followUps = [
   ['テストが通るか確認してください。', 'テストはすべて成功しています。'],
 ];
 
-// ツールの並び。r 読む / g 検索 / e 編集 / b コマンド / a サブエージェント / t 計画
+// ツールの並び。r 読む / g 検索 / e 編集 / b コマンド。サブエージェントと計画は位置を決めて差し込む
 const stepPatterns = ['rgrebeb', 'rrebegb', 'grebrbe', 'rebgrbe'];
 
 function firstSentence(text: string) {
@@ -490,7 +490,19 @@ function makeEvents(session: Omit<Session, 'events'>, seed: number): HistoryEven
   // デモ 1 は固定の並び（失敗のイベントは 13 番目）。
   if (seed === 0) {
     return Array.from({ length: count }, (_, index) => {
-      const event = base(index, demoTemplates[index % demoTemplates.length]);
+      const template = demoTemplates[index % demoTemplates.length];
+      // 2 回目のサブエージェントは、もう一つのレーンの呼び出しにする。
+      const event = base(
+        index,
+        template.kind === 'agent' && index >= demoTemplates.length
+          ? {
+              ...template,
+              summary: session.agents[1].name,
+              input: 'テストの実行結果と、失敗したケースを確認してください。',
+              output: 'すべてのテストが成功していることを確認しました。',
+            }
+          : template,
+      );
       return index === 13
         ? {
             ...event,
@@ -507,8 +519,10 @@ function makeEvents(session: Omit<Session, 'events'>, seed: number): HistoryEven
   const [followUp, followUpReply] = followUps[seed % followUps.length];
   const twoTurns = count >= 23;
   const secondTurnAt = twoTurns ? Math.floor(count * 0.6) : -1;
-  const failureAt = seed % 3 === 0 ? Math.floor(count * 0.5) : -1;
   const agentSlots = new Set(session.agents.map((_, i) => Math.floor(count * (0.3 + i * 0.2))));
+  // 失敗はコマンドの呼び出しだけに起こすので、サブエージェントの位置は避ける。
+  let failureAt = seed % 3 === 0 ? Math.floor(count * 0.5) : -1;
+  while (failureAt >= 0 && agentSlots.has(failureAt)) failureAt += 1;
   const agentOf = (index: number) =>
     session.agents[[...agentSlots].sort((a, b) => a - b).indexOf(index)];
   let pick = seed;
@@ -563,8 +577,8 @@ function makeEvents(session: Omit<Session, 'events'>, seed: number): HistoryEven
         kind: 'agent',
         name: 'Agent',
         summary: agent.name,
-        input: `${agent.name}をお願いします。変更したファイルと関連する呼び出しを確認してください。`,
-        output: `${agent.name}が完了しました。指摘は見つかりませんでした。`,
+        input: `「${agent.name}」を依頼します。変更したファイルと関連する呼び出しを確認してください。`,
+        output: `「${agent.name}」が完了しました。指摘は見つかりませんでした。`,
       };
     } else if (index === 4 && seed % 2 === 1) {
       template = {
@@ -600,7 +614,7 @@ function makeEvents(session: Omit<Session, 'events'>, seed: number): HistoryEven
                   kind: 'edit',
                   name: 'Edit',
                   summary: `${file} を更新`,
-                  input: `${file}\n\n${firstSentence(words.reply)}ための変更です。`,
+                  input: `${file}\n\n変更内容: ${words.reply}`,
                   output: `Successfully updated ${file}`,
                 }
               : {
@@ -615,7 +629,7 @@ function makeEvents(session: Omit<Session, 'events'>, seed: number): HistoryEven
     events.push(
       index === failureAt
         ? { ...event, status: 'failed' }
-        : index === 22 && seed % 2 === 0 && template.kind !== 'assistant'
+        : index === 22 && seed % 2 === 0
           ? { ...event, status: 'interrupted' }
           : event,
     );

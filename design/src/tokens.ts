@@ -49,8 +49,17 @@ export const fontSize = { axis: 11, small: 12, body: 13, heading: 16, value: 20 
 // 余白は 4px の倍数だけ。
 export const space = { 1: 4, 2: 8, 3: 12, 4: 16, 5: 20, 6: 24 } as const;
 
-// 透明度は意味ごとに 1 つ。これ以外の透明度で色を作らない。
-export const alpha = { disabled: 0.4, stale: 0.55, range: 0.2 } as const;
+// 透明度は意味ごとに 1 つ（無効・古い結果・範囲の塗り・差分の行）。これ以外の透明度で色を作らない。
+export const alpha = { disabled: 0.4, stale: 0.55, range: 0.2, diff: 0.12 } as const;
+
+// 量を表す青の段階（少 → 多）。統計の濃淡と使用量の内訳に使う。
+export const heat = ['#184f95', '#256abf', '#3987e5', '#6da7ec', '#9ec5f4'] as const;
+
+// ロゴの地色。ブランドの色なので他には使わない。
+export const brand = { claude: '#d97757', codex: '#d0d0d0' } as const;
+
+// ポップオーバーとモーダルだけに使う幕と影。
+export const overlay = { scrim: '#00000073', shadow: '#0008' } as const;
 
 // イベントの色。判別できる色相は 5 つまで（全ペアで ΔE 17.2、検証器の下限 15）。
 // 応答・思考・その他は無彩色の濃淡。Claude の橙・Codex の青緑・失敗の赤は使わない。

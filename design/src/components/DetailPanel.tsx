@@ -131,6 +131,10 @@ export function DetailPanel({
   );
 }
 
+// 失敗は赤、拒否・中断は黄、成功は無色。
+const tone = (status: HistoryEvent['status']) =>
+  status === 'success' ? 'muted' : status === 'failed' ? 'err' : 'warn';
+
 function Label({ children }: { children: ReactNode }) {
   return <h3 className="detail-label">{children}</h3>;
 }
@@ -292,7 +296,7 @@ function History({
             10/{26 + session.day} {formatTime(event.start)}
             <span>·</span>
             {Math.round(event.duration * 3600)}秒
-            <StatusText tone={event.status === 'success' ? 'muted' : 'err'}>
+            <StatusText tone={tone(event.status)}>
               {event.status === 'success' ? '成功' : event.status === 'failed' ? '失敗' : '中断'}
             </StatusText>
           </div>
@@ -364,7 +368,9 @@ export function EventRow({
             <Highlight text={event.name} query={query} />
           </strong>
           {event.status !== 'success' && (
-            <StatusText tone="err">{event.status === 'failed' ? '失敗' : '中断'}</StatusText>
+            <StatusText tone={tone(event.status)}>
+              {event.status === 'failed' ? '失敗' : '中断'}
+            </StatusText>
           )}
           <small>{formatTime(event.start)}</small>
         </span>

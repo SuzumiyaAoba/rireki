@@ -10,6 +10,27 @@ import {
 import { EventBlock, Icon, ProjectMark, SourceLogo } from './primitives';
 
 export type Granularity = 'auto' | 'same-tool' | 'turn' | 'call';
+
+const COST_BINS = 18;
+
+// 料金は、区間ごとのイベント数に比例して配分する。
+function costBins(session: Session) {
+  const length = (session.end - session.start) / COST_BINS;
+  const counts = Array.from(
+    { length: COST_BINS },
+    (_, i) =>
+      session.events.filter(
+        (event) =>
+          event.start >= session.start + length * i &&
+          event.start < session.start + length * (i + 1),
+      ).length,
+  );
+  const total = Math.max(
+    1,
+    counts.reduce((sum, count) => sum + count, 0),
+  );
+  return counts.map((count, i) => ({ share: (session.cost * count) / total, hours: length * i }));
+}
 export interface TimeRange {
   start: number;
   end: number;
@@ -162,21 +183,20 @@ export function Timeline({
         />
       )}
       {cost
-        ? Array.from({ length: 18 }, (_, i) => {
-            const hour =
-              session.start + (session.day - day) * 24 + ((session.end - session.start) * i) / 18;
+        ? costBins(session).map(({ share, hours }, i) => {
+            const hour = session.start + (session.day - day) * 24 + hours;
             return (
               <button
                 type="button"
                 className="cost-bar"
                 key={i}
-                aria-label={`${session.title} 料金 $${(session.cost / 18).toFixed(3)}`}
+                aria-label={`${formatTime(hour)} から ${share.toFixed(3)} ドル`}
                 onClick={() => onSelect(session)}
                 style={
                   {
                     left: `${percent(hour)}%`,
-                    width: `${((session.end - session.start) / 18 / span) * 100}%`,
-                    height: `${5 + ((i * 13) % 17)}px`,
+                    width: `${((session.end - session.start) / COST_BINS / span) * 100}%`,
+                    height: `${5 + Math.round((share / session.cost) * COST_BINS * 4)}px`,
                     '--source-color':
                       session.source === 'claude' ? 'var(--claude)' : 'var(--codex)',
                   } as CSSProperties
@@ -295,7 +315,8 @@ export function Timeline({
                             onClick={() =>
                               onSelect(
                                 session,
-                                session.events.find((event) => event.kind === 'agent'),
+                                session.events.filter((event) => event.kind === 'agent')[index] ??
+                                  session.events.find((event) => event.kind === 'agent'),
                               )
                             }
                           >
@@ -304,7 +325,11 @@ export function Timeline({
                             <span className="truncate">{agent.name}</span>
                             <span className="lane-count">{agent.events}</span>
                           </button>
-                          {plot(session, session.events.slice(5 + index, 11 + index), true)}
+                          {plot(
+                            session,
+                            session.events.slice(5 + index, 5 + index + agent.events),
+                            true,
+                          )}
                         </div>
                       ))}
                   </div>
