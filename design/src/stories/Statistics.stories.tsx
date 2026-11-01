@@ -11,7 +11,7 @@ const meta = {
     docs: {
       description: {
         component:
-          'src/app/statistics.rs と statistics/ 以下に対応。6 指標、推移、プロジェクト・セッション順位、時間帯、モデル、ツール、読み込み元の集計を表示します。値は共通の固定サンプルから算出します。',
+          'src/app/statistics.rs と statistics/ 以下に対応。値は共通の固定サンプルから算出します。',
       },
     },
   },

@@ -409,7 +409,6 @@ export function RirekiApp({
             (view === 'statistics' ? (
               <Statistics
                 sessions={scoped}
-                source={source}
                 project={project}
                 loading={loading}
                 onProject={setProject}

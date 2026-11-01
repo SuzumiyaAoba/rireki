@@ -1909,9 +1909,6 @@ kbd {
   padding: 0 12px;
   border-bottom: 1px solid var(--border);
 }
-.statistics-header > .icon {
-  color: var(--accent);
-}
 .statistics-header > strong {
   font-size: var(--font-body);
 }
@@ -1925,89 +1922,72 @@ kbd {
   white-space: nowrap;
 }
 .statistics-scroll {
-  padding: 20px;
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 32px;
   overflow: auto;
   flex: 1;
   min-height: 0;
 }
-.metric-tiles {
+.metric-row {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 16px;
+  border-bottom: 1px solid var(--line);
 }
-.metric-tile {
+.metric {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--panel);
-  padding: 12px 16px 16px;
   min-width: 0;
+  padding: 12px 16px;
+  border-left: 1px solid var(--line-soft);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  text-align: left;
 }
-.metric-tile > span:first-child {
+.metric:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+.metric > span {
   font-size: var(--font-axis);
   color: var(--muted);
 }
-.metric-tile > strong {
+.metric > strong {
   font-size: var(--font-value);
-  line-height: 30px;
+  line-height: 28px;
 }
-.metric-tile > small {
+.metric > small {
   font-size: var(--font-axis);
   color: var(--muted);
 }
-.metric-tile.selected {
-  background: var(--accent-bg);
-  border-color: var(--accent);
+.metric:hover:not(.selected) > span {
+  color: var(--text);
 }
-.metric-tile:hover:not(.selected) {
-  border-color: var(--subtle);
+.metric.selected {
+  border-bottom-color: var(--accent);
 }
-.metric-tile.selected > span:first-child {
+.metric.selected > span {
   color: var(--text);
   font-weight: 600;
 }
-.source-split {
-  display: flex;
-  height: 4px;
-  width: 100%;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  margin-top: 4px;
-}
-.source-split > i:first-child {
-  background: var(--claude);
-}
-.source-split > i:last-child {
-  background: var(--codex);
-  flex: 1;
-}
-.stats-card {
+.stats-section {
   flex: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--panel);
-  padding: 16px 16px;
   min-width: 0;
 }
-.stats-card-heading {
+.stats-section-heading {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
 }
-.stats-card-heading h2 {
+.stats-section-heading h2 {
   font-size: var(--font-body);
   font-weight: 600;
-}
-.stats-card-heading > span {
-  color: var(--muted);
-  font-size: var(--font-axis);
 }
 .chart-legend {
   display: flex;
@@ -2015,8 +1995,6 @@ kbd {
   gap: 16px;
   color: var(--muted);
   font-size: var(--font-axis);
-  margin-top: 0;
-  margin-bottom: 8px;
 }
 .chart-legend > span {
   display: flex;
@@ -2082,7 +2060,7 @@ kbd {
 .stats-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  gap: 32px;
 }
 .ranking-row {
   width: 100%;
@@ -2126,9 +2104,6 @@ kbd {
 .ranking-row > strong {
   font-size: var(--font-axis);
   font-variant-numeric: tabular-nums;
-}
-.ranking-row > .icon:last-child {
-  color: var(--subtle);
 }
 .session-ranking {
   min-height: 40px;
@@ -2195,18 +2170,7 @@ kbd {
   height: 105px;
   width: 105px;
   border-radius: 50%;
-  background: var(--panel);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-}
-.model-donut strong {
-  font-size: var(--font-value);
-}
-.model-donut small {
-  color: var(--subtle);
-  font-size: var(--font-axis);
+  background: var(--bg);
 }
 .model-legend {
   display: flex;
@@ -2268,9 +2232,8 @@ kbd {
   text-align: left;
   padding-left: 0;
 }
-.tools-table td:first-child .icon {
-  margin-right: 8px;
-  color: var(--muted);
+.tools-table td.failed {
+  color: var(--err);
 }
 .tools-table tr:last-child td {
   border: 0;
@@ -2302,14 +2265,17 @@ kbd {
   margin-left: auto;
   font-size: var(--font-heading);
 }
-.source-totals small,
-.statistics-note {
+.source-totals small {
   color: var(--muted);
   font-size: var(--font-axis);
 }
 @media (max-width: 1250px) {
-  .metric-tiles {
+  .metric-row {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .metric:nth-child(4) {
+    border-left: 0;
+    padding-left: 0;
   }
 }
 @media (max-width: 1050px) {

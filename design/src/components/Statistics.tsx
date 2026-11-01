@@ -6,14 +6,13 @@ import {
   projects,
   type HistoryEvent,
   type Session,
-  type Source,
 } from '../data';
 import { Button, EmptyState, Icon, ProjectMark, Segmented, SourceLogo } from './primitives';
 
 type Metric = 'tokens' | 'cost' | 'turns' | 'sessions' | 'tools' | 'failures';
-const metrics: Array<{ key: Metric; label: string }> = [
+const metrics: Array<{ key: Metric; label: string; hint?: string }> = [
   { key: 'tokens', label: 'トークン' },
-  { key: 'cost', label: '推定料金' },
+  { key: 'cost', label: '料金', hint: 'ログの使用量と料金表による API 換算の推定値（USD）' },
   { key: 'turns', label: 'ターン' },
   { key: 'sessions', label: 'セッション' },
   { key: 'tools', label: 'ツール呼び出し' },
@@ -47,22 +46,20 @@ const format = (value: number, metric: Metric) =>
       ? `$${value.toFixed(2)}`
       : formatNumber(Math.round(value));
 
-function Card({
+function Section({
   title,
-  subtitle,
+  aside,
   children,
-  className = '',
 }: {
   title: string;
-  subtitle?: string;
+  aside?: ReactNode;
   children: ReactNode;
-  className?: string;
 }) {
   return (
-    <section className={`stats-card ${className}`}>
-      <div className="stats-card-heading">
+    <section className="stats-section">
+      <div className="stats-section-heading">
         <h2>{title}</h2>
-        {subtitle && <span>{subtitle}</span>}
+        {aside}
       </div>
       {children}
     </section>
@@ -71,14 +68,12 @@ function Card({
 
 export function Statistics({
   sessions,
-  source,
   project,
   loading,
   onProject,
   onSession,
 }: {
   sessions: Session[];
-  source: Source;
   project: string | null;
   loading?: boolean;
   onProject: (project: string | null) => void;
@@ -87,6 +82,7 @@ export function Statistics({
   const [period, setPeriod] = useState('week');
   const [metric, setMetric] = useState<Metric>('tokens');
   const days = period === 'week' ? 7 : period === 'month' ? 30 : period === 'quarter' ? 90 : 3;
+  const activeDays = Math.max(1, new Set(sessions.map((session) => session.day)).size);
   const value = total(sessions, metric);
   const bySource = [
     sessions.filter((session) => session.source === 'claude'),
@@ -121,18 +117,33 @@ export function Statistics({
       events: sessions.flatMap((session) => session.events.filter((event) => event.name === name)),
     }))
     .sort((a, b) => b.events.length - a.events.length);
+  const hourly = ['月', '火', '水', '木', '金', '土', '日'].map((day, index) => ({
+    day,
+    counts: Array.from({ length: 24 }, (_, hour) =>
+      sessions
+        .filter((session) => session.day === index)
+        .reduce(
+          (sum, session) =>
+            sum + session.events.filter((event) => Math.floor(event.start) === hour).length,
+          0,
+        ),
+    ),
+  }));
+  const maxCount = Math.max(1, ...hourly.flatMap((row) => row.counts));
   return (
-    <div className="statistics-view" aria-label="使用量と実行結果の統計">
+    <div className="statistics-view" aria-label="統計">
       <header className="statistics-header">
-        <Icon name="ChartColumn" />
         <strong>統計</strong>
         {project && (
-          <Button icon="Folder" className="focus-chip" onClick={() => onProject(null)}>
+          <Button className="focus-chip" onClick={() => onProject(null)}>
             {project}
             <Icon name="X" size={11} />
           </Button>
         )}
-        <span className="statistics-subtitle">
+        <span
+          className="statistics-subtitle"
+          title="ローカル時間で集計します。サブエージェントは起動元のセッションに含みます。"
+        >
           2026/10/26–
           {period === 'week'
             ? '11/1'
@@ -141,12 +152,7 @@ export function Statistics({
               : period === 'quarter'
                 ? '2027/1/23'
                 : '10/28'}{' '}
-          · 稼働 {new Set(sessions.map((session) => session.day)).size} / {days} 日 ·{' '}
-          {source === 'all'
-            ? 'Claude Code と Codex'
-            : source === 'claude'
-              ? 'Claude Code'
-              : 'Codex'}
+          · 稼働 {new Set(sessions.map((session) => session.day)).size} / {days} 日
         </span>
         <Segmented
           label="統計の期間"
@@ -164,55 +170,49 @@ export function Statistics({
         <EmptyState loading />
       ) : (
         <div className="statistics-scroll">
-          <div className="metric-tiles">
+          <div className="metric-row">
             {metrics.map((item) => {
               const metricTotal = total(sessions, item.key);
-              const claude = total(bySource[0], item.key);
+              const calls = total(sessions, 'tools');
               return (
                 <button
                   type="button"
-                  className={`metric-tile ${metric === item.key ? 'selected' : ''}`}
+                  className={`metric ${metric === item.key ? 'selected' : ''}`}
                   key={item.key}
                   aria-pressed={metric === item.key}
+                  title={item.hint}
                   onClick={() => setMetric(item.key)}
                 >
                   <span>{item.label}</span>
                   <strong>{format(metricTotal, item.key)}</strong>
                   <small>
-                    稼働日あたり{' '}
-                    {format(
-                      metricTotal /
-                        Math.max(1, new Set(sessions.map((session) => session.day)).size),
-                      item.key,
-                    )}
+                    {item.key === 'failures'
+                      ? `呼び出しの ${calls ? Math.round((metricTotal / calls) * 100) : 0}%`
+                      : `稼働日あたり ${format(metricTotal / activeDays, item.key)}`}
                   </small>
-                  {source === 'all' && (
-                    <span className="source-split">
-                      <i style={{ width: `${metricTotal ? (claude / metricTotal) * 100 : 0}%` }} />
-                      <i />
-                    </span>
-                  )}
                 </button>
               );
             })}
           </div>
           {!sessions.length ? (
-            <Card title="この期間の履歴はありません">
-              <EmptyState filtered />
-            </Card>
+            <EmptyState filtered />
           ) : (
             <>
-              <Card title={`${metricLabel}の推移`} subtitle={`合計 ${format(value, metric)}`}>
-                <div className="chart-legend">
-                  <span>
-                    <i className="claude-color" />
-                    Claude Code
-                  </span>
-                  <span>
-                    <i className="codex-color" />
-                    Codex
-                  </span>
-                </div>
+              <Section
+                title={`${metricLabel}の推移`}
+                aside={
+                  <div className="chart-legend">
+                    <span>
+                      <i className="claude-color" />
+                      Claude Code
+                    </span>
+                    <span>
+                      <i className="codex-color" />
+                      Codex
+                    </span>
+                  </div>
+                }
+              >
                 <div className="trend-chart">
                   <div className="chart-y-labels">
                     {[1, 0.75, 0.5, 0.25, 0].map((value) => (
@@ -244,9 +244,9 @@ export function Statistics({
                     ))}
                   </div>
                 </div>
-              </Card>
+              </Section>
               <div className="stats-pair">
-                <Card title="プロジェクト" subtitle={metricLabel}>
+                <Section title="プロジェクト">
                   {ranking.map((item, index) => (
                     <button
                       type="button"
@@ -266,11 +266,10 @@ export function Statistics({
                         />
                       </span>
                       <strong>{format(total(item.sessions, metric), metric)}</strong>
-                      <Icon name="ChevronRight" size={12} />
                     </button>
                   ))}
-                </Card>
-                <Card title="セッション" subtitle={metricLabel}>
+                </Section>
+                <Section title="セッション">
                   {rankedSessions.slice(0, 6).map((session, index) => (
                     <button
                       type="button"
@@ -287,13 +286,12 @@ export function Statistics({
                         </small>
                       </span>
                       <strong>{format(amount(session, metric), metric)}</strong>
-                      <Icon name="ChevronRight" size={12} />
                     </button>
                   ))}
-                </Card>
+                </Section>
               </div>
               <div className="stats-pair">
-                <Card title="曜日と時間帯" subtitle="イベント数">
+                <Section title="曜日と時間帯">
                   <div className="hours-legend">
                     <span>0</span>
                     <span>6</span>
@@ -302,43 +300,32 @@ export function Statistics({
                     <span>24時</span>
                   </div>
                   <div className="heatmap">
-                    {['月', '火', '水', '木', '金', '土', '日'].map((day, index) => (
+                    {hourly.map(({ day, counts }) => (
                       <div key={day}>
                         <span>{day}</span>
-                        {Array.from({ length: 24 }, (_, hour) => {
-                          const count = sessions
-                            .filter((session) => session.day === index)
-                            .reduce(
-                              (sum, session) =>
-                                sum +
-                                session.events.filter((event) => Math.floor(event.start) === hour)
-                                  .length,
-                              0,
-                            );
-                          return (
-                            <i
-                              key={hour}
-                              title={`${day}曜 ${hour}時 · ${count} 件`}
-                              style={{
-                                background: count
-                                  ? `color-mix(in srgb, #3987e5 ${Math.min(100, 20 + count * 4)}%, var(--panel))`
-                                  : undefined,
-                              }}
-                            />
-                          );
-                        })}
+                        {counts.map((count, hour) => (
+                          <i
+                            key={hour}
+                            title={`${day}曜 ${hour}時 · ${count} 件`}
+                            style={{
+                              background: count
+                                ? `var(--heat-${Math.max(1, Math.ceil((count / maxCount) * 5))})`
+                                : undefined,
+                            }}
+                          />
+                        ))}
                       </div>
                     ))}
                   </div>
                   <div className="heatmap-scale">
                     <span>少</span>
-                    {['#184f95', '#256abf', '#3987e5', '#6da7ec', '#9ec5f4'].map((color) => (
-                      <i key={color} style={{ background: color }} />
+                    {[1, 2, 3, 4, 5].map((level) => (
+                      <i key={level} style={{ background: `var(--heat-${level})` }} />
                     ))}
                     <span>多</span>
                   </div>
-                </Card>
-                <Card title="モデル" subtitle={metricLabel}>
+                </Section>
+                <Section title="モデル">
                   <div className="model-breakdown">
                     <div
                       className="model-donut"
@@ -348,10 +335,7 @@ export function Statistics({
                         } as CSSProperties
                       }
                     >
-                      <div>
-                        <strong>{format(value, metric)}</strong>
-                        <small>合計</small>
-                      </div>
+                      <div />
                     </div>
                     <div className="model-legend">
                       {bySource.map((items, index) => (
@@ -368,9 +352,9 @@ export function Statistics({
                       ))}
                     </div>
                   </div>
-                </Card>
+                </Section>
               </div>
-              <Card title="ツール" subtitle="呼び出し・失敗・所要時間">
+              <Section title="ツール">
                 <div className="table-scroll">
                   <table className="tools-table">
                     <thead>
@@ -394,22 +378,12 @@ export function Statistics({
                           durations[
                             Math.min(durations.length - 1, Math.floor(durations.length * 0.95))
                           ];
+                        const failed = tool.events.filter((event) => event.status === 'failed');
                         return (
                           <tr key={tool.name}>
-                            <td>
-                              <Icon name="Wrench" size={12} />
-                              {tool.name}
-                            </td>
+                            <td>{tool.name}</td>
                             <td>{tool.events.length}</td>
-                            <td
-                              className={
-                                tool.events.some((event) => event.status === 'failed')
-                                  ? 'removed'
-                                  : ''
-                              }
-                            >
-                              {tool.events.filter((event) => event.status === 'failed').length}
-                            </td>
+                            <td className={failed.length ? 'failed' : ''}>{failed.length}</td>
                             <td>
                               {
                                 tool.events.filter(
@@ -435,8 +409,8 @@ export function Statistics({
                     </tbody>
                   </table>
                 </div>
-              </Card>
-              <Card title="読み込み元" subtitle={metricLabel}>
+              </Section>
+              <Section title="読み込み元">
                 <div className="source-totals">
                   {bySource.map((items, index) => (
                     <div key={index}>
@@ -447,13 +421,9 @@ export function Statistics({
                     </div>
                   ))}
                 </div>
-              </Card>
+              </Section>
             </>
           )}
-          <p className="statistics-note">
-            料金はログの使用量と料金表による API
-            換算の推定値（USD）です。サブエージェントは起動元のセッションに含めます。
-          </p>
         </div>
       )}
     </div>
