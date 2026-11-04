@@ -1,4 +1,4 @@
-//! GUI・TUI・CLI が共有する履歴の読み込みと差分更新。
+//! フロントエンドが共有する履歴の読み込みと差分更新。
 //!
 //! [`History`] は索引と Store を所有する。起動時に [`History::load_cached`]、
 //! 以後は [`History::plan`] と [`History::ingest`] を呼び、返されたスナップショットを

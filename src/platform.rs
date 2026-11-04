@@ -12,7 +12,7 @@ pub const MONO: &str = if cfg!(target_os = "macos") {
     "DejaVu Sans Mono"
 };
 
-/// GUI のダブルクリック起動ではコンソールを開かず、CLI 実行時は親のコンソールを使う。
+/// GUI のダブルクリック起動ではコンソールを開かず、引数を付けた実行（計測の出力など）では親のコンソールを使う。
 #[cfg(target_os = "windows")]
 pub fn attach_parent_console() {
     use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};

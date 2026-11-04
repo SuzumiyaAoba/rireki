@@ -9,11 +9,7 @@ use super::{
 use gpui::prelude::*;
 
 impl Rireki {
-    pub fn new(
-        window: &mut Window,
-        cx: &mut Context<Self>,
-        mut profile_tasks: Option<Vec<index::Task>>,
-    ) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // トラックパッドのピンチでズームする（溜まった分はまとめて反映）
         let pinch = crate::pinch::listen();
         cx.spawn_in(window, async move |this, cx| {
@@ -70,9 +66,7 @@ impl Rireki {
             loop {
                 let ix = indexer.clone();
                 let planned = profile_ui.then(std::time::Instant::now);
-                let tasks = if let Some(tasks) = profile_tasks.take() {
-                    tasks
-                } else if let Some((claude, codex)) = &profile_roots {
+                let tasks = if let Some((claude, codex)) = &profile_roots {
                     let (claude, codex) = (claude.clone(), codex.clone());
                     bg.spawn(async move { ix.lock().unwrap().plan_in(&claude, &codex) })
                         .await
