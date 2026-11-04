@@ -193,20 +193,36 @@ mark {
   color: var(--err);
   border-color: var(--err);
 }
+/* 詳細・統計の内側の切り替え（src/app/widgets.rs の segmented）。選択は primary-bg */
 .segmented {
   display: inline-flex;
   align-items: center;
   flex: none;
-  gap: 4px;
+  gap: 2px;
   padding: 4px;
   height: 28px;
-  border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--bg);
 }
-.segmented button {
-  padding: 4px 8px;
+/* ツールバーの切り替え（src/app/header.rs の tool_segmented）。枠 line・地 backdrop・選択は raised */
+.segmented.toolbar {
+  padding: 2px;
+  border: 1px solid var(--line);
+  background: var(--backdrop);
+}
+/* ツールバーの項目の高さは 22px（src/app/header.rs の ITEM_H = 28 − 6）。内側の余白は 2px */
+.segmented.toolbar button {
   height: 22px;
+}
+.segmented.toolbar button[aria-pressed='true'] {
+  background: var(--raised);
+  color: var(--text);
+  font-weight: 600;
+}
+/* 項目は横 8px・縦 0。高さは容器 28px から内側の余白 4px × 2 を引いた 20px（src/app/widgets.rs） */
+.segmented button {
+  padding: 0 8px;
+  height: 20px;
   border-radius: var(--radius-sm);
   font-size: var(--font-small);
   color: var(--muted);
@@ -216,6 +232,7 @@ mark {
 .segmented button[aria-pressed='true'] {
   background: var(--accent-bg);
   color: var(--text);
+  font-weight: 600;
 }
 .segmented button:hover:not([aria-pressed='true']) {
   color: var(--text);
@@ -270,10 +287,14 @@ kbd {
 }
 .status-text.live::before {
   content: '';
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--live);
+}
+/* 実行中は色の文字だけ（進行中の点は付けない） */
+.status-text.running {
+  color: var(--live);
 }
 .truncate {
   overflow: hidden;
@@ -1067,19 +1088,28 @@ kbd {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.event-block:hover {
-  background: var(--hover);
-  z-index: 2;
-}
-.event-block.selected {
-  border: 2px solid var(--accent);
-  outline: 1px solid var(--accent);
-}
+/* 失敗・拒否・中断は枠と種類のアイコンの色を変え、アイコンを X に替える（文字色は変えない） */
 .event-block.failed {
   border-color: var(--err);
 }
+.event-block.failed > .icon {
+  color: var(--err);
+}
 .event-block.rejected {
   border-color: var(--warn);
+}
+.event-block.rejected > .icon {
+  color: var(--warn);
+}
+/* 描画の優先順は 選択 > ホバー > 失敗・拒否・中断（src/app/timeline.rs の block_paint と同じ） */
+.event-block:hover {
+  background: var(--hover);
+  border-color: var(--text);
+  z-index: 2;
+}
+.event-block.selected {
+  background: var(--hover);
+  border: 1.5px solid var(--text);
 }
 .directory-events {
   position: absolute;
@@ -1801,26 +1831,17 @@ kbd {
   margin-top: 4px;
   color: var(--muted);
 }
+/* 種別・状態の行と並び順の行を縦に並べる（src/app/detail/analysis.rs の body の gap_2） */
 .analysis-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.analysis-filter-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-}
-.analysis-filters select {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--panel);
-  font-size: var(--font-axis);
-  height: 25px;
-}
-.analysis-filters .segmented {
-  height: 25px;
-}
-.analysis-filters .segmented button {
-  font-size: var(--font-axis);
-  height: 19px;
-  padding: 0 8px;
 }
 .analysis-content > .event-row {
   padding: 8px 0;
@@ -2552,6 +2573,11 @@ kbd {
 .help-modal {
   width: 620px;
   background: var(--raised);
+}
+/* 本体のヘルプは見出しに罫線を付けず、内容との間を 16px にする（src/app/overlay.rs の help_sheet） */
+.help-modal .modal-heading {
+  padding: 20px 20px 0;
+  border-bottom: 0;
 }
 .help-modal .modal-heading h2 {
   font-size: var(--font-body);

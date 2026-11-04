@@ -12,10 +12,17 @@ export interface HistoryEvent {
   summary: string;
   start: number;
   duration: number;
-  status: 'success' | 'failed' | 'rejected' | 'interrupted';
+  // その呼び出しの使用量（トークン）。分析の「トークン順」に使う
+  tokens: number;
+  // pending は結果がまだないイベント（進行中のセッションでは実行中、それ以外は結果なし）
+  status: 'success' | 'failed' | 'rejected' | 'interrupted' | 'pending';
   input: string;
   output: string;
 }
+
+// 失敗・拒否・中断の合計（「失敗・拒否・中断」）に数えるか。結果なし・成功は数えない
+export const isFailure = (status: HistoryEvent['status']) =>
+  status === 'failed' || status === 'rejected' || status === 'interrupted';
 
 export interface Session {
   id: string;
@@ -485,6 +492,8 @@ function makeEvents(session: Omit<Session, 'events'>, seed: number): HistoryEven
     id: `${id}-event-${index}`,
     start: start + step * index,
     duration: Math.max(0.15 / 3600, step * (index % 4 === 0 ? 0.85 : 0.58)),
+    // 決まった式で作る（同じセッション内では値が重ならない。同順位の並びは比較子の規則で決める）
+    tokens: 800 + ((index * 7_919 + seed * 104_729) % 9_000),
     status: 'success',
   });
   // デモ 1 は固定の並び（失敗のイベントは 13 番目）。
@@ -523,6 +532,8 @@ function makeEvents(session: Omit<Session, 'events'>, seed: number): HistoryEven
   // 失敗はコマンドの呼び出しだけに起こすので、サブエージェントの位置は避ける。
   let failureAt = seed % 3 === 0 ? Math.floor(count * 0.5) : -1;
   while (failureAt >= 0 && agentSlots.has(failureAt)) failureAt += 1;
+  // 結果がまだないイベント。進行中のセッションは末尾が「実行中」、ほかは一部のセッションだけ末尾から 2 件目が「結果なし」。
+  const pendingAt = session.live ? count - 1 : seed % 4 === 2 ? count - 2 : -1;
   const agentOf = (index: number) =>
     session.agents[[...agentSlots].sort((a, b) => a - b).indexOf(index)];
   let pick = seed;
@@ -626,12 +637,15 @@ function makeEvents(session: Omit<Session, 'events'>, seed: number): HistoryEven
                 };
     }
     const event = base(index, template);
+    // 失敗の出力の先頭に終了コードを入れる（GPUI の exit_code と同じ `Exit code N` の形式）
     events.push(
       index === failureAt
-        ? { ...event, status: 'failed' }
-        : index === 22 && seed % 2 === 0
-          ? { ...event, status: 'interrupted' }
-          : event,
+        ? { ...event, status: 'failed', output: `Exit code 1\n${event.output}` }
+        : index === pendingAt
+          ? { ...event, status: 'pending', output: '' }
+          : index === 22 && seed % 2 === 0
+            ? { ...event, status: 'interrupted' }
+            : event,
     );
   }
   return events;

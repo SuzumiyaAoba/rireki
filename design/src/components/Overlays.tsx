@@ -265,6 +265,7 @@ export function DisplayOptions({
           <span>表示内容</span>
           <Segmented
             label="表示内容"
+            toolbar
             options={[
               { value: 'events', label: 'イベント' },
               { value: 'cost', label: '料金' },
@@ -277,6 +278,7 @@ export function DisplayOptions({
           <span>行の並び</span>
           <Segmented
             label="行の並び"
+            toolbar
             options={[
               { value: 'session', label: 'セッション' },
               { value: 'directory', label: 'ディレクトリ' },

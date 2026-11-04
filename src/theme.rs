@@ -302,6 +302,20 @@ mod tests {
         }
     }
 
+    /// ロゴの地色は tokens.ts の brand（1 行に claude, codex）と一致する。DESIGN.md の logo-* は design_md_matches_tokens が検査する
+    #[test]
+    fn logo_colors_match_tokens() {
+        let brand = section("brand");
+        // brand は `{ claude: '#…', codex: '#…' }` の 1 行なので、キーの直後の色を読む
+        let inline = |key: &str| {
+            let pattern = format!("{key}: '#");
+            let at = brand.find(&pattern).unwrap_or_else(|| panic!("brand.{key} がない")) + pattern.len();
+            u32::from_str_radix(&brand[at..at + 6], 16).unwrap()
+        };
+        assert_eq!(LOGO_CLAUDE, inline("claude"), "brand.claude");
+        assert_eq!(LOGO_CODEX, inline("codex"), "brand.codex");
+    }
+
     #[test]
     fn event_groups_match_tokens() {
         let groups = section("eventGroups");
@@ -525,6 +539,148 @@ mod tests {
         }
     }
 
+    /// DESIGN.md の frontmatter `components` から、部品ごとの `項目: 値` を読む（2 段目の部品名と 4 段目の項目。コメントは除く）
+    fn components() -> Vec<(String, Vec<(String, String)>)> {
+        let front = include_str!("../DESIGN.md").split("---").nth(1).expect("DESIGN.md に frontmatter がない");
+        let mut out: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        let mut inside = false;
+        for line in front.lines() {
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            if !line.starts_with(' ') {
+                inside = line.trim_end() == "components:";
+            } else if inside && line.starts_with("  ") && !line.starts_with("    ") {
+                out.push((line.trim().trim_end_matches(':').to_string(), Vec::new()));
+            } else if inside && line.starts_with("    ") {
+                let (key, value) = line.trim().split_once(':').expect("key: value の形");
+                let item = out.last_mut().expect("部品名より前に項目がある");
+                item.1.push((key.to_string(), value.trim().trim_matches('"').to_string()));
+            }
+        }
+        out
+    }
+
+    /// components の参照 `{colors.bg}` などは、frontmatter の対応する節のキーに解決する（壊れた参照を残さない）
+    #[test]
+    fn components_references_resolve() {
+        let sections: Vec<(&str, Vec<(String, String)>)> =
+            ["colors", "rounded", "spacing", "typography", "alpha"].into_iter().map(|s| (s, design(s))).collect();
+        let mut refs = 0;
+        for (name, items) in components() {
+            for (key, value) in items {
+                let mut rest = value.as_str();
+                while let Some(open) = rest.find('{') {
+                    let close = rest[open..]
+                        .find('}')
+                        .unwrap_or_else(|| panic!("components.{name}.{key} の参照が閉じていない: {value}"))
+                        + open;
+                    let target = &rest[open + 1..close];
+                    let (section, item) = target
+                        .split_once('.')
+                        .unwrap_or_else(|| panic!("components.{name}.{key} の参照の形: {target}"));
+                    let entries = &sections
+                        .iter()
+                        .find(|(s, _)| *s == section)
+                        .unwrap_or_else(|| panic!("components.{name}.{key} の {target}: 未知の節"))
+                        .1;
+                    assert!(
+                        entries.iter().any(|(k, _)| k == item),
+                        "components.{name}.{key} の {target} が frontmatter にない"
+                    );
+                    refs += 1;
+                    rest = &rest[close + 1..];
+                }
+            }
+        }
+        assert!(refs >= 100, "参照を読めていない: {refs}");
+    }
+
+    /// components の寸法（width・height・size・padding・borderWidth）の数値の直書きは、未検査の一覧に載せたものだけ許す。
+    /// 一覧は部品名.項目と期待する値の組で、値が DESIGN.md と違えば落ちる（GPUI 側の px リテラルも合わせて確認する）
+    #[test]
+    fn components_literal_dimensions_are_listed() {
+        // 骨格の寸法（theme::dim）と同じ値を直書きしたくなる場合は、直書きせず {spacing.*} の参照で書く。
+        // 下の一覧は、theme::dim に対応する定数がなく比べられない直書きだけ。値は DESIGN.md の現在の値、
+        // 注記の src/app/… は値に対応する GPUI 側の px リテラル（分かるものだけ）。
+        const UNCHECKED: &[(&str, &str)] = &[
+            ("divider.height", "1px"),
+            // src/app/widgets.rs の .size(px(26.0))
+            ("icon-button.size", "26px"),
+            // src/app/rail.rs の .size(px(36.0))
+            ("rail-button.size", "36px"),
+            // src/app/sidebar.rs の検索欄 .h(px(30.0))。theme::dim::MINIMAP と同じ 30 だが別部品
+            ("search-input.height", "30px"),
+            // src/app/sidebar.rs の .h(px(22.0))
+            ("section-heading.height", "22px"),
+            ("event-block.height", "20px"),
+            // src/app/timeline.rs の border_widths(px(1.5))（選択の枠と思われるが対応は未確認）
+            ("event-block-selected.borderWidth", "1.5px"),
+            ("now-line.width", "1px"),
+            // 点の大きさ。8 は theme::dim::GAP と同じ数だが、骨格の隙間ではない
+            ("legend-dot-user.size", "8px"),
+            ("legend-dot-assistant.size", "8px"),
+            ("legend-dot-thinking.size", "8px"),
+            ("legend-dot-reference.size", "8px"),
+            ("legend-dot-edit.size", "8px"),
+            ("legend-dot-shell.size", "8px"),
+            ("legend-dot-agent.size", "8px"),
+            ("legend-dot-other.size", "8px"),
+            ("live-dot.size", "7px"),
+            ("project-dot-1.size", "8px"),
+            ("project-dot-2.size", "8px"),
+            ("project-dot-3.size", "8px"),
+            ("project-dot-4.size", "8px"),
+            ("project-dot-5.size", "8px"),
+            ("project-dot-6.size", "8px"),
+            ("project-dot-7.size", "8px"),
+            ("project-dot-8.size", "8px"),
+            // src/app/mcp.rs の .w(px(660.0))
+            ("modal.width", "660px"),
+            // src/app/mcp.rs の見出しの余白（DESIGN.md は px_5 py_4 と記す）。theme に余白の定数がないため比べない
+            ("modal-heading.padding", "16px 20px"),
+            // src/app/overlay.rs の .w(px(620.0))
+            ("modal-help.width", "620px"),
+        ];
+        // 文字列のまま比べる（"16px 20px" のような複数の値も一覧と同じ書き方にそろえる）
+        let dims = ["width", "height", "size", "padding", "borderWidth"];
+        let mut seen = vec![false; UNCHECKED.len()];
+        let mut missing = Vec::new();
+        let mut changed = Vec::new();
+        for (name, items) in components() {
+            for (key, value) in items {
+                if !dims.contains(&key.as_str()) || value.contains('{') {
+                    continue;
+                }
+                let id = format!("{name}.{key}");
+                match UNCHECKED.iter().position(|(item, _)| *item == id) {
+                    None => missing.push(format!("{id}: {value}")),
+                    Some(i) => {
+                        seen[i] = true;
+                        let (_, expected) = UNCHECKED[i];
+                        if value != expected {
+                            changed.push(format!("{id}: DESIGN.md は {value}、一覧の期待値は {expected}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "直書きの寸法は {{spacing.*}} の参照にするか、期待する値と理由を付けて一覧に載せる:\n{}",
+            missing.join("\n")
+        );
+        assert!(
+            changed.is_empty(),
+            "未検査の直書きの値が変わった。一覧の期待値を更新し、GPUI 側の該当箇所（src/app/…）も確認すること:\n{}",
+            changed.join("\n")
+        );
+        // 一覧に残った古い項目を見つける
+        for (i, (id, _)) in UNCHECKED.iter().enumerate() {
+            assert!(seen[i], "未検査の一覧の {id} が DESIGN.md にない");
+        }
+    }
+
     /// 画面のソースに、段階を通さない文字サイズ・角丸・色・透明度や、廃止した呼び名が戻らないようにする
     #[test]
     fn app_sources_use_the_scale() {
@@ -582,6 +738,9 @@ mod tests {
         walk(&root.join("app"), &mut files);
         files.push(root.join("app.rs"));
         files.push(root.join("main.rs"));
+        // 検索欄の入力と、埋め込みのアイコン（SVG の本体）も同じ規則で見る
+        files.push(root.join("input.rs"));
+        files.push(root.join("icons.rs"));
         assert!(files.len() > 20, "ソースを見つけられない");
         let mut found = Vec::new();
         for path in files {

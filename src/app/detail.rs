@@ -122,15 +122,16 @@ fn exit_code(output: &str) -> Option<&str> {
     (n > 0).then(|| &rest[..n])
 }
 
-/// 結果の状態の表示 (文言, 色)。成功なら None
-fn status_label(e: &Event, live: bool, output: &str) -> Option<(String, u32)> {
+/// 結果の状態の表示 (文言, 色)。成功なら None。詳細とホバーカードの文言と色はここだけで決める。
+/// 結果なしは浮く面（ホバーカード）にも載るので、`subtle` ではなく `muted` を使う
+pub(super) fn status_label(e: &Event, live: bool, output: &str) -> Option<(String, u32)> {
     match e.status {
         Status::Ok => None,
         Status::Error => Some((exit_code(output).map_or("失敗".into(), |c| format!("失敗 · exit {c}")), theme::ERR)),
         Status::Rejected => Some(("拒否".into(), theme::WARN)),
         Status::Interrupted => Some(("中断".into(), theme::WARN)),
         Status::Pending if live => Some(("実行中".into(), theme::LIVE)),
-        Status::Pending => Some(("結果なし".into(), theme::SUBTLE)),
+        Status::Pending => Some(("結果なし".into(), theme::MUTED)),
     }
 }
 
@@ -600,8 +601,16 @@ impl Rireki {
         }
 
         if st.failures() > 0 {
-            chips = chips.child(chip("chip-failed".into(), format!("失敗等 {}", st.failures()),
-                None, filter == Some(RowFilter::Failed), Some(RowFilter::Failed)));
+            chips = chips.child(
+                chip(
+                    "chip-failed".into(),
+                    format!("失敗等 {}", st.failures()),
+                    None,
+                    filter == Some(RowFilter::Failed),
+                    Some(RowFilter::Failed),
+                )
+                .tooltip(tip("失敗・拒否・中断したイベントに絞り込む", None)),
+            );
         }
         div().flex().flex_col().gap_2().pb_2().border_b_1().border_color(c(theme::LINE))
             .child(label("イベントで絞り込む"))

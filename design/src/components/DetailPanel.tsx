@@ -6,6 +6,7 @@ import {
   formatTime,
   formatTokens,
   type DetailTab,
+  isFailure,
   type HistoryEvent,
   type Session,
 } from '../data';
@@ -132,11 +133,30 @@ export function DetailPanel({
   );
 }
 
-// 失敗は赤、拒否・中断は黄、成功は無色。
-const statusLabel = (status: HistoryEvent['status']) =>
-  ({ success: '成功', failed: '失敗', rejected: '拒否', interrupted: '中断' })[status];
-const tone = (status: HistoryEvent['status']) =>
-  status === 'success' ? 'muted' : status === 'failed' ? 'err' : 'warn';
+// GPUI の status_label（src/app/detail.rs）と同じ表示。成功は表示しない（無色）。
+// 失敗は err、拒否・中断は warn、結果なしは muted（浮く面にも載るため subtle は使わない）、
+// 進行中のセッションの未完了は live の「実行中」。
+// 結果の先頭に出る終了コード（Claude の `Exit code 1`、Codex の `[exit 1 · 0.2s]`）。GPUI の exit_code と同じ
+const exitCode = (output: string) => /^(?:Exit code |\[exit )(-?\d+)/.exec(output)?.[1];
+
+const statusText = (status: HistoryEvent['status'], live: boolean, output: string) => {
+  switch (status) {
+    case 'success':
+      return null;
+    case 'failed': {
+      const code = exitCode(output);
+      return { label: code ? `失敗 · exit ${code}` : '失敗', tone: 'err' as const };
+    }
+    case 'rejected':
+      return { label: '拒否', tone: 'warn' as const };
+    case 'interrupted':
+      return { label: '中断', tone: 'warn' as const };
+    case 'pending':
+      return live
+        ? { label: '実行中', tone: 'running' as const }
+        : { label: '結果なし', tone: 'muted' as const };
+  }
+};
 
 function Label({ children }: { children: ReactNode }) {
   return <h3 className="detail-label">{children}</h3>;
@@ -147,7 +167,7 @@ function Overview({
   onTab,
   onEvent,
 }: Pick<DetailPanelProps, 'session' | 'onTab' | 'onEvent'>) {
-  const failures = session.events.filter((event) => event.status !== 'success').length;
+  const failures = session.events.filter((event) => isFailure(event.status)).length;
   const turns = session.events.filter((event) => event.kind === 'user');
   // 次の指示より前に応答があれば、その要約を添える。
   const reply = (turn: HistoryEvent) => {
@@ -163,7 +183,16 @@ function Overview({
           { label: '開始', value: `2026/10/${26 + session.day} ${formatTime(session.start)}` },
           { label: '経過時間', value: formatDuration(session.end - session.start) },
           { label: 'ターン', value: turns.length },
-          { label: '失敗等', value: failures, tone: failures ? 'err' : undefined },
+          {
+            label: '失敗等',
+            value: failures,
+            tone: failures ? 'err' : undefined,
+            // GPUI の概要（src/app/detail/overview.rs）と同じ文言。Storybook の指標は押せないので「押すと」の部分は再現しない
+            hint:
+              failures > 0
+                ? '失敗・拒否・中断の合計。押すと最も多いレーンを表示'
+                : '失敗・拒否・中断したイベント',
+          },
           {
             label: '料金',
             value: `$${session.cost.toFixed(2)}`,
@@ -267,8 +296,9 @@ function History({
     }, 1500);
     return () => window.clearInterval(timer);
   }, [playing, index, session.events, onEvent]);
-  const visible = session.events.filter((event) => !failedOnly || event.status !== 'success');
+  const visible = session.events.filter((event) => !failedOnly || isFailure(event.status));
   if (reversed) visible.reverse();
+  const outcome = event ? statusText(event.status, session.live, event.output) : null;
   return (
     <div className="history-content">
       <div className="history-toolbar">
@@ -299,7 +329,7 @@ function History({
             10/{26 + session.day} {formatTime(event.start)}
             <span>·</span>
             {Math.round(event.duration * 3600)}秒
-            <StatusText tone={tone(event.status)}>{statusLabel(event.status)}</StatusText>
+            {outcome && <StatusText tone={outcome.tone}>{outcome.label}</StatusText>}
           </div>
           <p className="prompt-reference">
             選択範囲外の指示 <span>{session.title}</span>
@@ -326,6 +356,7 @@ function History({
             <button
               type="button"
               aria-pressed={failedOnly}
+              title="失敗・拒否・中断したイベントに絞り込む"
               onClick={() => setFailedOnly(!failedOnly)}
               className={failedOnly ? 'active' : ''}
             >
@@ -337,7 +368,12 @@ function History({
           </div>
           {visible.length ? (
             visible.map((item) => (
-              <EventRow event={item} key={item.id} onClick={() => onEvent(item)} />
+              <EventRow
+                event={item}
+                live={session.live}
+                key={item.id}
+                onClick={() => onEvent(item)}
+              />
             ))
           ) : (
             <EmptyState message="該当するイベントはありません" />
@@ -351,13 +387,16 @@ function History({
 export function EventRow({
   event,
   query = '',
+  live = false,
   onClick,
 }: {
   event: HistoryEvent;
   query?: string;
+  live?: boolean;
   onClick: () => void;
 }) {
   const token = eventKinds[event.kind];
+  const outcome = statusText(event.status, live, event.output);
   return (
     <button type="button" className="event-row" onClick={onClick}>
       <span className="event-row-icon" style={{ color: token.color }}>
@@ -368,9 +407,7 @@ export function EventRow({
           <strong>
             <Highlight text={event.name} query={query} />
           </strong>
-          {event.status !== 'success' && (
-            <StatusText tone={tone(event.status)}>{statusLabel(event.status)}</StatusText>
-          )}
+          {outcome && <StatusText tone={outcome.tone}>{outcome.label}</StatusText>}
           <small>{formatTime(event.start)}</small>
         </span>
         <span className="truncate">
@@ -465,17 +502,30 @@ function Analysis({
   const [kind, setKind] = useState('all');
   const [status, setStatus] = useState('all');
   const [sort, setSort] = useState('oldest');
-  const visible = session.events.filter(
-    (event) =>
-      `${event.name} ${event.summary}`.toLowerCase().includes(query.toLowerCase()) &&
-      (kind === 'all' ||
-        (kind === 'tools'
-          ? !['user', 'assistant', 'thinking'].includes(event.kind)
-          : event.kind === kind)) &&
-      (status === 'all' || event.status !== 'success'),
-  );
-  if (sort === 'newest') visible.reverse();
-  if (sort === 'duration') visible.sort((a, b) => b.duration - a.duration);
+  // 指示・応答・思考以外をツールとする（GPUI の is_tool と同じ）
+  const isTool = (event: HistoryEvent) => !['user', 'assistant', 'thinking'].includes(event.kind);
+  // GPUI の並び替え（src/detail/analysis.rs の indices の比較）と同じ。同順位は元の並び（インデックス昇順）を保つ
+  const visible = session.events
+    .map((event, index) => ({ event, index }))
+    .filter(
+      ({ event }) =>
+        `${event.name} ${event.summary}`.toLowerCase().includes(query.toLowerCase()) &&
+        (kind === 'all' || (kind === 'tools' ? isTool(event) : !isTool(event))) &&
+        (status === 'all' ||
+          (status === 'failed' ? isFailure(event.status) : event.status === 'pending')),
+    )
+    .sort((a, b) => {
+      const key =
+        sort === 'newest'
+          ? b.event.start - a.event.start
+          : sort === 'duration'
+            ? b.event.duration - a.event.duration
+            : sort === 'tokens'
+              ? b.event.tokens - a.event.tokens
+              : a.event.start - b.event.start;
+      return key || a.index - b.index;
+    })
+    .map(({ event }) => event);
   function exportJson() {
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(visible, null, 2)], { type: 'application/json' }),
@@ -495,13 +545,11 @@ function Analysis({
         items={[
           {
             label: 'ツール',
-            value: visible.filter(
-              (event) => !['user', 'assistant', 'thinking'].includes(event.kind),
-            ).length,
+            value: visible.filter(isTool).length,
           },
           {
-            label: '失敗等',
-            value: visible.filter((event) => event.status !== 'success').length,
+            label: '失敗・拒否・中断',
+            value: visible.filter((event) => isFailure(event.status)).length,
             tone: 'err',
           },
         ]}
@@ -515,35 +563,43 @@ function Analysis({
           onChange={(event) => setQuery(event.target.value)}
         />
       </label>
+      {/* GPUI と同じく、種別・状態の行と並び順の行の 2 行に分ける（src/app/detail/analysis.rs） */}
       <div className="analysis-filters">
-        <Segmented
-          label="イベント種別"
-          options={[
-            { value: 'all', label: 'すべて' },
-            { value: 'tools', label: 'ツール' },
-            { value: 'user', label: '指示' },
-          ]}
-          value={kind}
-          onChange={setKind}
-        />
-        <Segmented
-          label="イベントの状態"
-          options={[
-            { value: 'all', label: 'すべて' },
-            { value: 'failed', label: '失敗等' },
-          ]}
-          value={status}
-          onChange={setStatus}
-        />
-        <select
-          aria-label="イベントの並び順"
-          value={sort}
-          onChange={(event) => setSort(event.target.value)}
-        >
-          <option value="oldest">古い順</option>
-          <option value="newest">新しい順</option>
-          <option value="duration">所要時間</option>
-        </select>
+        <div className="analysis-filter-row">
+          <Segmented
+            label="イベント種別"
+            options={[
+              { value: 'all', label: 'すべて' },
+              { value: 'tools', label: 'ツール' },
+              { value: 'messages', label: '発話・思考' },
+            ]}
+            value={kind}
+            onChange={setKind}
+          />
+          <Segmented
+            label="イベントの状態"
+            options={[
+              { value: 'all', label: '全状態' },
+              { value: 'failed', label: '失敗・拒否・中断' },
+              { value: 'pending', label: '結果なし' },
+            ]}
+            value={status}
+            onChange={setStatus}
+          />
+        </div>
+        <div className="analysis-filter-row">
+          <Segmented
+            label="並び順"
+            options={[
+              { value: 'oldest', label: '古い順' },
+              { value: 'newest', label: '新しい順' },
+              { value: 'duration', label: '時間順' },
+              { value: 'tokens', label: 'トークン順' },
+            ]}
+            value={sort}
+            onChange={setSort}
+          />
+        </div>
       </div>
       <div className="usage-summary">
         <div>
@@ -565,7 +621,13 @@ function Analysis({
       </Label>
       {visible.length ? (
         visible.map((event) => (
-          <EventRow key={event.id} event={event} query={query} onClick={() => onEvent(event)} />
+          <EventRow
+            key={event.id}
+            event={event}
+            query={query}
+            live={session.live}
+            onClick={() => onEvent(event)}
+          />
         ))
       ) : (
         <EmptyState message="該当するイベントはありません" />

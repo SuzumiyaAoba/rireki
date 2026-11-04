@@ -16,7 +16,7 @@ colors:
   text: "#d8dbe1"
   muted: "#a3a8b1"
   subtle: "#8b8f98"
-  # 操作と選択。tokens.ts / theme.rs の accent・accentBg にあたる。
+  # 操作と選択。tokens.ts の accent・accentBg、theme.rs の ACCENT・ACCENT_BG にあたる。
   primary: "#5b9cf5"
   primary-bg: "#22334f"
   select: "#2a5aa8"
@@ -217,11 +217,12 @@ components:
     rounded: "{rounded.md}"
     padding: "{spacing.1}"
     height: "{spacing.control}"
+  # 項目は横 spacing.2・縦 0。高さは容器の control から内側の余白 spacing.1 × 2 を引いた 20px（src/app/widgets.rs）。
   segmented-item:
     textColor: "{colors.muted}"
     typography: "{typography.small}"
     rounded: "{rounded.sm}"
-    padding: "{spacing.2}"
+    padding: "0 {spacing.2}"
   segmented-item-hover:
     backgroundColor: "{colors.hover}"
     textColor: "{colors.text}"
@@ -229,11 +230,25 @@ components:
     backgroundColor: "{colors.primary-bg}"
     textColor: "{colors.text}"
     typography: "{typography.small-strong}"
+  # ツールバーの切り替え（イベント / 料金、日 / 週 / 月、期間、表示オプション）。枠 line 1px・内側の余白 2px。
+  # 選択は raised の面と text の文字。segmented（primary-bg）とは別の部品（src/app/header.rs の tool_segmented）。
+  toolbar-segmented:
+    backgroundColor: "{colors.backdrop}"
+    textColor: "{colors.muted}"
+    typography: "{typography.small}"
+    rounded: "{rounded.md}"
+    height: "{spacing.control}"
+  toolbar-segmented-item-active:
+    backgroundColor: "{colors.raised}"
+    textColor: "{colors.text}"
+    typography: "{typography.small-strong}"
+    rounded: "{rounded.sm}"
   focus-chip:
     backgroundColor: "{colors.primary-bg}"
     textColor: "{colors.primary}"
     typography: "{typography.small}"
     rounded: "{rounded.md}"
+  # 検索欄だけは control(28px) より高い 30px（src/app/sidebar.rs の search-box）。
   search-input:
     backgroundColor: "{colors.backdrop}"
     textColor: "{colors.muted}"
@@ -278,15 +293,22 @@ components:
     typography: "{typography.axis}"
     rounded: "{rounded.sm}"
     height: 20px
+  # 枠の色と面は幅のあるブロックの値。幅の狭いブロックは種類の色で塗る（失敗・拒否・中断の単一イベントは err・warn で塗る）。
   event-block-hover:
     backgroundColor: "{colors.hover}"
+    borderColor: "{colors.text}"
+  # 選択は枠を太く text にする。面は hover のまま（種類の色は残さない）。
   event-block-selected:
     backgroundColor: "{colors.hover}"
-    textColor: "{colors.primary}"
+    borderColor: "{colors.text}"
+    borderWidth: 1.5px
+  # 失敗・拒否・中断は枠と種類のアイコンの色を変え、アイコンを X に替える（文字色は変えない）。
   event-block-failed:
-    textColor: "{colors.err}"
+    borderColor: "{colors.err}"
+    iconColor: "{colors.err}"
   event-block-rejected:
-    textColor: "{colors.warn}"
+    borderColor: "{colors.warn}"
+    iconColor: "{colors.warn}"
   now-line:
     backgroundColor: "{colors.now}"
     width: 1px
@@ -415,10 +437,17 @@ components:
     textColor: "{colors.text}"
     rounded: "{rounded.panel}"
     width: 660px
+  # 見出しの余白は縦 spacing.4・横 spacing.5（src/app/mcp.rs の見出し px_5 py_4）。
   modal-heading:
     textColor: "{colors.text}"
     typography: "{typography.heading}"
-    padding: "{spacing.5}"
+    padding: 16px 20px
+  # キー操作（ヘルプ）。modal より狭く、面は raised。
+  modal-help:
+    backgroundColor: "{colors.raised}"
+    textColor: "{colors.text}"
+    rounded: "{rounded.panel}"
+    width: 620px
   modal-backdrop:
     backgroundColor: "{colors.scrim}"
   empty-state:
@@ -436,7 +465,10 @@ rireki は Claude Code と Codex のセッションログを、タイムライ�
 色・面・角丸・文字・余白・アイコン・文言・状態の原則は次の各節にまとめます。値は frontmatter のトークンだけが持ち、本文は名前で参照します。実装との対応は次のとおりです。
 
 - `design/src/tokens.ts` が値の正本で、`src/theme.rs` と `design/src/styles.css` が名前を揃えて追従します。この `DESIGN.md` はその要約で、`tokens.ts` を変えたら合わせます。
-- `primary` と `primary-bg` は、`tokens.ts` と `theme.rs` では `accent` と `accent_bg` と呼びます。`logo-claude` と `logo-codex` は `brand` の二つ、`event-*` は `eventGroups`、`project-*` は `projectColors`、`heat-*` は `heat` にあたります。
+- `primary` と `primary-bg` は、`tokens.ts` では `accent` と `accentBg`、`src/theme.rs` では `ACCENT` と `ACCENT_BG` と呼びます。`logo-claude` と `logo-codex` は `brand` の二つ、`event-*` は `eventGroups`、`project-*` は `projectColors`、`heat-*` は `heat` にあたります。
+- `design/src/tokens.ts` の値と `src/theme.rs` の値が一致することは、`theme::tests` が検査します。この `DESIGN.md` の frontmatter の色・角丸・余白の値は `theme::tests::design_md_matches_tokens` が、`logo-*` の値は同じ検査の対象です。`logo_colors_match_tokens` は `src/theme.rs` のロゴの色を tokens.ts の `brand` と比べます。
+- `components` 節は次の 2 つの検査を受けます。`components_references_resolve` は `{…}` の参照が frontmatter の節（colors・rounded・spacing・typography・alpha）のキーに解決することを検査し、壊れた参照を残しません。`components_literal_dimensions_are_listed` は width・height・size・padding・borderWidth の数値の直書きを、骨格の定数（`theme::dim`）と対応づけるか、理由を付けた未検査の一覧に載せたものだけ許します。`{…}` を含む値は直書きの検査の対象外です。
+- GPUI 側の px リテラルとの値の一致は検査しません。部品ごとの値は `src/app` の個別の定数にあり、テストは DESIGN.md と tokens.ts の対応だけを見ます。
 
 ## Colors
 
@@ -448,13 +480,13 @@ rireki は Claude Code と Codex のセッションログを、タイムライ�
 
 **操作と選択**: `primary` は操作の強調とフォーカス、`primary-bg` はその下地（有効なアイコンボタン、一致箇所、選択中のセグメント）です。行の選択は `select` で塗り、文字は `text` のままにします。
 
-**状態**: 進行中は `live`、現在時刻の線は `now`、失敗は `err`、拒否・中断は `warn`、差分の追加と削除は `diff-add` と `diff-del` です。
+**状態**: 進行中と実行中は `live`、現在時刻の線は `now`、失敗は `err`、拒否・中断は `warn`、結果なしは `muted`、差分の追加と削除は `diff-add` と `diff-del` です。結果なしは浮く面（ホバーカード）にも載るため、`subtle` ではなく `muted` を使います。成功は表示せず、色も付けません。
 
 **読み込み元**: Claude は `claude`、Codex は `codex` を系列色にします。ロゴの地色の `logo-claude` と `logo-codex` はブランドの色なので、ロゴ以外には使いません。
 
 **量**: 統計の濃淡と使用量の内訳には、青の 5 段 `heat-1` から `heat-5` だけを使います。数が増えるほど段が上がります。
 
-**イベントの色**: 判別できる色相は 5 つ（ユーザー・参照・編集・シェル・エージェント）に絞り、応答・思考・その他は無彩色の濃淡にします。色相を増やすと全ペアの識別が保てなくなるので増やしません。色を足すときは、配色検証器を全ペアで通してから `tokens.ts` と `styles.css` に追加します。`claude`、`codex`、`err` はイベントに使いません。ブロックの色だけに頼らず、アイコンとラベル、凡例で補います。
+**イベントの色**: 判別できる色相は 5 つ（ユーザー・参照・編集・シェル・エージェント）に絞り、応答・思考・その他は無彩色の濃淡にします。色相を増やすと全ペアの識別が保てなくなるので増やしません。色を足すときは、配色検証器を全ペアで通してから `tokens.ts` と `styles.css` に追加します。`claude`、`codex` はイベントに使いません。`err` はイベントの種類の色には使わず、失敗の状態（`event-block-failed` など）の表示にだけ使います。ブロックの色だけに頼らず、アイコンとラベル、凡例で補います。
 
 **プロジェクト**: `project-1` から `project-8` は目印です。必ず名前を並べるので、同じ色になっても構いません。
 
@@ -474,7 +506,7 @@ rireki は Claude Code と Codex のセッションログを、タイムライ�
 
 ## Layout
 
-画面の骨格の寸法は `spacing` の名前付きの項目が持ちます。上端の帯は `strip`、レールは `rail`、ツールバーは `header`、ミニマップは `minimap`、フッターは `footer`、サイドバーは `sidebar`、詳細パネルは `detail`、タイムラインのラベル列は `label`、軸は `axis`、行は `row` です。部品どうしの隙間は `gap` です。ボタン・入力・サイドバーの行の高さは `control` にそろえます。
+画面の骨格の寸法は `spacing` の名前付きの項目が持ちます。上端の帯は `strip`、レールは `rail`、ツールバーは `header`、ミニマップは `minimap`、フッターは `footer`、サイドバーは `sidebar`、詳細パネルは `detail`、タイムラインのラベル列は `label`、軸は `axis`、行は `row` です。部品どうしの隙間は `gap` です。ボタン・入力・サイドバーの行の高さは `control`（28px）にそろえます。例外は検索欄だけで、`search-input` の 30px にします（`src/app/sidebar.rs` の検索欄）。
 
 余白は `spacing` の `1` から `6` の段階だけで、負のマージンは使いません。例外は、グラフの棒や点の間にある細い区切りのすき間です。
 
@@ -484,7 +516,7 @@ rireki は Claude Code と Codex のセッションログを、タイムライ�
 
 ## Elevation & Depth
 
-階層は面の段（`bg` → `panel` → `raised` → `hover`）と罫線 `line` で表し、影は使いません。例外はポップオーバーとモーダルで、この 2 つだけが `shadow` を持ちます。
+階層は面の段（`bg` → `panel` → `raised` → `hover`）と罫線 `line` で表し、影は使いません。例外はポップオーバーとモーダルで、この 2 つだけが `colors` の `shadow` トークン（CSS の `--shadow`）を使います。components の `popover` と `modal` には影の項目を置きません。
 
 幕 `scrim` はモーダルの背後にだけ敷きます。ポップオーバーには幕がなく、外側をクリックすると閉じます。重なりの順は、イベントブロックの hover、ペインの境界、ポップオーバーの外側、ポップオーバー、モーダルの幕の順に上がります。
 
@@ -499,11 +531,11 @@ rireki は Claude Code と Codex のセッションログを、タイムライ�
 部品の名前と状態は frontmatter の `components` にあります。状態は `-hover`、`-active`、`-selected`、`-focus` を付けた別の項目で表し、ここでは使い分けの方針だけを書きます。
 
 - **ボタン**: 通常の `button`、強調の `button-primary`、取り消せない操作の `button-danger`。アイコンだけのボタンは `icon-button` で、有効のときは `icon-button-active` の組み合わせにします。レールのボタンは `rail-button` です。
-- **切り替え**: 表示モードは `segmented` と `segmented-item`。選択中は `segmented-item-active` で、文字を強調します。絞り込みの表示には `focus-chip` を使います。
+- **切り替え**: 詳細パネルや統計の内側の切り替えは `segmented` と `segmented-item`。選択中は `segmented-item-active` で、`primary-bg` の下地と文字を強調します。ツールバーの切り替え（イベント / 料金、日 / 週 / 月、統計の期間、表示オプションの行）は `toolbar-segmented` で、選択中は `toolbar-segmented-item-active`（`raised` の面）にします。絞り込みの表示には `focus-chip` を使います。
 - **入力と一覧**: 検索は `search-input`、一致箇所は `search-match`。サイドバーの行は `sidebar-row`、選択は `sidebar-row-selected`、補助の値は `sidebar-row-meta`、グループの見出しは `section-heading` です。
-- **タイムライン**: `event-block` は種類を問わず同じ面で、種類はアイコンの色で示します。選択は `event-block-selected`、失敗は `event-block-failed`、拒否と中断は `event-block-rejected` です。現在時刻は `now-line`、選んだ範囲は `range-selection` で示します。
+- **タイムライン**: `event-block` は種類を問わず同じ面で、種類はアイコンの色で示します。選択は `event-block-selected`（枠を 1.5px の `text` にする）。単一イベントの失敗は `event-block-failed`（枠と色を `err` にし、種類のアイコンを X に替える）、拒否と中断は `event-block-rejected`（同じく `warn`）です。現在時刻は `now-line`、選んだ範囲は `range-selection` で示します。
 - **データの印**: 凡例は `legend-dot-*`、進行中は `live-dot`、プロジェクトは `project-dot-*`、量は `heat-cell-*`、読み込み元の系列は `source-bar-*`、ロゴは `source-logo-*` です。
-- **重なる面**: `tooltip`、`popover`、`modal`。モーダルは見出し `modal-heading` と背後の `modal-backdrop` を持ちます。
+- **重なる面**: `tooltip`、`popover`、`modal`。モーダルは見出し `modal-heading` と背後の `modal-backdrop` を持ちます。キー操作（ヘルプ）は幅の狭い `modal-help` を使います。
 - **状態の表示**: 空の状態は `empty-state` の 1 行の文字だけです。再集計中は前の結果を `alpha` の `stale` で薄く表示し、前の結果がない初回は「読み込み中…」の 1 行だけを出します。
 
 アイコンは Lucide を使い、文字だけでは区別できない場所に限ります。イベントの種類のアイコンは種類ごとに決まっていて、色は種類の属するグループに従います。
@@ -516,6 +548,7 @@ rireki は Claude Code と Codex のセッションログを、タイムライ�
 - 色を使う前に、それがデータか選択状態かを確かめる。
 - 区切りは余白か罫線 1 本にする。
 - 同じ概念は 1 語で呼ぶ（料金は「料金」）。
+- 失敗・拒否・中断の合計の正式名は「失敗・拒否・中断」とする。見出し・統計の指標名・絞り込みの選択肢に使う。略称「失敗等」は、幅の狭いチップ・表の列・イベントの状態・概要の指標ラベル・ターンやツールの行に添える件数にだけ使う。押せる要素と指標ラベルには、必ずツールチップで正式名「失敗・拒否・中断」を添える（例: 押せるチップ「失敗等 N」は「失敗・拒否・中断したイベントに絞り込む」）。押せない件数の注記（ターンの見出し、ツールの行）は幅が狭いため、正式名のツールチップは必須にしない。個別の状態「失敗」「拒否」「中断」はそのまま使う。
 - 画面から読めない事実だけを、該当する値のツールチップに 1 文で書く。アイコンだけのボタンは、同じ文言を `aria-label` と `title` に一度ずつ付ける。
 - 新しいツール名を扱うときは、色（カテゴリ単位）とアイコン（ツール単位）を合わせて足す。
 
@@ -527,5 +560,5 @@ rireki は Claude Code と Codex のセッションログを、タイムライ�
 - 見出しや飾りのためのアイコン、全行に同じアイコン、飾りの枠、意味の合わないアイコンを付けない。
 - 見れば分かる補足、脚注、2 段目の説明を書かない。空状態に説明文を足さない。足してよい操作は、空の期間から最新の作業へ移る 1 つだけにする。
 - `subtle` を `raised` や `hover` の上に置かない。
-- 成功に色を付けない。`claude`、`codex`、`err` をイベントの色に使わない。
+- 成功に色を付けない。`claude`、`codex` をイベントの色に使わない。`err` はイベントの種類の色に使わず、失敗の状態の表示にだけ使う。
 - 同じ要素に、別々の文言の `aria-label` と `title` を付けない。

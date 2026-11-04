@@ -2,6 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from 'react';
 import {
   formatNumber,
   formatTokens,
+  isFailure,
   projectColor,
   projects,
   type HistoryEvent,
@@ -43,7 +44,7 @@ function amount(session: Session, metric: Metric): number {
     case 'tools':
       return session.events.filter(isTool).length;
     case 'failures':
-      return session.events.filter((event) => event.status !== 'success').length;
+      return session.events.filter((event) => isFailure(event.status)).length;
   }
 }
 const total = (sessions: Session[], metric: Metric) =>
@@ -450,6 +451,7 @@ export function Statistics({
         </span>
         <Segmented
           label="統計の期間"
+          toolbar
           options={[
             { value: 'week', label: '7日間' },
             { value: 'month', label: '30日間' },
@@ -587,6 +589,7 @@ export function Statistics({
                 aside={
                   <Segmented
                     label="時間帯の表示"
+                    toolbar
                     options={[
                       { value: 'radial', label: '円形' },
                       { value: 'table', label: '表' },

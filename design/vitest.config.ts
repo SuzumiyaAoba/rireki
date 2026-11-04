@@ -26,6 +26,15 @@ export default defineConfig({
           },
         },
       },
+      {
+        // トークンの値の検査は Node 環境で動かす（ブラウザーは使わない）
+        extends: true,
+        test: {
+          name: 'tokens',
+          environment: 'node',
+          include: ['src/**/*.test.ts'],
+        },
+      },
     ],
   },
 });

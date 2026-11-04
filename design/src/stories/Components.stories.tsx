@@ -73,7 +73,6 @@ export const StatusTexts: Story = {
   render: () => (
     <div className="component-preview">
       <StatusText tone="live">進行中</StatusText>
-      <StatusText>成功</StatusText>
       <StatusText tone="err">失敗</StatusText>
       <StatusText tone="warn">拒否 / 中断</StatusText>
       <SourceLogo source="all" size={36} />

@@ -63,7 +63,7 @@ pub(super) fn kbd(k: &'static str) -> Div {
         .border_1()
         .border_color(c(theme::LINE))
         .bg(c(theme::BG))
-        .text_small()
+        .text_axis()
         .text_color(c(theme::MUTED))
         .child(k)
 }
@@ -161,29 +161,32 @@ impl Rireki {
         cx: &mut Context<Self>,
         f: fn(&mut Self, T, &mut Window, &mut Context<Self>),
     ) -> Div {
+        // 高さは操作部品の段階（28px）。内側は余白 4px と、それを引いた高さの項目だけで収める
+        let item_h = theme::dim::CONTROL - 8.0;
         div()
             .flex()
             .flex_none()
             .items_center()
-            .p(px(2.0))
+            .h(px(theme::dim::CONTROL))
+            .p(px(4.0))
             .gap(px(2.0))
             .radius_md()
-            .bg(c(theme::BACKDROP))
-            .border_1()
-            .border_color(c(theme::LINE))
+            .bg(c(theme::BG))
             .children(items.iter().enumerate().map(|(i, &(v, label))| {
                 let on = current == Some(v);
                 div()
                     .id(ElementId::NamedInteger(id.into(), i as u64))
+                    .flex()
+                    .items_center()
+                    .h(px(item_h))
                     .px_2()
-                    .py(px(1.0))
                     .radius_sm()
                     .text_small()
                     .whitespace_nowrap()
                     .cursor_pointer()
                     .text_color(c(if on { theme::TEXT } else { theme::MUTED }))
-                    .when(on, |d| d.bg(c(theme::HOVER)).font_weight(FontWeight::SEMIBOLD))
-                    .hover(|d| d.text_color(c(theme::TEXT)))
+                    .when(on, |d| d.bg(c(theme::ACCENT_BG)).font_weight(FontWeight::SEMIBOLD))
+                    .when(!on, |d| d.hover(|d| d.bg(c(theme::HOVER)).text_color(c(theme::TEXT))))
                     .child(label)
                     .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
                         f(this, v, w, cx);

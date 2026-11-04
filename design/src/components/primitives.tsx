@@ -13,7 +13,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  CircleAlert,
   Clock,
   CloudDownload,
   Copy,
@@ -76,7 +75,6 @@ const icons = {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  CircleAlert,
   Clock,
   CloudDownload,
   Copy,
@@ -143,7 +141,8 @@ export function Icon({
   className?: string;
 }) {
   const Glyph = icons[name];
-  return <Glyph size={size} strokeWidth={1.6} aria-hidden="true" className={`icon ${className}`} />;
+  // 線の太さは src/icons.rs の SVG（stroke-width="2"）と同じ
+  return <Glyph size={size} strokeWidth={2} aria-hidden="true" className={`icon ${className}`} />;
 }
 
 export function IconButton({
@@ -202,30 +201,33 @@ export function ProjectMark({ name }: { name: string }) {
   );
 }
 
-// 状態は色付きの文字で示す。進行中だけは点を添える。
+// 状態は色付きの文字で示す。進行中だけは点を添える。実行中は色の文字だけ（点なし）。
 export function StatusText({
   children,
   tone = 'muted',
 }: {
   children: ReactNode;
-  tone?: 'live' | 'err' | 'warn' | 'muted';
+  tone?: 'live' | 'running' | 'err' | 'warn' | 'muted';
 }) {
   return <span className={`status-text ${tone}`}>{children}</span>;
 }
 
+// 詳細や統計の内側の切り替え（primary-bg の選択）と、ツールバーの切り替え（枠・raised の選択）
 export function Segmented<T extends string>({
   label,
   options,
   value,
   onChange,
+  toolbar = false,
 }: {
   label: string;
   options: ReadonlyArray<{ value: T; label: string }>;
   value: T;
   onChange: (value: T) => void;
+  toolbar?: boolean;
 }) {
   return (
-    <div className="segmented" role="group" aria-label={label}>
+    <div className={`segmented${toolbar ? ' toolbar' : ''}`} role="group" aria-label={label}>
       {options.map((option) => (
         <button
           key={option.value}
@@ -302,6 +304,8 @@ export function EventBlock({
   style?: CSSProperties;
 }) {
   const token = eventKinds[kind];
+  // 失敗・拒否・中断は種類のアイコンを X に替える（src/app/timeline.rs の block_paint と同じ）
+  const outcome = failed || rejected;
   return (
     <button
       type="button"
@@ -311,9 +315,8 @@ export function EventBlock({
       onClick={onClick}
       style={{ '--event-color': token.color, ...style } as CSSProperties}
     >
-      <Icon name={icon ?? token.icon} size={11} />
+      <Icon name={outcome ? 'X' : (icon ?? token.icon)} size={11} />
       <span>{label}</span>
-      {(failed || rejected) && <Icon name="CircleAlert" size={11} />}
     </button>
   );
 }

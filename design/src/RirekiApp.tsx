@@ -474,6 +474,7 @@ export function RirekiApp({
                       <div className="metric-switch">
                         <Segmented
                           label="タイムラインの表示内容"
+                          toolbar
                           options={[
                             { value: 'events', label: 'イベント' },
                             { value: 'cost', label: '料金' },
@@ -500,6 +501,7 @@ export function RirekiApp({
                   ) : (
                     <Segmented
                       label="カレンダーの表示"
+                      toolbar
                       options={[
                         { value: 'day', label: '日' },
                         { value: 'week', label: '週' },

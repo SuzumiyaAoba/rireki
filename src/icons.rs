@@ -381,8 +381,8 @@ pub fn app_icon() -> Img {
 /// セッションの読み込み元を表すロゴとその色
 pub fn source_icon(s: crate::model::Source) -> (Icon, u32) {
     match s {
-        crate::model::Source::Claude => (Icon::Claude, 0xd97757),
-        crate::model::Source::Codex => (Icon::Codex, 0xc8c8c8),
+        crate::model::Source::Claude => (Icon::Claude, crate::theme::LOGO_CLAUDE),
+        crate::model::Source::Codex => (Icon::Codex, crate::theme::LOGO_CODEX),
     }
 }
 

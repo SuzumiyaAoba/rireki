@@ -5,12 +5,13 @@ use gpui::{
     div, point, prelude::*, px,
 };
 
+use super::detail::status_label;
 use super::header::Choice;
 use super::widgets::{Marquee, event_icon, kbd, tip};
-use super::{Popover, Rireki, fmt_dur, local};
+use super::{Popover, Rireki, fmt_dur, is_live, local};
 use crate::icons::{self, Icon};
 use crate::layout::{self, Block, Granularity};
-use crate::model::{Status, one_line};
+use crate::model::one_line;
 use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
@@ -61,15 +62,8 @@ impl Rireki {
         let (color, ic) = (theme::event_color(dom), theme::event_icon(dom));
         let (start, end) = self.sel_range(sel);
         let single = evs.len() == 1;
-        let outcome = if single {
-            match evs[0].status {
-                Status::Error => Some(("失敗", theme::ERR)),
-                Status::Rejected => Some(("拒否", theme::WARN)),
-                Status::Interrupted => Some(("中断", theme::WARN)),
-                Status::Pending => Some(("結果なし", theme::MUTED)),
-                Status::Ok => None,
-            }
-        } else { None };
+        // 文言と色は詳細パネルと同じ定義を使う。ホバーカードには出力の本文がないので終了コードは付かない
+        let outcome = if single { status_label(&evs[0], is_live(s.end), "") } else { None };
         let head = if single { evs[0].name.to_string() } else { format!("{} 件", evs.len()) };
         let body: SharedString = if single { evs[0].summary.clone().into() } else { SharedString::default() };
         // まとめたブロックは、多い順に名前ごとの件数を並べる

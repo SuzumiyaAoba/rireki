@@ -1,5 +1,5 @@
 // デザイントークンの正。名前は src/theme.rs（UPPER_SNAKE）と styles.css の :root（--kebab）に揃える。
-// 本体 src/theme.rs は Stage 2 でこの値に追従し、テストで一致を検査する。
+// 本体 src/theme.rs の値は、この値と一致することを theme::tests が検査する（DESIGN.md の frontmatter も同様）。
 // グレーは OKLCH の色相 265・彩度 0.014 以下で明度だけを動かす。
 export const colors = {
   backdrop: '#0d0f13',

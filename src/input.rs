@@ -532,7 +532,7 @@ impl Element for TextElement {
                     point(left + line.x_for_index(selected_range.start), bounds.top()),
                     point(left + line.x_for_index(selected_range.end), bounds.bottom()),
                 ),
-                c(theme::ACCENT).opacity(0.35),
+                c(theme::ACCENT).opacity(theme::alpha::RANGE),
             );
             (Some(sel), None)
         };

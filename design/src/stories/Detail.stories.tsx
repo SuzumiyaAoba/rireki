@@ -40,7 +40,7 @@ export const FilterAnalysis: Story = {
     const detail = within(canvas.getByRole('complementary', { name: 'セッション詳細' }));
     await userEvent.click(
       within(detail.getByRole('group', { name: 'イベントの状態' })).getByRole('button', {
-        name: '失敗等',
+        name: '失敗・拒否・中断',
       }),
     );
     await expect(detail.getByRole('button', { name: /Bash.*失敗/ })).toBeVisible();

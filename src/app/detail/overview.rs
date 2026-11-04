@@ -294,7 +294,7 @@ impl Rireki {
                                 cx.stop_propagation();
                                 app.open_lane_filtered(session, lane, Some(RowFilter::Failed), w, cx);
                             },
-                        ))
+                        ).tooltip(tip("失敗・拒否・中断したイベントに絞り込む", None)))
                     })
                     .when(!l.events.is_empty(), |d| {
                         d.cursor_pointer()

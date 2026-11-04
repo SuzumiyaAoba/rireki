@@ -752,7 +752,7 @@ impl Rireki {
                                     d.child(
                                         div()
                                             .text_color(c(theme::ERR))
-                                            .child(format!("失敗等{}", tool.failures)),
+                                            .child(format!("失敗等 {}", tool.failures)),
                                     )
                                 })
                                 .child(fmt_dur(tool.seconds)),
