@@ -457,8 +457,8 @@ kbd {
   position: absolute;
   right: 2px;
   top: 4px;
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 .workspace {
   display: flex;
@@ -757,7 +757,21 @@ kbd {
   flex: none;
 }
 .display-button {
+  position: relative;
   flex: none;
+}
+/* 範囲外のセッションを隠しているときは印を付け、メニューを開かなくても分かるようにする */
+.display-button.filtered::after {
+  content: '';
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 11px;
+  height: 11px;
+  box-sizing: border-box;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--accent);
 }
 .main-view {
   min-height: 0;
@@ -1064,6 +1078,9 @@ kbd {
 .event-block.failed {
   border-color: var(--err);
 }
+.event-block.rejected {
+  border-color: var(--warn);
+}
 .directory-events {
   position: absolute;
   inset: 0;
@@ -1184,7 +1201,7 @@ kbd {
 }
 .calendar-day-head .today b {
   background: var(--accent);
-  color: white;
+  color: var(--backdrop);
 }
 .calendar-scroll {
   flex: 1;
@@ -1294,6 +1311,7 @@ kbd {
   min-height: 0;
 }
 .month-cell {
+  position: relative;
   padding: 4px;
   border-right: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
@@ -1302,8 +1320,14 @@ kbd {
 .month-cell.outside {
   opacity: var(--alpha-disabled);
 }
-.month-cell.has-sessions {
-  background: var(--accent-range);
+.month-cell.has-sessions::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--heat);
 }
 .month-day {
   width: 100%;
@@ -1327,7 +1351,7 @@ kbd {
 }
 .month-day .today {
   background: var(--accent);
-  color: white;
+  color: var(--backdrop);
   border-radius: 50%;
 }
 .month-session {
@@ -1815,7 +1839,7 @@ kbd {
 }
 .usage-meter {
   display: flex;
-  height: 5px;
+  height: 4px;
   gap: 4px;
   margin: 8px 0 4px;
   border-radius: var(--radius-sm);
@@ -1859,10 +1883,10 @@ kbd {
   white-space: nowrap;
 }
 .statistics-scroll {
-  padding: 16px 20px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 16px;
   overflow: auto;
   flex: 1;
   min-height: 0;
@@ -1939,7 +1963,7 @@ kbd {
 }
 .trend-chart {
   display: flex;
-  height: 172px;
+  height: 202px;
 }
 .chart-y-labels {
   width: 54px;
@@ -1957,7 +1981,7 @@ kbd {
   flex: 1;
   min-width: 0;
   background-image: linear-gradient(to bottom, var(--line) 1px, transparent 1px);
-  background-size: 100% calc((100% - 24px) / 4);
+  background-size: 100% calc((100% - 22px) / 4);
 }
 .chart-column {
   flex: 1;
@@ -1972,7 +1996,7 @@ kbd {
   flex-direction: column-reverse;
   justify-content: flex-start;
   width: 65%;
-  height: calc(100% - 24px);
+  height: calc(100% - 22px);
   min-width: 2px;
   max-width: 72px;
   gap: 0;
@@ -1989,14 +2013,14 @@ kbd {
 .chart-column > small {
   font-size: var(--font-axis);
   color: var(--subtle);
-  margin-top: 8px;
-  height: 16px;
+  margin-top: 4px;
+  height: 18px;
   white-space: nowrap;
 }
 .stats-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 32px;
+  gap: 16px;
 }
 .ranking-row {
   width: 100%;
@@ -2071,6 +2095,28 @@ kbd {
   background: var(--raised);
   border-radius: var(--radius-sm);
 }
+.radial-hours {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  margin: 0 auto;
+  font-size: var(--font-axis);
+  fill: var(--subtle);
+}
+.radial-hours .radial-label {
+  fill: var(--muted);
+}
+.radial-hours .radial-total {
+  fill: var(--text);
+  font-size: var(--font-value);
+  font-weight: 600;
+}
+.radial-caption {
+  margin: 4px 0 0;
+  text-align: center;
+  color: var(--subtle);
+  font-size: var(--font-axis);
+}
 .heatmap-scale {
   display: flex;
   justify-content: flex-end;
@@ -2140,51 +2186,176 @@ kbd {
   color: var(--muted);
   margin-left: 8px;
 }
-.table-scroll {
-  overflow-x: auto;
+/* ツール別の集計: 1 行 = 印・名前・呼び出しの積み棒・件数・失敗の帯・失敗率・所要時間の対数軸・中央値・P95。
+   幅に応じて右から省く（軸 → 失敗の帯 → P95）。寸法は本体 statistics/tools.rs と同じ */
+.err-color {
+  background: var(--err);
 }
-.tools-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: var(--font-axis);
-  white-space: nowrap;
+.warn-color {
+  background: var(--warn);
 }
-.tools-table th {
+.tools-grid {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--font-small);
+}
+.tool-row {
+  display: grid;
+  grid-template-columns:
+    16px minmax(96px, 180px) minmax(48px, 1fr) 64px 72px 48px minmax(180px, 320px)
+    60px 60px;
+  align-items: center;
+  column-gap: 8px;
+  height: 28px;
+}
+.tool-head {
   color: var(--subtle);
   font-size: var(--font-axis);
-  font-weight: 400;
-  text-align: right;
-  border-bottom: 1px solid var(--line);
-  padding: 8px 12px;
 }
-.tools-table td {
+.tool-head > span {
   text-align: right;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--line-soft);
-  font-variant-numeric: tabular-nums;
 }
-.tools-table th:first-child,
-.tools-table td:first-child {
+.tool-head > .tool-fail {
   text-align: left;
-  padding-left: 0;
 }
-.tools-table td.failed {
-  color: var(--err);
+.tool-mark {
+  display: flex;
+  justify-content: center;
 }
-.tools-table tr:last-child td {
-  border: 0;
+.tool-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.duration-track {
-  height: 4px;
-  width: 140px;
-  background: var(--bg);
-  border-radius: var(--radius-sm);
+.tool-bar {
+  display: flex;
+  min-width: 0;
 }
-.duration-track i {
-  display: block;
+.tool-bar > span {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+}
+.tool-bar i {
+  flex: none;
   height: 100%;
-  background: var(--accent);
   border-radius: var(--radius-sm);
+}
+.tool-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tool-num.none,
+.tool-p95.none {
+  color: var(--muted);
+}
+.tool-fail {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.tool-head > .tool-fail {
+  height: auto;
+  justify-content: space-between;
+  background: none;
+  text-align: left;
+}
+.tool-fail i {
+  flex: none;
+  height: 100%;
+}
+.tool-axis {
+  position: relative;
+  height: 16px;
+}
+.tool-axis small {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-soft);
+}
+.tool-head .tool-axis small {
+  top: auto;
+  bottom: auto;
+  width: auto;
+  background: none;
+  color: var(--subtle);
+  font-size: var(--font-axis);
+  transform: translateX(-50%);
+}
+.tool-head .tool-axis small.first {
+  transform: none;
+}
+.tool-head .tool-axis small.last {
+  transform: translateX(-100%);
+}
+.tool-axis b {
+  position: absolute;
+  top: 7px;
+  height: 2px;
+  background: var(--heat-2);
+}
+.tool-axis i,
+.chart-legend i.median,
+.chart-legend i.p95 {
+  box-sizing: border-box;
+  border-radius: 50%;
+}
+.tool-axis i {
+  position: absolute;
+  top: 2px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border: 2px solid var(--panel);
+}
+.tool-axis i.median,
+.chart-legend i.median {
+  background: var(--heat-4);
+}
+.tool-axis i.p95,
+.chart-legend i.p95 {
+  background: var(--heat-2);
+}
+.tool-other {
+  color: var(--muted);
+}
+.stats-note {
+  margin: 8px 0 0;
+  color: var(--subtle);
+  font-size: var(--font-axis);
+}
+@container (max-width: 879px) {
+  .tool-row {
+    grid-template-columns: 16px minmax(96px, 180px) minmax(48px, 1fr) 64px 72px 48px 60px 60px;
+  }
+  .tool-axis,
+  .axis-legend {
+    display: none;
+  }
+}
+@container (max-width: 639px) {
+  .tool-row {
+    grid-template-columns: 16px minmax(96px, 180px) minmax(48px, 1fr) 64px 48px 60px 60px;
+  }
+  .tool-fail {
+    display: none;
+  }
+}
+@container (max-width: 419px) {
+  .tool-row {
+    grid-template-columns: 16px minmax(96px, 180px) minmax(48px, 1fr) 64px 48px 60px;
+  }
+  .tool-p95 {
+    display: none;
+  }
 }
 .source-totals {
   display: flex;
@@ -2231,7 +2402,7 @@ kbd {
   justify-content: center;
   gap: 12px;
   color: var(--muted);
-  padding: 32px;
+  padding: 24px;
   text-align: center;
   font-size: var(--font-body);
 }
@@ -2485,79 +2656,85 @@ kbd {
 .range-popover {
   top: 78px;
   left: min(calc(68px + var(--sidebar-w) + 12px), 35%);
-  width: 330px;
+  display: flex;
+  width: 400px;
+}
+.range-presets-column {
+  flex: none;
+  width: 132px;
+  padding: 8px;
+  border-right: 1px solid var(--line);
 }
 .range-presets {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 4px 8px;
+  flex-direction: column;
 }
 .range-presets > button {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-small);
+  text-align: left;
+  white-space: nowrap;
+}
+.range-presets > button:hover {
+  background: var(--hover);
+}
+.range-presets > button:last-child {
+  margin-top: 4px;
+}
+.range-calendar-column {
   flex: 1;
-  min-width: 86px;
-  font-size: var(--font-axis);
+  min-width: 0;
+  padding: 8px;
 }
 .range-month {
   display: flex;
   gap: 8px;
   align-items: center;
-  padding: 4px 12px 8px;
+  justify-content: space-between;
+  padding: 0 0 8px;
   font-size: var(--font-small);
 }
 .range-calendar {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  padding: 0 8px;
-  gap: 4px;
+  gap: 0;
 }
 .range-calendar > span,
 .range-calendar > button {
-  text-align: center;
-  height: 27px;
-  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 32px;
   font-size: var(--font-axis);
   border-radius: var(--radius-md);
 }
 .range-calendar > span {
   color: var(--muted);
-  font-size: var(--font-axis);
 }
 .range-calendar > button:hover {
   background: var(--hover);
 }
-.range-calendar .selected {
-  color: white;
-  background: var(--select);
+.range-calendar > button > i {
+  height: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--heat-3);
+}
+.range-calendar .today {
+  color: var(--accent);
+  font-weight: 600;
 }
 .range-calendar .outside {
   color: var(--subtle);
+  opacity: var(--alpha-disabled);
 }
-.range-inputs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 8px 8px;
+.range-hint {
+  margin: 8px 0 0;
+  color: var(--subtle);
   font-size: var(--font-axis);
-  color: var(--muted);
-}
-.range-inputs > label {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-.range-inputs input {
-  width: 100%;
-  background: var(--bg);
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-}
-.range-apply {
-  width: calc(100% - 16px);
-  margin: 0 8px 4px;
 }
 
 .component-preview {

@@ -6,10 +6,13 @@ import {
   projects,
   type HistoryEvent,
   type Session,
+  type Source,
 } from '../data';
+import { eventKinds, type EventKind } from '../tokens';
 import {
   Button,
   EmptyState,
+  eventIcon,
   Icon,
   ProjectMark,
   Segmented,
@@ -54,6 +57,268 @@ const format = (value: number, metric: Metric) =>
       ? `$${value.toFixed(2)}`
       : formatNumber(Math.round(value));
 
+type ToolRow = {
+  name: string;
+  kind: EventKind;
+  calls: number;
+  claude: number;
+  codex: number;
+  failed: number;
+  rejected: number;
+  median: number;
+  p95: number;
+};
+
+const TOOL_LIMIT = 10;
+// 所要時間の対数軸の目盛り（秒）と、失敗の帯の上限（呼び出しに対する割合）。本体 statistics/tools.rs と同じ
+const LOG_TICKS = [0.001, 0.01, 0.1, 1, 10, 60, 600, 3600, 36000];
+const FAIL_SCALES = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1];
+
+const tickLabel = (seconds: number) =>
+  seconds < 1
+    ? `${Math.round(seconds * 1000)}ms`
+    : seconds < 60
+      ? `${seconds}s`
+      : seconds < 3600
+        ? `${seconds / 60}m`
+        : `${seconds / 3600}h`;
+const formatSeconds = (seconds: number) =>
+  seconds < 1
+    ? `${Math.round(seconds * 1000)}ms`
+    : seconds < 60
+      ? `${seconds.toFixed(1)}s`
+      : seconds < 3600
+        ? `${(seconds / 60).toFixed(1)}m`
+        : `${(seconds / 3600).toFixed(1)}h`;
+
+// ツールごとの 1 行: 印・名前・呼び出しの積み棒・件数・失敗の帯・失敗率・所要時間の対数軸・中央値・P95。
+// 列は幅に応じて右から省く（本体と同じく、軸 → 失敗の帯 → P95 の順）。
+function ToolsTable({ tools: rows, metric }: { tools: ToolRow[]; metric: Metric }) {
+  if (!rows.length) return <EmptyState message="この期間にツール呼び出しはありません" />;
+  // 指標が失敗・拒否・中断のときは失敗の多い順（同数は呼び出しの順）
+  const tools =
+    metric === 'failures'
+      ? [...rows].sort(
+          (a, b) => b.failed + b.rejected - (a.failed + a.rejected) || b.calls - a.calls,
+        )
+      : rows;
+  const shown = tools.slice(0, TOOL_LIMIT);
+  const rest = tools.length - shown.length;
+  const maxCalls = Math.max(...shown.map((tool) => tool.calls));
+  const maxRate = Math.max(...shown.map((tool) => (tool.failed + tool.rejected) / tool.calls));
+  const scale = FAIL_SCALES.find((value) => value >= maxRate) ?? 1;
+  // 軸は表示中のツールの中央値の最小と P95 の最大を目盛りに丸めた範囲で、少なくとも 1 桁の幅を持つ
+  const low =
+    [...LOG_TICKS]
+      .slice(0, -1)
+      .reverse()
+      .find((tick) => tick <= Math.min(...shown.map((t) => t.median))) ?? LOG_TICKS[0];
+  const high =
+    LOG_TICKS.find((tick) => tick >= Math.max(low * 10, ...shown.map((t) => t.p95))) ??
+    LOG_TICKS[LOG_TICKS.length - 1];
+  const place = (seconds: number) =>
+    ((Math.log10(Math.min(Math.max(seconds, low), high)) - Math.log10(low)) /
+      (Math.log10(high) - Math.log10(low))) *
+    100;
+  const ticks = LOG_TICKS.filter((tick) => tick >= low && tick <= high);
+  return (
+    <div className="tools-grid" role="table" aria-label="ツール別の集計">
+      <div className="tool-row tool-head" role="row">
+        <span />
+        <span />
+        <span />
+        <span role="columnheader">呼び出し</span>
+        <span className="tool-fail">
+          <small>0</small>
+          <small>{Math.round(scale * 100)}%</small>
+        </span>
+        <span role="columnheader">失敗率</span>
+        <span className="tool-axis">
+          {ticks.map((tick, index) => (
+            <small
+              key={tick}
+              className={index === 0 ? 'first' : index === ticks.length - 1 ? 'last' : ''}
+              style={{ left: `${place(tick)}%` }}
+            >
+              {tickLabel(tick)}
+            </small>
+          ))}
+        </span>
+        <span role="columnheader">中央値</span>
+        <span className="tool-p95" role="columnheader">
+          P95
+        </span>
+      </div>
+      {shown.map((tool) => {
+        const failures = tool.failed + tool.rejected;
+        const share = (value: number) => `${(value / tool.calls) * 100}%`;
+        return (
+          <div className="tool-row" role="row" key={tool.name}>
+            <span className="tool-mark" style={{ color: eventKinds[tool.kind].color }}>
+              <Icon name={eventIcon(tool.name, tool.kind)} size={12} />
+            </span>
+            <span className="tool-name" title={tool.name}>
+              {tool.name}
+            </span>
+            <span className="tool-bar">
+              <span style={{ width: `${(tool.calls / maxCalls) * 100}%` }}>
+                <i className="claude-color" style={{ width: share(tool.claude) }} />
+                <i className="codex-color" style={{ width: share(tool.codex) }} />
+              </span>
+            </span>
+            <span className="tool-num" role="cell">
+              {tool.calls}
+            </span>
+            <span className="tool-fail" aria-hidden>
+              <i
+                className="err-color"
+                style={{ width: `${(tool.failed / tool.calls / scale) * 100}%` }}
+              />
+              <i
+                className="warn-color"
+                style={{ width: `${(tool.rejected / tool.calls / scale) * 100}%` }}
+              />
+            </span>
+            <span className={`tool-num ${failures ? '' : 'none'}`} role="cell">
+              {failures ? `${((failures / tool.calls) * 100).toFixed(1)}%` : '—'}
+            </span>
+            <span className="tool-axis" aria-hidden>
+              {ticks.map((tick) => (
+                <small key={tick} style={{ left: `${place(tick)}%` }} />
+              ))}
+              <b
+                style={{
+                  left: `${place(tool.median)}%`,
+                  width: `${place(tool.p95) - place(tool.median)}%`,
+                }}
+              />
+              <i className="median" style={{ left: `${place(tool.median)}%` }} />
+              <i className="p95" style={{ left: `${place(tool.p95)}%` }} />
+            </span>
+            <span className="tool-num" role="cell">
+              {formatSeconds(tool.median)}
+            </span>
+            <span className="tool-num tool-p95 none" role="cell">
+              {formatSeconds(tool.p95)}
+            </span>
+          </div>
+        );
+      })}
+      {rest > 0 && (
+        <div className="tool-row tool-other" role="row">
+          <span />
+          <span className="tool-name">その他 {rest} 種類</span>
+          <span />
+          <span className="tool-num" role="cell">
+            {tools.slice(TOOL_LIMIT).reduce((sum, tool) => sum + tool.calls, 0)}
+          </span>
+        </div>
+      )}
+      <div className="chart-legend">
+        <span>
+          <i className="claude-color" />
+          Claude
+        </span>
+        <span>
+          <i className="codex-color" />
+          Codex
+        </span>
+        <span>
+          <i className="err-color" />
+          失敗
+        </span>
+        <span>
+          <i className="warn-color" />
+          拒否・中断
+        </span>
+        <span className="axis-legend">
+          <i className="median" />
+          中央値
+        </span>
+        <span className="axis-legend">
+          <i className="p95" />
+          P95
+        </span>
+      </div>
+      <p className="stats-note">
+        失敗率は呼び出しに対する割合。所要時間は結果のある呼び出しの区間分布から求めた近似値（誤差
+        6.25% 以内）で、サブエージェントは配下の処理を含みます
+      </p>
+    </div>
+  );
+}
+
+type Hourly = Array<{ day: string; counts: number[] }>;
+
+// 24 時間を円周（上が 0 時、時計回り）、曜日を内側から月〜日の同心の輪にした時間帯のグラフ。
+// 寸法は本体 src/app/statistics/radial.rs に合わせる（外側の余白 24、輪の隙間 2、内側の半径は外径の 0.32 倍）。
+function RadialHours({ hourly, maxCount }: { hourly: Hourly; maxCount: number }) {
+  const size = 360;
+  const center = size / 2;
+  const outer = center - 24;
+  const inner = outer * 0.32;
+  const ringGap = 2;
+  const angleGap = 0.028;
+  const pitch = (outer - inner) / hourly.length;
+  const thickness = pitch - ringGap;
+  const point = (radius: number, angle: number) =>
+    `${(center + radius * Math.sin(angle)).toFixed(2)} ${(center - radius * Math.cos(angle)).toFixed(2)}`;
+  const sector = (r0: number, r1: number, a0: number, a1: number) =>
+    `M${point(r1, a0)}A${r1} ${r1} 0 0 1 ${point(r1, a1)}L${point(r0, a1)}A${r0} ${r0} 0 0 0 ${point(r0, a0)}Z`;
+  const total = hourly.reduce((sum, row) => sum + row.counts.reduce((a, b) => a + b, 0), 0);
+  return (
+    <svg
+      className="radial-hours"
+      viewBox={`0 0 ${size} ${size}`}
+      role="img"
+      aria-label="時間帯の円形グラフ"
+    >
+      {hourly.map(({ day, counts }, ring) => {
+        const r0 = inner + ring * pitch;
+        return counts.map((count, hour) => (
+          <path
+            key={`${day}${hour}`}
+            d={sector(
+              r0,
+              r0 + thickness,
+              (hour / 24) * Math.PI * 2 + angleGap / 2,
+              ((hour + 1) / 24) * Math.PI * 2 - angleGap / 2,
+            )}
+            fill={
+              count
+                ? `var(--heat-${Math.max(1, Math.ceil((count / maxCount) * 5))})`
+                : 'var(--raised)'
+            }
+          >
+            <title>{`${day}曜 ${hour}時 · ${count} 件`}</title>
+          </path>
+        ));
+      })}
+      {[0, 3, 6, 9, 12, 15, 18, 21].map((hour) => {
+        const angle = (hour / 24) * Math.PI * 2;
+        return (
+          <text
+            key={hour}
+            x={center + (outer + 13) * Math.sin(angle)}
+            y={center - (outer + 13) * Math.cos(angle)}
+            textAnchor="middle"
+            dominantBaseline="central"
+          >
+            {hour}
+          </text>
+        );
+      })}
+      <circle cx={center} cy={center} r={inner} fill="var(--backdrop)" />
+      <text className="radial-label" x={center} y={center - 8} textAnchor="middle">
+        期間合計
+      </text>
+      <text className="radial-total" x={center} y={center + 12} textAnchor="middle">
+        {total}
+      </text>
+    </svg>
+  );
+}
+
 function Section({
   title,
   aside,
@@ -89,6 +354,7 @@ export function Statistics({
 }) {
   const [period, setPeriod] = useState('week');
   const [metric, setMetric] = useState<Metric>('tokens');
+  const [hoursView, setHoursView] = useState<'radial' | 'table'>('radial');
   const days = period === 'week' ? 7 : period === 'month' ? 30 : period === 'quarter' ? 90 : 3;
   const activeDays = Math.max(1, new Set(sessions.map((session) => session.day)).size);
   const value = total(sessions, metric);
@@ -115,16 +381,35 @@ export function Statistics({
     ),
   );
   const max = Math.max(1, ...chartValues.map((values) => values.reduce((a, b) => a + b, 0)));
-  const tools = Array.from(
+  const tools: ToolRow[] = Array.from(
     new Set(
       sessions.flatMap((session) => session.events.filter(isTool).map((event) => event.name)),
     ),
   )
-    .map((name) => ({
-      name,
-      events: sessions.flatMap((session) => session.events.filter((event) => event.name === name)),
-    }))
-    .sort((a, b) => b.events.length - a.events.length);
+    .map((name) => {
+      const events = sessions.flatMap((session) =>
+        session.events.filter((event) => event.name === name),
+      );
+      const durations = events.map((event) => event.duration * 3600).sort((a, b) => a - b);
+      const calls = (source: Source) =>
+        sessions
+          .filter((session) => session.source === source)
+          .reduce((sum, session) => sum + session.events.filter((e) => e.name === name).length, 0);
+      return {
+        name,
+        kind: events[0].kind,
+        calls: events.length,
+        claude: calls('claude'),
+        codex: calls('codex'),
+        failed: events.filter((event) => event.status === 'failed').length,
+        rejected: events.filter(
+          (event) => event.status === 'rejected' || event.status === 'interrupted',
+        ).length,
+        median: durations[Math.floor(durations.length / 2)],
+        p95: durations[Math.min(durations.length - 1, Math.floor(durations.length * 0.95))],
+      };
+    })
+    .sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
   const hourly = ['月', '火', '水', '木', '金', '土', '日'].map((day, index) => ({
     day,
     counts: Array.from({ length: 24 }, (_, hour) =>
@@ -201,7 +486,7 @@ export function Statistics({
           })}
         </div>
         {!sessions.length ? (
-          <EmptyState filtered />
+          <EmptyState message="この期間の履歴はありません" />
         ) : (
           <>
             <Section
@@ -297,38 +582,61 @@ export function Statistics({
               </Section>
             </div>
             <div className="stats-pair">
-              <Section title="曜日と時間帯">
-                <div className="hours-legend">
-                  <span>0</span>
-                  <span>6</span>
-                  <span>12</span>
-                  <span>18</span>
-                  <span>24時</span>
-                </div>
-                <div className="heatmap">
-                  {hourly.map(({ day, counts }) => (
-                    <div key={day}>
-                      <span>{day}</span>
-                      {counts.map((count, hour) => (
-                        <i
-                          key={hour}
-                          title={`${day}曜 ${hour}時 · ${count} 件`}
-                          style={{
-                            background: count
-                              ? `var(--heat-${Math.max(1, Math.ceil((count / maxCount) * 5))})`
-                              : undefined,
-                          }}
-                        />
+              <Section
+                title="時間帯"
+                aside={
+                  <Segmented
+                    label="時間帯の表示"
+                    options={[
+                      { value: 'radial', label: '円形' },
+                      { value: 'table', label: '表' },
+                    ]}
+                    value={hoursView}
+                    onChange={setHoursView}
+                  />
+                }
+              >
+                {hoursView === 'radial' ? (
+                  <>
+                    <RadialHours hourly={hourly} maxCount={maxCount} />
+                    <p className="radial-caption">内側から月〜日 · 上が0時、時計回りに24時間</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="hours-legend">
+                      <span>0</span>
+                      <span>6</span>
+                      <span>12</span>
+                      <span>18</span>
+                      <span>24時</span>
+                    </div>
+                    <div className="heatmap">
+                      {hourly.map(({ day, counts }) => (
+                        <div key={day}>
+                          <span>{day}</span>
+                          {counts.map((count, hour) => (
+                            <i
+                              key={hour}
+                              title={`${day}曜 ${hour}時 · ${count} 件`}
+                              style={{
+                                background: count
+                                  ? `var(--heat-${Math.max(1, Math.ceil((count / maxCount) * 5))})`
+                                  : undefined,
+                              }}
+                            />
+                          ))}
+                        </div>
                       ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                )}
                 <div className="heatmap-scale">
                   <span>少</span>
                   {[1, 2, 3, 4, 5].map((level) => (
                     <i key={level} style={{ background: `var(--heat-${level})` }} />
                   ))}
                   <span>多</span>
+                  <span>（最大 {maxCount}）</span>
                 </div>
               </Section>
               <Section title="モデル">
@@ -361,60 +669,7 @@ export function Statistics({
               </Section>
             </div>
             <Section title="ツール">
-              <div className="table-scroll">
-                <table className="tools-table">
-                  <thead>
-                    <tr>
-                      <th>ツール</th>
-                      <th>呼び出し</th>
-                      <th>失敗</th>
-                      <th>拒否 / 中断</th>
-                      <th>中央値</th>
-                      <th>P95</th>
-                      <th>所要時間</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tools.map((tool) => {
-                      const durations = tool.events
-                        .map((event) => event.duration * 3600)
-                        .sort((a, b) => a - b);
-                      const median = durations[Math.floor(durations.length / 2)];
-                      const p95 =
-                        durations[
-                          Math.min(durations.length - 1, Math.floor(durations.length * 0.95))
-                        ];
-                      const failed = tool.events.filter((event) => event.status === 'failed');
-                      return (
-                        <tr key={tool.name}>
-                          <td>{tool.name}</td>
-                          <td>{tool.events.length}</td>
-                          <td className={failed.length ? 'failed' : ''}>{failed.length}</td>
-                          <td>
-                            {
-                              tool.events.filter(
-                                (event) =>
-                                  event.status === 'rejected' || event.status === 'interrupted',
-                              ).length
-                            }
-                          </td>
-                          <td>{median.toFixed(1)}秒</td>
-                          <td>{p95.toFixed(1)}秒</td>
-                          <td>
-                            <div className="duration-track">
-                              <i
-                                style={{
-                                  width: `${Math.min(100, (Math.log10(p95 + 1) / 4) * 100)}%`,
-                                }}
-                              />
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <ToolsTable tools={tools} metric={metric} />
             </Section>
             <Section title="読み込み元">
               <div className="source-totals">

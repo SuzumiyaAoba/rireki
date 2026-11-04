@@ -105,6 +105,15 @@ export function RirekiApp({
   const loading = initialStatus === 'loading';
   const empty = initialStatus !== 'ready';
   const scoped = empty ? [] : filterSessions(source, project, query);
+  // タイムラインの表示範囲に作業がないとき（絞り込み後の履歴はある）。本体 timeline.rs の has_any に対応する
+  const periodEmpty =
+    view === 'timeline' &&
+    scoped.length > 0 &&
+    !scoped.some(
+      (session) =>
+        (session.day - day) * 24 + session.end > range.start &&
+        (session.day - day) * 24 + session.start < range.end,
+    );
   const session = selected
     ? (sampleSessions.find((session) => session.id === selected) ?? null)
     : null;
@@ -133,11 +142,6 @@ export function RirekiApp({
     setDay(next);
     setOffset(0);
     changeView('day');
-  }
-  function resetFilters() {
-    setProject(null);
-    setQuery('');
-    setSource('all');
   }
   function focusSearch() {
     setSidebar(true);
@@ -480,7 +484,12 @@ export function RirekiApp({
                       </div>
                       <Button
                         icon="SlidersHorizontal"
-                        className="display-button"
+                        className={`display-button ${inViewOnly ? 'filtered' : ''}`}
+                        title={
+                          inViewOnly
+                            ? '表示オプション（表示範囲内のセッションだけ）'
+                            : '表示オプション'
+                        }
                         aria-expanded={overlay === 'display'}
                         onClick={() => setOverlay(overlay === 'display' ? null : 'display')}
                       >
@@ -509,11 +518,17 @@ export function RirekiApp({
                   />
                 )}
                 <div className="main-view">
-                  {!scoped.length || loading ? (
+                  {!scoped.length || loading || periodEmpty ? (
                     <EmptyState
-                      loading={loading}
-                      filtered={!empty && !!(query || project || source !== 'all')}
-                      onReset={resetFilters}
+                      message={
+                        loading
+                          ? '読み込み中…'
+                          : periodEmpty
+                            ? 'この期間の作業履歴はありません'
+                            : '表示できる履歴がありません'
+                      }
+                      actionLabel={periodEmpty && !loading ? '最新の作業へ移動' : undefined}
+                      onAction={today}
                     />
                   ) : view === 'timeline' ? (
                     <Timeline
@@ -625,7 +640,7 @@ export function RirekiApp({
       )}
       {overlay === 'range' && (
         <RangePicker
-          range={range}
+          sessions={scoped}
           onRange={setRange}
           onDay={(value) => {
             setDay(value);

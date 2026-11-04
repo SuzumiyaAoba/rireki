@@ -7,7 +7,7 @@ import {
   type HistoryEvent,
   type Session,
 } from '../data';
-import { EventBlock, Icon, ProjectMark, SourceLogo } from './primitives';
+import { EventBlock, eventIcon, Icon, ProjectMark, SourceLogo } from './primitives';
 
 export type Granularity = 'auto' | 'same-tool' | 'turn' | 'call';
 
@@ -217,8 +217,12 @@ export function Timeline({
               <EventBlock
                 key={event.id}
                 kind={event.kind}
+                icon={eventIcon(event.name, event.kind)}
                 label={events.length > 1 ? `${events.length} × ${event.name}` : event.name}
-                failed={events.some((event) => event.status !== 'success')}
+                failed={events.some((event) => event.status === 'failed')}
+                rejected={events.some(
+                  (event) => event.status === 'rejected' || event.status === 'interrupted',
+                )}
                 selected={events.some((event) => event.id === selectedEvent)}
                 onClick={() => onSelect(session, event)}
                 style={{

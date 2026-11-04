@@ -62,6 +62,7 @@ export const Events: Story = {
         </div>
         <div className="event-sample">
           <EventBlock kind="shell" label="Bash · 失敗" failed />
+          <EventBlock kind="shell" label="Bash · 拒否" rejected />
         </div>
       </div>
     </div>

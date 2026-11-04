@@ -45,7 +45,7 @@ export const FilterAnalysis: Story = {
     );
     await expect(detail.getByRole('button', { name: /Bash.*失敗/ })).toBeVisible();
     await userEvent.type(detail.getByRole('textbox', { name: '分析のイベントを検索' }), '該当なし');
-    await expect(detail.getByRole('status')).toHaveTextContent('一致する履歴はありません');
+    await expect(detail.getByRole('status')).toHaveTextContent('該当するイベントはありません');
     await userEvent.clear(detail.getByRole('textbox', { name: '分析のイベントを検索' }));
     await userEvent.click(detail.getByRole('button', { name: /Bash.*失敗/ }));
     await expect(detail.getByText(/error\[E0308\]/)).toBeVisible();

@@ -15,6 +15,7 @@ import {
   Button,
   CopyButton,
   EmptyState,
+  eventIcon,
   Highlight,
   Icon,
   IconButton,
@@ -132,6 +133,8 @@ export function DetailPanel({
 }
 
 // 失敗は赤、拒否・中断は黄、成功は無色。
+const statusLabel = (status: HistoryEvent['status']) =>
+  ({ success: '成功', failed: '失敗', rejected: '拒否', interrupted: '中断' })[status];
 const tone = (status: HistoryEvent['status']) =>
   status === 'success' ? 'muted' : status === 'failed' ? 'err' : 'warn';
 
@@ -296,9 +299,7 @@ function History({
             10/{26 + session.day} {formatTime(event.start)}
             <span>·</span>
             {Math.round(event.duration * 3600)}秒
-            <StatusText tone={tone(event.status)}>
-              {event.status === 'success' ? '成功' : event.status === 'failed' ? '失敗' : '中断'}
-            </StatusText>
+            <StatusText tone={tone(event.status)}>{statusLabel(event.status)}</StatusText>
           </div>
           <p className="prompt-reference">
             選択範囲外の指示 <span>{session.title}</span>
@@ -339,7 +340,7 @@ function History({
               <EventRow event={item} key={item.id} onClick={() => onEvent(item)} />
             ))
           ) : (
-            <EmptyState filtered />
+            <EmptyState message="該当するイベントはありません" />
           )}
         </>
       )}
@@ -360,7 +361,7 @@ export function EventRow({
   return (
     <button type="button" className="event-row" onClick={onClick}>
       <span className="event-row-icon" style={{ color: token.color }}>
-        <Icon name={token.icon} />
+        <Icon name={eventIcon(event.name, event.kind)} />
       </span>
       <span className="row-content">
         <span className="event-row-title">
@@ -368,9 +369,7 @@ export function EventRow({
             <Highlight text={event.name} query={query} />
           </strong>
           {event.status !== 'success' && (
-            <StatusText tone={tone(event.status)}>
-              {event.status === 'failed' ? '失敗' : '中断'}
-            </StatusText>
+            <StatusText tone={tone(event.status)}>{statusLabel(event.status)}</StatusText>
           )}
           <small>{formatTime(event.start)}</small>
         </span>
@@ -569,7 +568,7 @@ function Analysis({
           <EventRow key={event.id} event={event} query={query} onClick={() => onEvent(event)} />
         ))
       ) : (
-        <EmptyState filtered />
+        <EmptyState message="該当するイベントはありません" />
       )}
     </div>
   );

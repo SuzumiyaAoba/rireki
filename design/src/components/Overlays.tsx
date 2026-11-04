@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import type { Overlay } from '../data';
+import type { Overlay, Session } from '../data';
 import type { Granularity, TimeRange } from './Timeline';
 import { StatusText, Button, CopyButton, Icon, IconButton, Segmented } from './primitives';
 
@@ -108,7 +108,7 @@ export function McpDialog({
           <StatusText>Streamable HTTP</StatusText>
         </div>
         <div className="mcp-port">
-          <label htmlFor="mcp-port">ポート</label>
+          <label htmlFor="mcp-port">ポート番号</label>
           <input
             id="mcp-port"
             inputMode="numeric"
@@ -125,7 +125,7 @@ export function McpDialog({
         )}
         <div className="endpoint">
           <span>エンドポイント</span>
-          <code title="127.0.0.1 からの接続だけを受け付け、履歴の読み取り以外は行いません。">
+          <code title="この端末からの接続だけを受け付け、履歴の読み取り以外は行いません。">
             {endpoint}
           </code>
           <CopyButton text={endpoint} label="URL をコピー" />
@@ -133,7 +133,7 @@ export function McpDialog({
         <div className="mcp-config">
           <div>
             <strong>クライアント設定</strong>
-            <CopyButton text={config} label="設定をコピー" />
+            <CopyButton text={config} label="接続設定をコピー" />
           </div>
           <pre>
             <code>{config}</code>
@@ -166,34 +166,43 @@ const shortcutGroups = [
     title: '表示',
     rows: [
       ['タイムライン', '⌘1'],
-      ['日 / 週 / 月', 'D / W / M'],
+      ['日', '⌘2 · D'],
+      ['週', '⌘3 · W'],
+      ['月', 'M'],
       ['統計', '⌘4'],
-      ['サイドバーの表示を切り替え', '⌘B'],
+      ['サイドバーの表示を切り替え', '⌃⌘S · ⌘B'],
+      ['表示範囲内のセッションだけを表示', 'V'],
     ],
   },
   {
     title: '移動',
     rows: [
-      ['今日（現在時刻）へ', 'T'],
-      ['前 / 次の期間', '← / →'],
+      ['今日（現在時刻）へ', '⌘T · T'],
+      ['前 / 次の期間', '⌘← ⌘→ · ← →'],
       ['期間・日付を選ぶ', 'G'],
-      ['拡大 / 縮小', '+ / −'],
+      ['拡大 / 縮小', '⌘= ⌘- · + −'],
+      ['表示範囲を動かす', 'ドラッグ · スクロール'],
+      ['マウス位置を中心に拡大縮小', '⌘ + スクロール · ピンチ'],
+      ['ブロックの範囲まで拡大（カレンダーではタイムラインで開く）', 'ダブルクリック'],
     ],
   },
   {
     title: '選択',
     rows: [
       ['詳細を開く', 'クリック'],
-      ['次 / 前のイベント', 'J / K'],
-      ['セッション / イベント / ファイル / 分析', '1 / 2 / 3 / 4'],
-      ['詳細の全画面表示', '⇧⌘↵'],
-      ['詳細・ポップオーバーを閉じる', 'esc'],
+      ['次 / 前のイベント', 'J · K'],
+      ['詳細のタブ（セッション / イベント / ファイル / 分析）', '1 · 2 · 3 · 4'],
+      ['詳細の全画面表示 / 通常表示', '⇧⌘↵'],
+      ['選択範囲のイベントを検索', '⌘F（分析タブ）'],
+      ['選択の履歴を戻る / 進む', '⌘[ ⌘]'],
+      ['全画面を解除 / 詳細を閉じる', 'esc'],
     ],
   },
   {
     title: '検索',
     rows: [
-      ['検索欄へ', '⌘K / ⌘F'],
+      ['検索欄へ', '⌘K · ⌘F'],
+      ['結果を選ぶ', '↑ ↓'],
       ['結果を開く', 'enter'],
       ['検索を解除', 'esc'],
     ],
@@ -306,31 +315,48 @@ export function DisplayOptions({
             checked={inViewOnly}
             onChange={(event) => onInViewOnly(event.target.checked)}
           />
-          <span>表示範囲内のセッションだけを表示</span>
+          <span>表示範囲内のセッションだけ</span>
         </label>
       </div>
     </>
   );
 }
 
+// 期間のプリセット。本体 header.rs の PRESETS と同じ。サンプルデータは 3 日分（72 時間）しかないので、
+// 日単位の期間と全期間はどれも 72 時間に丸める。
+const rangePresets: ReadonlyArray<readonly [string, number]> = [
+  ['直近 1 時間', 1],
+  ['直近 6 時間', 6],
+  ['直近 24 時間', 24],
+  ['直近 7 日間', 72],
+  ['直近 30 日間', 72],
+  ['直近 90 日間', 72],
+  ['全期間', 72],
+];
+
 export function RangePicker({
-  range,
+  sessions,
   onRange,
   onDay,
   onClose,
 }: {
-  range: TimeRange;
+  sessions: Session[];
   onRange: (range: TimeRange) => void;
   onDay: (day: number) => void;
   onClose: () => void;
 }) {
-  const [start, setStart] = useState(`${String(Math.floor(range.start % 24)).padStart(2, '0')}:00`);
-  const [end, setEnd] = useState(`${String(Math.floor(range.end % 24)).padStart(2, '0')}:00`);
-  const toHour = (time: string) => {
-    const [hour, minute] = time.split(':').map(Number);
-    return hour + minute / 60;
-  };
-  const valid = !!start && !!end && toHour(end) > toHour(start);
+  const [month, setMonth] = useState(0);
+  const first = new Date(Date.UTC(2026, 9 + month, 1));
+  const mondayOffset = (first.getUTCDay() + 6) % 7;
+  // サンプルデータの day 0 は 2026-10-26
+  const firstDay =
+    Math.round((first.getTime() - Date.UTC(2026, 9, 26)) / 86_400_000) - mondayOffset;
+  const counts = Array.from({ length: 42 }, (_, i) =>
+    sessions
+      .filter((session) => session.day === firstDay + i)
+      .reduce((sum, session) => sum + session.events.length, 0),
+  );
+  const most = Math.max(1, ...counts);
   return (
     <>
       <button
@@ -340,78 +366,59 @@ export function RangePicker({
         onClick={onClose}
       />
       <div className="range-popover popover" role="dialog" aria-label="期間・日付の選択">
-        <h3>表示する期間</h3>
-        <div className="range-presets">
-          {[
-            ['1時間', 1],
-            ['3時間', 3],
-            ['6時間', 6],
-            ['12時間', 12],
-            ['24時間', 24],
-            ['全期間', 72],
-          ].map(([label, hours]) => (
-            <Button
-              key={label}
-              onClick={() => {
-                onRange({
-                  start: Math.max(0, 18 - Number(hours)),
-                  end: Number(hours) >= 24 ? Number(hours) : 18,
-                });
-                onClose();
-              }}
-            >
-              {label}
-            </Button>
-          ))}
-        </div>
-        <hr />
-        <div className="range-month">
-          <strong>2026年10月</strong>
-        </div>
-        <div className="range-calendar">
-          {['月', '火', '水', '木', '金', '土', '日'].map((day) => (
-            <span key={day}>{day}</span>
-          ))}
-          {Array.from({ length: 35 }, (_, i) => {
-            const day = i - 2;
-            return (
+        <div className="range-presets-column">
+          <h3>表示する期間</h3>
+          <div className="range-presets">
+            {rangePresets.map(([label, hours]) => (
               <button
                 type="button"
-                className={day === 26 ? 'selected' : day <= 0 || day > 31 ? 'outside' : ''}
-                aria-label={`10月${day}日を選択`}
-                key={i}
+                key={label}
                 onClick={() => {
-                  onDay(day - 26);
+                  onRange({ start: Math.max(0, 18 - hours), end: hours >= 24 ? hours : 18 });
                   onClose();
                 }}
               >
-                {day <= 0 ? 30 + day : day > 31 ? day - 31 : day}
+                {label}
               </button>
-            );
-          })}
+            ))}
+          </div>
         </div>
-        <hr />
-        <div className="range-inputs">
-          <label>
-            開始
-            <input type="time" value={start} onChange={(event) => setStart(event.target.value)} />
-          </label>
-          <span>—</span>
-          <label>
-            終了
-            <input type="time" value={end} onChange={(event) => setEnd(event.target.value)} />
-          </label>
+        <div className="range-calendar-column">
+          <div className="range-month">
+            <IconButton icon="ChevronLeft" label="前の月" onClick={() => setMonth(month - 1)} />
+            <strong>
+              {first.getUTCFullYear()}年{first.getUTCMonth() + 1}月
+            </strong>
+            <IconButton icon="ChevronRight" label="次の月" onClick={() => setMonth(month + 1)} />
+          </div>
+          <div className="range-calendar">
+            {['月', '火', '水', '木', '金', '土', '日'].map((day) => (
+              <span key={day}>{day}</span>
+            ))}
+            {counts.map((count, i) => {
+              const day = firstDay + i;
+              const date = new Date(Date.UTC(2026, 9, 26 + day));
+              const inMonth = date.getUTCMonth() === first.getUTCMonth();
+              return (
+                <button
+                  type="button"
+                  className={`${inMonth ? '' : 'outside'} ${day === 0 ? 'today' : ''}`}
+                  aria-label={`${date.getUTCMonth() + 1}月${date.getUTCDate()}日を選択`}
+                  key={day}
+                  onClick={() => {
+                    onDay(day);
+                    onClose();
+                  }}
+                >
+                  {date.getUTCDate()}
+                  {/* 日ごとのイベント量。幅は件数の平方根に比例する */}
+                  {count > 0 && <i style={{ width: 4 + 18 * Math.sqrt(count / most) }} />}
+                </button>
+              );
+            })}
+          </div>
+          <p className="range-hint">日付を選ぶと、その日へ移動</p>
         </div>
-        <Button
-          className="primary-button range-apply"
-          disabled={!valid}
-          onClick={() => {
-            onRange({ start: toHour(start), end: toHour(end) });
-            onClose();
-          }}
-        >
-          期間を適用
-        </Button>
       </div>
     </>
   );

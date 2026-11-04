@@ -96,7 +96,8 @@ export const SearchInteraction: Story = {
   name: '操作：検索と解除',
   play: async ({ canvas, userEvent }) => {
     await userEvent.type(canvas.getByRole('textbox', { name: '履歴を検索' }), '該当しない検索語');
-    await expect(canvas.getByRole('status')).toHaveTextContent('一致する履歴はありません');
+    await expect(canvas.getByRole('status')).toHaveTextContent('表示できる履歴がありません');
+    await expect(canvas.getByText('一致する履歴はありません')).toBeVisible();
     await userEvent.click(canvas.getByRole('button', { name: '検索を解除' }));
     await expect(canvas.getByLabelText('イベントのタイムライン')).toBeVisible();
     await userEvent.type(canvas.getByRole('textbox', { name: '履歴を検索' }), 'apply_patch');

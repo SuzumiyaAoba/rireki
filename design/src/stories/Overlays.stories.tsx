@@ -45,14 +45,14 @@ export const McpInteraction: Story = {
   args: { initialOverlay: 'mcp' },
   play: async ({ canvas, userEvent }) => {
     const dialog = within(canvas.getByRole('dialog', { name: 'MCP サーバー' }));
-    await userEvent.clear(dialog.getByRole('textbox', { name: 'ポート' }));
-    await userEvent.type(dialog.getByRole('textbox', { name: 'ポート' }), '70000');
+    await userEvent.clear(dialog.getByRole('textbox', { name: 'ポート番号' }));
+    await userEvent.type(dialog.getByRole('textbox', { name: 'ポート番号' }), '70000');
     await expect(dialog.getByRole('button', { name: 'サーバーを起動' })).toBeDisabled();
-    await userEvent.clear(dialog.getByRole('textbox', { name: 'ポート' }));
-    await userEvent.type(dialog.getByRole('textbox', { name: 'ポート' }), '47822');
+    await userEvent.clear(dialog.getByRole('textbox', { name: 'ポート番号' }));
+    await userEvent.type(dialog.getByRole('textbox', { name: 'ポート番号' }), '47822');
     await userEvent.click(dialog.getByRole('button', { name: 'サーバーを起動' }));
     await expect(dialog.getByText('実行中', { exact: true })).toBeVisible();
-    await expect(dialog.getByRole('textbox', { name: 'ポート' })).toBeDisabled();
+    await expect(dialog.getByRole('textbox', { name: 'ポート番号' })).toBeDisabled();
     await userEvent.click(dialog.getByRole('button', { name: 'サーバーを停止' }));
     await expect(dialog.getByText('停止中', { exact: true })).toBeVisible();
     await userEvent.keyboard('{Escape}');

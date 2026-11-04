@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { formatDuration, formatTime, projectColor, type Session, type View } from '../data';
 import { CalendarSession } from './Timeline';
 
@@ -131,6 +132,11 @@ function MonthView({
   const mondayOffset = (first.getUTCDay() + 6) % 7;
   const firstDay =
     Math.round((first.getTime() - Date.UTC(2026, 9, 26)) / 86_400_000) - mondayOffset;
+  const activeOf = (day: number) =>
+    sessions
+      .filter((session) => session.day === day)
+      .reduce((sum, session) => sum + session.end - session.start, 0);
+  const maxActive = Math.max(1e-9, ...Array.from({ length: 42 }, (_, i) => activeOf(firstDay + i)));
   return (
     <div className="month-view" aria-label="月カレンダー">
       <div className="month-weekdays">
@@ -143,10 +149,15 @@ function MonthView({
           const day = firstDay + index;
           const date = dateLabel(day);
           const items = sessions.filter((session) => session.day === day);
+          // 稼働時間は上端の帯の段階（heat の 5 段）で示す。本体と同じく平方根で段を割り当てる
+          const heat = Math.round(Math.sqrt(activeOf(day) / maxActive) * 4) + 1;
           return (
             <div
               key={day}
               className={`month-cell ${date.month !== first.getUTCMonth() + 1 ? 'outside' : ''} ${items.length ? 'has-sessions' : ''}`}
+              style={
+                items.length ? ({ '--heat': `var(--heat-${heat})` } as CSSProperties) : undefined
+              }
             >
               <button
                 type="button"

@@ -15,24 +15,30 @@ import {
   ChevronRight,
   CircleAlert,
   Clock,
+  CloudDownload,
   Copy,
   ExternalLink,
   FilePen,
+  FilePlus,
   FileText,
   Filter,
   Folder,
+  FolderSearch,
   GitBranch,
   Globe,
   Hourglass,
+  Image as ImageIcon,
   Keyboard,
   Layers,
   ListChecks,
   ListTree,
   LoaderCircle,
   LocateFixed,
+  Map as MapIcon,
   Maximize,
   MessageSquare,
   Minimize,
+  NotebookPen,
   PanelLeftClose,
   PanelLeftOpen,
   Pause,
@@ -40,7 +46,10 @@ import {
   Plug,
   Search,
   SlidersHorizontal,
+  Sparkles,
+  Target,
   Terminal,
+  TextSearch,
   User,
   Wrench,
   X,
@@ -50,7 +59,7 @@ import {
 import claudeLogo from '../../../assets/icons/claude.svg';
 import codexLogo from '../../../assets/icons/codex.svg';
 import appLogo from '../../../assets/app-icon/rireki.svg';
-import { eventKinds, type EventKind } from '../tokens';
+import { eventKinds, toolIcons, type EventKind } from '../tokens';
 import { projectColor, type Source } from '../data';
 
 const icons = {
@@ -69,24 +78,30 @@ const icons = {
   ChevronRight,
   CircleAlert,
   Clock,
+  CloudDownload,
   Copy,
   ExternalLink,
   FilePen,
+  FilePlus,
   FileText,
   Filter,
   Folder,
+  FolderSearch,
   GitBranch,
   Globe,
   Hourglass,
+  Image: ImageIcon,
   Keyboard,
   Layers,
   ListChecks,
   ListTree,
   LoaderCircle,
   LocateFixed,
+  Map: MapIcon,
   Maximize,
   MessageSquare,
   Minimize,
+  NotebookPen,
   PanelLeftClose,
   PanelLeftOpen,
   Pause,
@@ -94,7 +109,10 @@ const icons = {
   Plug,
   Search,
   SlidersHorizontal,
+  Sparkles,
+  Target,
   Terminal,
+  TextSearch,
   User,
   Wrench,
   X,
@@ -103,6 +121,17 @@ const icons = {
 };
 
 export type IconName = keyof typeof icons;
+
+// toolIcons の値がすべて登録済みのアイコンであることを型で確かめる
+toolIcons satisfies Record<string, IconName>;
+
+/** イベントのアイコン。ツール名ごとの指定を優先し、なければ種類の既定を使う */
+export function eventIcon(name: string, kind: EventKind): IconName {
+  // ユーザー・応答・思考・サブエージェントは種類のアイコン。ツールはツール名ごとで、未登録は工具
+  if (['user', 'assistant', 'thinking', 'agent'].includes(kind)) return eventKinds[kind].icon;
+  if (name.startsWith('mcp__')) return 'Plug';
+  return (toolIcons as Record<string, IconName>)[name] ?? 'Wrench';
+}
 
 export function Icon({
   name,
@@ -257,6 +286,8 @@ export function EventBlock({
   kind,
   label,
   failed = false,
+  rejected = false,
+  icon,
   selected = false,
   onClick,
   style,
@@ -264,6 +295,8 @@ export function EventBlock({
   kind: EventKind;
   label: string;
   failed?: boolean;
+  rejected?: boolean;
+  icon?: IconName;
   selected?: boolean;
   onClick?: () => void;
   style?: CSSProperties;
@@ -272,34 +305,38 @@ export function EventBlock({
   return (
     <button
       type="button"
-      className={`event-block ${failed ? 'failed' : ''} ${selected ? 'selected' : ''}`}
+      className={`event-block ${failed ? 'failed' : rejected ? 'rejected' : ''} ${selected ? 'selected' : ''}`}
       aria-pressed={selected}
       title={label}
       onClick={onClick}
       style={{ '--event-color': token.color, ...style } as CSSProperties}
     >
-      <Icon name={token.icon} size={11} />
+      <Icon name={icon ?? token.icon} size={11} />
       <span>{label}</span>
-      {failed && <Icon name="CircleAlert" size={11} />}
+      {(failed || rejected) && <Icon name="CircleAlert" size={11} />}
     </button>
   );
 }
 
+// 空状態は 1 行の文言と、必要なら移動の操作が 1 つ。説明の 2 行目は書かない。
 export function EmptyState({
-  loading = false,
-  filtered = false,
-  onReset,
+  message,
+  actionLabel,
+  onAction,
 }: {
-  loading?: boolean;
-  filtered?: boolean;
-  onReset?: () => void;
+  message: string;
+  // 足してよい操作は、空の期間から最新の作業へ移る 1 つだけ
+  actionLabel?: string;
+  onAction?: () => void;
 }) {
   return (
-    <div className="empty-state" role="status">
-      <span>
-        {loading ? '読み込み中…' : filtered ? '一致する履歴はありません' : 'まだ履歴がありません'}
-      </span>
-      {filtered && onReset && <Button onClick={onReset}>絞り込みを解除</Button>}
+    <div className="empty-state">
+      <span role="status">{message}</span>
+      {actionLabel && onAction && (
+        <Button icon="Clock" onClick={onAction}>
+          {actionLabel}
+        </Button>
+      )}
     </div>
   );
 }
