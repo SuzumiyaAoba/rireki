@@ -58,6 +58,7 @@ impl Rireki {
                     .id(ElementId::NamedInteger("month-day".into(), i as u64))
                     .w(px(cell_w))
                     .h_full()
+                    .relative()
                     .flex()
                     .flex_col()
                     .gap(px(1.0))
@@ -66,8 +67,17 @@ impl Rireki {
                     .border_r_1()
                     .border_b_1()
                     .border_color(c(theme::LINE_SOFT))
+                    // 稼働時間は上端の帯の段階で示す。塗りに透明度を掛けず、文字の下地は変えない
                     .when(day.active > 0.0, |d| {
-                        d.bg(c(theme::HEAT[(heat * 4.0).round() as usize]).opacity(theme::alpha::RANGE))
+                        d.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(4.0))
+                                .bg(c(theme::HEAT[(heat * 4.0).round() as usize])),
+                        )
                     })
                     .when(!in_month, |d| d.opacity(theme::alpha::DISABLED))
                     .cursor_pointer()

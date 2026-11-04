@@ -284,7 +284,7 @@ pub(super) fn usage_meter(
                         div()
                             .w_full()
                             .h(px(4.0))
-                            .rounded_full()
+                            .radius_sm()
                             .bg(c(theme::LINE_SOFT))
                             .when(value > 0, |d| {
                                 d.child(
@@ -294,7 +294,7 @@ pub(super) fn usage_meter(
                                             (value as f64 / max.max(1) as f64).min(1.0) as f32,
                                         ))
                                         .min_w(px(1.0))
-                                        .rounded_full()
+                                        .radius_sm()
                                         .bg(c(color)),
                                 )
                             }),

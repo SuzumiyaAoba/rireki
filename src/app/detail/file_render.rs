@@ -430,7 +430,7 @@ impl Rireki {
                                 div()
                                     .flex_none()
                                     .px_2()
-                                    .rounded_full()
+                                    .radius_sm()
                                     .bg(c(theme::LINE_SOFT))
                                     .text_color(c(theme::MUTED))
                                     .child(format!("#{}", n + 1)),

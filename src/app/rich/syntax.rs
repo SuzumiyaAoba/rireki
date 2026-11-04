@@ -183,7 +183,7 @@ fn line_spans(highlighter: &mut DiffHighlighter<'_>, text: &str) -> Spans {
         highlight.font_weight = style
             .font_style
             .contains(SyntaxFontStyle::BOLD)
-            .then_some(FontWeight::BOLD);
+            .then_some(FontWeight::SEMIBOLD);
         highlight.font_style = style
             .font_style
             .contains(SyntaxFontStyle::ITALIC)

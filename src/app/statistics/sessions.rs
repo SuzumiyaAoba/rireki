@@ -98,7 +98,6 @@ impl Rireki {
                                 .flex()
                                 .justify_end()
                                 .whitespace_nowrap()
-                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .child(metric.format(value)),
                         )
                         .child(

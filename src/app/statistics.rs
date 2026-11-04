@@ -37,7 +37,7 @@ use crate::theme::{self, c};
 
 /// 内容の外側の余白とカードの間隔
 const PAD: f32 = 20.0;
-const GAP: f32 = 14.0;
+const GAP: f32 = 16.0;
 /// 2 列に並べる最小の内容幅
 const WIDE: f32 = 900.0;
 
@@ -405,7 +405,7 @@ impl Rireki {
                     .child(
                         div()
                             .text_value()
-                            .line_height(px(30.0))
+                            .line_height(px(28.0))
                             .font_weight(FontWeight::SEMIBOLD)
                             .whitespace_nowrap()
                             .child(metric.headline(value)),

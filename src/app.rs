@@ -74,19 +74,19 @@ use sidebar::SidebarView;
 use track_index::TrackIndex;
 
 /// 上端の状態表示（macOS ではタイトルバー領域）の高さ
-pub const STRIP_H: f32 = 34.0;
+pub const STRIP_H: f32 = theme::dim::STRIP;
 /// 左端のアイコンレールの幅
-const RAIL_W: f32 = 68.0;
+const RAIL_W: f32 = theme::dim::RAIL;
 /// 内容パネルの右と下の余白。地の色を額縁のように見せる
-const GAP: f32 = 6.0;
+const GAP: f32 = theme::dim::GAP;
 /// 内容パネルの角の丸み。端に接する子要素は内側の丸み（1px の枠線を除いた分）に合わせる
 const PANEL_RADIUS: f32 = theme::radius::PANEL;
 const INNER_RADIUS: f32 = theme::radius::INNER;
-const HEADER_H: f32 = 46.0;
-const FOOTER_H: f32 = 26.0;
+const HEADER_H: f32 = theme::dim::HEADER;
+const FOOTER_H: f32 = theme::dim::FOOTER;
 /// タイムラインの上のミニマップの高さ
-const MINIMAP_H: f32 = 30.0;
-const AXIS_H: f32 = 40.0;
+const MINIMAP_H: f32 = theme::dim::MINIMAP;
+const AXIS_H: f32 = theme::dim::AXIS;
 /// 境界ドラッグで変えられる幅の下限
 const MIN_PANE_W: f32 = 160.0;
 const MIN_SIDEBAR_W: f32 = 200.0;
@@ -98,7 +98,7 @@ const PANE_ANIM_SECS: f32 = 0.18;
 const MAIN_MIN_W: f32 = 360.0;
 /// 境界のつまみの幅
 const HANDLE_W: f32 = 6.0;
-const ROW_H: f32 = 32.0;
+const ROW_H: f32 = theme::dim::ROW;
 const HOUR_LABEL_W: f32 = 52.0;
 const MIN_BLOCK: f32 = 3.0;
 
@@ -283,7 +283,7 @@ pub struct Rireki {
     in_view_only: bool,
     /// ディレクトリごとにメインイベントを最小限の行に詰める
     directory_timeline: bool,
-    /// API 換算料金を時間ごとに表示する
+    /// 料金を時間ごとに表示する
     cost_timeline: bool,
     cost_state: cost::State,
     source: SourceFilter,

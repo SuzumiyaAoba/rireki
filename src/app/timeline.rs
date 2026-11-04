@@ -1022,17 +1022,6 @@ impl Rireki {
                         })),
                 )
             })
-            .when(
-                !loading && !has_any && (self.focus.is_some() || self.source != crate::prefs::SourceFilter::All),
-                |d| {
-                    d.child(
-                        div()
-                            .text_small()
-                            .text_color(c(theme::SUBTLE))
-                            .child("読み込み元やプロジェクトの絞り込みを確認してください"),
-                    )
-                },
-            )
             .into_any_element()
     }
 }

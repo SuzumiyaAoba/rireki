@@ -159,7 +159,7 @@ impl Rireki {
                                 .gap_3()
                                 .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child("キャッシュ読込率"))
                                 .child(div().flex_1().child(meter(cached)))
-                                .child(div().flex_none().font_weight(FontWeight::MEDIUM).child(percent(cached))),
+                                .child(div().flex_none().child(percent(cached))),
                         )
                         .child(
                             div()
@@ -311,7 +311,6 @@ fn row(mark: AnyElement, name: String, bar: Div, value: String, note: String, no
                 .flex()
                 .justify_end()
                 .whitespace_nowrap()
-                .font_weight(FontWeight::MEDIUM)
                 .child(value),
         )
         .child(

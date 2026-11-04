@@ -31,6 +31,7 @@ rustPlatform.buildRustPackage {
       ../licenses
       # theme.rs のテストが色・寸法の一致を検査するために読む
       ../design/src/tokens.ts
+      ../DESIGN.md
     ];
   };
   cargoLock.lockFile = ../Cargo.lock;

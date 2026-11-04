@@ -257,7 +257,7 @@ impl Rireki {
                     .w(px(28.0))
                     .h(px(16.0))
                     .p(px(2.0))
-                    .rounded_full()
+                    .radius_md()
                     .bg(c(if on { theme::ACCENT } else { theme::LINE }))
                     .child(div().size(px(12.0)).rounded_full().bg(c(theme::TEXT))),
             )

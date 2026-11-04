@@ -455,7 +455,7 @@ impl Rireki {
             .w(px(width))
             .h(px(ROW_H - 6.0))
             .cursor_pointer()
-            .hover(|d| d.bg(c(theme::HEAT[2]).opacity(theme::alpha::RANGE)))
+            .hover(|d| d.bg(c(theme::HOVER)))
             .child(
                 div()
                     .absolute()

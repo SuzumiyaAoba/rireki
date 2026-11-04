@@ -540,13 +540,9 @@ impl Rireki {
         if r.is_empty() { return div()
                     .mx_3()
                     .mt_4()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
                     .text_small()
                     .text_color(c(theme::SUBTLE))
-                    .child("セッションのタイトル・ディレクトリと、ツール呼び出しやメッセージの要約から探します。")
-                    .child("空白で区切ると、すべての語を含むものに絞り込みます。").into_any_element(); }
+                    .child("セッションのタイトル・ディレクトリと、ツール呼び出しやメッセージの要約から探します（空白で区切ると、すべての語を含むものに絞り込みます）。").into_any_element(); }
         div().into_any_element()
     }
 
@@ -556,7 +552,7 @@ impl Rireki {
         window.focus(&self.search_state.input.focus_handle(cx));
     }
 
-    /// 検索結果の 1 項目の外枠。キーボードで選んでいる項目は左に線を引く
+    /// 検索結果の 1 項目の外枠。キーボードで選んでいる項目は枠で囲む
     fn result_row_frame(&self, i: usize) -> Stateful<Div> {
         let cursor = self.search_state.cursor == i;
         let selected = self.selected.is_some_and(|sel| {
@@ -579,7 +575,7 @@ impl Rireki {
             .px_2()
             .py_1()
             .radius_md()
-            .border_l_2()
+            .border_1()
             .border_color(if cursor { c(theme::ACCENT) } else { gpui::transparent_black() })
             .cursor_pointer()
             .when(selected, |d| d.bg(c(theme::ACCENT_BG)))

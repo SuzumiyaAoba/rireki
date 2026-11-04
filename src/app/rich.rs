@@ -91,7 +91,7 @@ impl Sgr {
     fn style(self) -> Option<HighlightStyle> {
         (self != Sgr::default()).then(|| HighlightStyle {
             color: self.fg.map(c),
-            font_weight: self.bold.then_some(FontWeight::BOLD),
+            font_weight: self.bold.then_some(FontWeight::SEMIBOLD),
             font_style: self.italic.then_some(FontStyle::Italic),
             underline: self.underline.then_some(UnderlineStyle { thickness: px(1.0), color: None, wavy: false }),
             fade_out: self.dim.then_some(0.4),
@@ -280,7 +280,7 @@ pub fn mono_spans(text: &str) -> (String, Spans) {
             }
             continue;
         }
-        let bold = |hex| HighlightStyle { font_weight: Some(FontWeight::BOLD), ..color(hex) };
+        let bold = |hex| HighlightStyle { font_weight: Some(FontWeight::SEMIBOLD), ..color(hex) };
         // Codex の出力の先頭の `[exit 1 · 0.2s]` と、exec の呼び出しごとの `── #0 [exit 0 · 0.1s]`
         let meta = l.starts_with("── ") || (n == 0 && l.starts_with('[') && l.ends_with(']'));
         // exec の呼び出しの見出し `#0 名前 ← ツール`
@@ -491,7 +491,7 @@ impl Inline {
                 None
             },
             background_color: self.code.then(|| c(theme::HOVER)),
-            font_weight: self.bold.then_some(FontWeight::BOLD),
+            font_weight: self.bold.then_some(FontWeight::SEMIBOLD),
             font_style: self.italic.then_some(FontStyle::Italic),
             underline: self.link.then_some(UnderlineStyle { thickness: px(1.0), color: None, wavy: false }),
             strikethrough: self.strike.then_some(StrikethroughStyle { thickness: px(1.0), color: None }),
@@ -776,16 +776,16 @@ pub fn markdown(s: &str, color: u32) -> Div {
     let mut col = div().flex().flex_col().gap_2().min_w_0().whitespace_normal().text_color(c(color));
     for (i, b) in blocks(s).into_iter().enumerate() {
         col = col.child(match b {
-            Block::Heading(level, text) => div()
-                .pt(px(if level <= 2 { 6.0 } else { 2.0 }))
-                .font_weight(if level <= 3 { FontWeight::BOLD } else { FontWeight::SEMIBOLD })
-                .text_color(c(theme::TEXT))
-                .text_size(px(match level {
-                    1 => 16.0,
-                    2 => 15.0,
-                    _ => 14.0,
-                }))
-                .child(inline_text(&text)),
+            Block::Heading(level, text) => {
+                let heading = div().font_weight(FontWeight::SEMIBOLD).text_color(c(theme::TEXT));
+                // 見出しの水準は文字サイズの段階 2 つで分ける
+                if level <= 2 {
+                    heading.pt_2().text_heading()
+                } else {
+                    heading.pt_1().text_body()
+                }
+                .child(inline_text(&text))
+            }
             Block::Para(text) => div().min_w_0().child(inline_text(&text)),
             Block::Code(lang, code) => code_frame()
                 .relative()
@@ -815,7 +815,7 @@ pub fn markdown(s: &str, color: u32) -> Div {
             }
             Block::Quote(text) => div()
                 .pl_2()
-                .border_l_2()
+                .border_l_1()
                 .border_color(c(theme::LINE))
                 .text_color(c(theme::MUTED))
                 .child(inline_text(&text)),
@@ -919,7 +919,7 @@ mod tests {
         assert_eq!(t, "red plain ok");
         assert_eq!(ranges(&s), [0..3, 10..12]);
         assert_eq!(s[0].1.color, Some(c(ANSI16[1])));
-        assert_eq!(s[1].1.font_weight, Some(FontWeight::BOLD));
+        assert_eq!(s[1].1.font_weight, Some(FontWeight::SEMIBOLD));
         // OSC のハイパーリンクと 256 色
         let (t, s) = ansi("\x1b]8;;http://x\x07link\x1b]8;;\x07 \x1b[38;5;196mX\x1b[39m");
         assert_eq!(t, "link X");
@@ -952,7 +952,7 @@ mod tests {
         let (text, spans) = inline("日本🙂**太字**の文\\*と`code`後 [リンク](url)!");
         assert_eq!(text, "日本🙂太字の文*とcode後 リンク!");
         assert_eq!(ranges(&spans), [10..16, 26..30, 34..43]);
-        assert_eq!(spans[0].1.font_weight, Some(FontWeight::BOLD));
+        assert_eq!(spans[0].1.font_weight, Some(FontWeight::SEMIBOLD));
         assert_eq!(spans[1].1.color, Some(c(INLINE_CODE)));
         assert!(spans[2].1.underline.is_some());
         let plain = "日本🙂 ] ~ \\日本 `閉じない";

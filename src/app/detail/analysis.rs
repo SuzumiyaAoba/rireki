@@ -762,13 +762,13 @@ impl Rireki {
                                 .mt_1()
                                 .h(px(3.0))
                                 .w_full()
-                                .rounded_full()
+                                .radius_sm()
                                 .bg(c(theme::LINE_SOFT))
                                 .child(
                                     div()
                                         .h_full()
                                         .w(gpui::relative(share))
-                                        .rounded_full()
+                                        .radius_sm()
                                         .bg(c(theme::ACCENT)),
                                 ),
                         )

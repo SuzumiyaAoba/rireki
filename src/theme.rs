@@ -62,12 +62,28 @@ pub fn ink_on(fill: u32) -> u32 {
     if contrast(BACKDROP) >= contrast(TEXT) { BACKDROP } else { TEXT }
 }
 
-/// 角丸は 4 段。正円は点だけに使う
+/// 角丸は 4 段。正円は点と目印（今日の日付・履歴のノード・ドーナツの穴）だけに使う。棒・帯・チップ・トグルの地には使わない
 pub mod radius {
     pub const SM: f32 = 3.0;
     pub const MD: f32 = 6.0;
     pub const PANEL: f32 = 10.0;
     pub const INNER: f32 = 9.0;
+}
+
+/// 画面の骨格の寸法。正は design/src/tokens.ts の dimensions
+pub mod dim {
+    pub const STRIP: f32 = 34.0;
+    pub const RAIL: f32 = 68.0;
+    pub const GAP: f32 = 8.0;
+    pub const HEADER: f32 = 46.0;
+    pub const FOOTER: f32 = 26.0;
+    pub const MINIMAP: f32 = 30.0;
+    pub const AXIS: f32 = 40.0;
+    pub const ROW: f32 = 32.0;
+    pub const CONTROL: f32 = 28.0;
+    pub const SIDEBAR: f32 = 260.0;
+    pub const LABEL: f32 = 260.0;
+    pub const DETAIL: f32 = 440.0;
 }
 
 /// 文字サイズは 5 段。AXIS は軸・時刻・件数・キー表記などの補助の文字
@@ -337,6 +353,176 @@ mod tests {
         assert_eq!(number(alpha, "stale"), alpha::STALE);
         assert_eq!(number(alpha, "range"), alpha::RANGE);
         assert_eq!(number(alpha, "diff"), alpha::DIFF);
+        // 正円は 9999px（tokens.ts と DESIGN.md の値）。点と目印にだけ使う
+        assert_eq!(number(radius, "full"), 9999.0);
+    }
+
+    #[test]
+    fn dimensions_match_tokens() {
+        let dimensions = section("dimensions");
+        let expected = [
+            ("strip", dim::STRIP),
+            ("rail", dim::RAIL),
+            ("gap", dim::GAP),
+            ("header", dim::HEADER),
+            ("footer", dim::FOOTER),
+            ("minimap", dim::MINIMAP),
+            ("axis", dim::AXIS),
+            ("row", dim::ROW),
+            ("control", dim::CONTROL),
+            ("sidebar", dim::SIDEBAR),
+            ("label", dim::LABEL),
+            ("detail", dim::DETAIL),
+        ];
+        for (key, value) in expected {
+            assert_eq!(number(dimensions, key), value, "dimensions.{key}");
+        }
+        // 余白と同じく、骨格の隙間も 4px の倍数
+        assert_eq!(dim::GAP % 4.0, 0.0);
+    }
+
+    #[test]
+    fn scrim_matches_tokens() {
+        let overlay = section("overlay");
+        let at = overlay.find("scrim: '#").expect("scrim がない") + "scrim: '#".len();
+        let alpha = u32::from_str_radix(&overlay[at + 6..at + 8], 16).unwrap();
+        assert_eq!((SCRIM * 255.0).round() as u32, alpha, "overlay.scrim の透明度");
+    }
+
+    /// ツール名ごとのアイコンは tokens.ts の toolIcons と同じ。lucide の名前（FolderSearch）は SVG のファイル名（folder-search）に対応する
+    #[test]
+    fn tool_icons_match_tokens() {
+        let kebab = |name: &str| {
+            let mut out = String::new();
+            for (i, ch) in name.chars().enumerate() {
+                if ch.is_uppercase() {
+                    if i > 0 {
+                        out.push('-');
+                    }
+                    out.extend(ch.to_lowercase());
+                } else {
+                    out.push(ch);
+                }
+            }
+            out
+        };
+        let mut count = 0;
+        for line in section("toolIcons").lines() {
+            let Some((tool, icon)) = line.trim().trim_end_matches(',').split_once(": '") else { continue };
+            let expected = format!("icons/{}.svg", kebab(icon.trim_end_matches('\'')));
+            assert_eq!(tool_icon(tool).path(), expected, "toolIcons.{tool}");
+            count += 1;
+        }
+        assert!(count >= 30, "toolIcons を読めていない: {count}");
+        // 名前のないツールの既定は工具、mcp__ で始まるものは差し込み口
+        assert_eq!(tool_icon("mcp__x__y").path(), "icons/plug.svg");
+        assert_eq!(tool_icon("unknown_tool").path(), "icons/wrench.svg");
+    }
+
+    /// DESIGN.md の frontmatter から、最上位キー `name:` の直下の `key: value` を読む（コメントと入れ子は除く）
+    fn design(name: &str) -> Vec<(String, String)> {
+        let front = include_str!("../DESIGN.md").split("---").nth(1).expect("DESIGN.md に frontmatter がない");
+        let mut out = Vec::new();
+        let mut inside = false;
+        for line in front.lines() {
+            if line.trim().is_empty() || line.trim_start().starts_with('#') {
+                continue;
+            }
+            if !line.starts_with(' ') {
+                inside = line.trim_end() == format!("{name}:");
+            } else if inside && !line.starts_with("    ") {
+                let (key, value) = line.trim().split_once(':').expect("key: value の形");
+                out.push((key.trim_matches('"').to_string(), value.trim().trim_matches('"').to_string()));
+            }
+        }
+        out
+    }
+
+    /// DESIGN.md は tokens.ts の要約。色・角丸・余白・骨格の寸法・透明度が食い違わないようにする
+    #[test]
+    fn design_md_matches_tokens() {
+        fn find(list: &[(String, String)], key: &str) -> String {
+            list.iter().find(|(name, _)| name == key).unwrap_or_else(|| panic!("DESIGN.md に {key} がない")).1.clone()
+        }
+        let rgb = |v: &str| u32::from_str_radix(v.trim_start_matches('#'), 16).unwrap_or_else(|_| panic!("色でない: {v}"));
+        let num = |v: &str| v.trim_end_matches("px").parse::<f32>().unwrap_or_else(|_| panic!("数値でない: {v}"));
+
+        let colors = design("colors");
+        let tokens = section("colors");
+        // DESIGN.md の名前（primary など）と tokens.ts の名前が違うものを含む
+        for (name, key) in [
+            ("backdrop", "backdrop"),
+            ("bg", "bg"),
+            ("panel", "panel"),
+            ("raised", "raised"),
+            ("hover", "hover"),
+            ("line", "line"),
+            ("line-soft", "lineSoft"),
+            ("text", "text"),
+            ("muted", "muted"),
+            ("subtle", "subtle"),
+            ("primary", "accent"),
+            ("primary-bg", "accentBg"),
+            ("select", "select"),
+            ("live", "live"),
+            ("now", "now"),
+            ("err", "err"),
+            ("warn", "warn"),
+            ("diff-add", "diffAdd"),
+            ("diff-del", "diffDel"),
+            ("claude", "claude"),
+            ("codex", "codex"),
+        ] {
+            assert_eq!(rgb(&find(&colors, name)), hex(tokens, key), "DESIGN.md colors.{name}");
+        }
+        // brand は 1 行に claude, codex の順で並ぶ
+        let brand = hexes(section("brand"));
+        assert_eq!(rgb(&find(&colors, "logo-claude")), brand[0], "DESIGN.md colors.logo-claude");
+        assert_eq!(rgb(&find(&colors, "logo-codex")), brand[1], "DESIGN.md colors.logo-codex");
+        let groups = section("eventGroups");
+        for key in ["user", "assistant", "thinking", "reference", "edit", "shell", "agent", "other"] {
+            assert_eq!(rgb(&find(&colors, &format!("event-{key}"))), hex(groups, key), "DESIGN.md colors.event-{key}");
+        }
+        for (i, value) in hexes(section("heat")).into_iter().enumerate() {
+            assert_eq!(rgb(&find(&colors, &format!("heat-{}", i + 1))), value, "DESIGN.md colors.heat-{}", i + 1);
+        }
+        for (i, value) in hexes(section("projectColors")).into_iter().enumerate() {
+            assert_eq!(rgb(&find(&colors, &format!("project-{}", i + 1))), value, "DESIGN.md colors.project-{}", i + 1);
+        }
+        // 幕と影は透明度を含む色なので、文字列のまま比べる
+        let overlay = section("overlay");
+        for key in ["scrim", "shadow"] {
+            let at = overlay.find(&format!("{key}: '")).unwrap_or_else(|| panic!("overlay.{key} がない")) + key.len() + 3;
+            let raw = &overlay[at..at + overlay[at..].find('\'').unwrap()];
+            assert_eq!(find(&colors, key), raw, "DESIGN.md colors.{key}");
+        }
+
+        let rounded = design("rounded");
+        let radius = section("radius");
+        assert_eq!(rounded.len(), 5, "DESIGN.md の rounded の数");
+        for (key, value) in &rounded {
+            assert_eq!(num(value), number(radius, key), "DESIGN.md rounded.{key}");
+        }
+
+        // spacing は余白の段階（数字のキー）と骨格の寸法（名前のキー）を一つにまとめている
+        let spacing = design("spacing");
+        let (steps, named): (Vec<_>, Vec<_>) = spacing.iter().partition(|(key, _)| key.chars().all(|c| c.is_ascii_digit()));
+        let (space, dimensions) = (section("space"), section("dimensions"));
+        for (key, value) in &steps {
+            assert_eq!(num(value), number(space, key), "DESIGN.md spacing.{key}");
+        }
+        for (key, value) in &named {
+            assert_eq!(num(value), number(dimensions, key), "DESIGN.md spacing.{key}");
+        }
+        let count = |section: &str| section.lines().filter(|l| l.contains(": ") && !l.starts_with("export")).count();
+        assert_eq!(named.len(), count(dimensions), "DESIGN.md の骨格の寸法の数");
+        assert_eq!(steps.len(), 6, "DESIGN.md の余白の段階の数");
+
+        let alpha = design("alpha");
+        assert_eq!(alpha.len(), 4, "DESIGN.md の alpha の数");
+        for (key, value) in &alpha {
+            assert_eq!(value.parse::<f32>().unwrap(), number(section("alpha"), key), "DESIGN.md alpha.{key}");
+        }
     }
 
     /// 画面のソースに、段階を通さない文字サイズ・角丸・色・透明度や、廃止した呼び名が戻らないようにする
@@ -353,12 +539,15 @@ mod tests {
             }
         }
         // 構文強調と ANSI の表は、意味の色ではなく内容の色なので直書きを許す
-        const RAW_COLORS: [&str; 2] = ["rich.rs", "syntax.rs"];
-        const BANNED: [&str; 14] = [
+        const RAW_COLORS: [&str; 2] = ["rich.rs", "rich/syntax.rs"];
+        // 影はポップオーバーとモーダルだけが持つ
+        const SHADOW_FILES: [&str; 3] = ["range.rs", "overlay.rs", "mcp.rs"];
+        const BANNED: &[&str] = &[
             ".text_xs(",
             ".text_sm(",
             ".text_lg(",
             ".text_base(",
+            ".text_size(",
             ".rounded_sm(",
             ".rounded_md(",
             ".rounded_lg(",
@@ -369,24 +558,50 @@ mod tests {
             "API コスト",
             "API 換算料金",
             "推定料金",
+            // 太さは通常と 600 の 2 つだけ
+            "FontWeight::THIN",
+            "FontWeight::EXTRA_LIGHT",
+            "FontWeight::LIGHT",
+            "FontWeight::MEDIUM",
+            "FontWeight::BOLD",
+            "FontWeight::EXTRA_BOLD",
+            "FontWeight::BLACK",
+            // 色付きの左帯は付けない（区切り線の border_l_1 は許す）
+            ".border_l_2(",
+            ".border_l_4(",
+            ".border_l_8(",
+            ".shadow_2xs(",
+            ".shadow_xs(",
+            ".shadow_sm(",
+            ".shadow_md(",
+            ".shadow_xl(",
+            ".shadow_2xl(",
         ];
         let mut files = Vec::new();
-        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app"), &mut files);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        walk(&root.join("app"), &mut files);
+        files.push(root.join("app.rs"));
+        files.push(root.join("main.rs"));
         assert!(files.len() > 20, "ソースを見つけられない");
         let mut found = Vec::new();
         for path in files {
             let source = std::fs::read_to_string(&path).unwrap();
             // テストモジュールは検査しない
             let code = source.split("#[cfg(test)]").next().unwrap();
-            let name = path.file_name().unwrap().to_str().unwrap();
+            let rel = path.strip_prefix(&root).unwrap().to_str().unwrap().replace('\\', "/");
+            let name = rel.strip_prefix("app/").unwrap_or(&rel);
             for pattern in BANNED {
                 // `theme::SUB` が `theme::SUBTLE` に当たらないよう、識別子の途中で終わるものは除く
                 let hit = code.match_indices(pattern).any(|(at, _)| {
-                    !code[at + pattern.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                    pattern.ends_with('(')
+                        || !code[at + pattern.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
                 });
                 if hit {
                     found.push(format!("{name}: {pattern}"));
                 }
+            }
+            if code.contains(".shadow_lg(") && !SHADOW_FILES.contains(&name) {
+                found.push(format!("{name}: 影はポップオーバーとモーダルだけ"));
             }
             for (at, _) in code.match_indices("gpui::black()") {
                 if !code[at..].starts_with("gpui::black().opacity(theme::SCRIM)") {

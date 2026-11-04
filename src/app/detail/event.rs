@@ -421,8 +421,9 @@ impl Rireki {
         self.titled(Some(head), "copy-out", output, body, cx).when(
             failed && !output.is_empty(),
             |d| {
-                d.pl_2()
-                    .border_l_2()
+                d.p_2()
+                    .border_1()
+                    .radius_sm()
                     .border_color(c(status.map_or(theme::ERR, |s| s.1)))
             },
         )

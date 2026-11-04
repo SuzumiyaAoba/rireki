@@ -28,20 +28,20 @@ export const colors = {
 export const dimensions = {
   strip: 34,
   rail: 68,
-  gap: 6,
-  panelRadius: 10,
+  gap: 8,
   header: 46,
   footer: 26,
   minimap: 30,
   axis: 40,
   row: 32,
+  control: 28,
   sidebar: 260,
   label: 260,
   detail: 440,
 } as const;
 
-// 角丸は 4 段。正円は点だけに使う。
-export const radius = { sm: 3, md: 6, panel: 10, inner: 9 } as const;
+// 角丸は 4 段。正円の full は点と目印（今日の日付・履歴のノード・ドーナツの穴）だけに使う。
+export const radius = { sm: 3, md: 6, panel: 10, inner: 9, full: 9999 } as const;
 
 // 文字サイズは 5 段。11px は軸・時刻・件数・kbd などの補助の文字。太さは通常と 600 の 2 つ。
 export const fontSize = { axis: 11, small: 12, body: 13, heading: 16, value: 20 } as const;
@@ -97,6 +97,45 @@ export const eventKinds = {
 } as const;
 
 export type EventKind = keyof typeof eventKinds;
+
+// ツール名ごとのアイコン。種類（eventKinds）の既定より細かく分ける。
+// 名前が無いもの（mcp__ で始まるものは Plug）は種類の既定を使う。src/theme.rs の tool_icon と一致を検査する。
+export const toolIcons = {
+  Read: 'FileText',
+  read_file: 'FileText',
+  Grep: 'TextSearch',
+  grep_files: 'TextSearch',
+  Glob: 'FolderSearch',
+  LS: 'FolderSearch',
+  list_dir: 'FolderSearch',
+  view_image: 'Image',
+  Edit: 'FilePen',
+  MultiEdit: 'FilePen',
+  apply_patch: 'FilePen',
+  Write: 'FilePlus',
+  NotebookEdit: 'NotebookPen',
+  Bash: 'Terminal',
+  BashOutput: 'Terminal',
+  exec: 'Terminal',
+  exec_command: 'Terminal',
+  shell: 'Terminal',
+  local_shell_call: 'Terminal',
+  write_stdin: 'Keyboard',
+  wait: 'Hourglass',
+  Monitor: 'Activity',
+  WebSearch: 'Globe',
+  web_search_call: 'Globe',
+  web_search: 'Globe',
+  WebFetch: 'CloudDownload',
+  TodoWrite: 'ListChecks',
+  update_plan: 'ListChecks',
+  TaskCreate: 'ListChecks',
+  TaskUpdate: 'ListChecks',
+  TaskList: 'ListChecks',
+  ExitPlanMode: 'Map',
+  update_goal: 'Target',
+  Skill: 'Sparkles',
+} as const;
 
 // プロジェクトの目印の色。名前を必ず並べるので、同じ色になっても構わない。
 export const projectColors = [

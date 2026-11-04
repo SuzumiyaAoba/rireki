@@ -308,9 +308,9 @@ impl Rireki {
                     div()
                         .w_full()
                         .h(px(3.0))
-                        .rounded_full()
+                        .radius_sm()
                         .bg(c(theme::LINE))
-                        .child(div().w(relative(progress as f32)).h_full().rounded_full().bg(c(theme::ACCENT))),
+                        .child(div().w(relative(progress as f32)).h_full().radius_sm().bg(c(theme::ACCENT))),
                 );
         } else {
             controls = controls.child(actions);

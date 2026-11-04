@@ -17,7 +17,7 @@ use crate::theme::Scale as _;
 use crate::theme::{self, c};
 
 /// ツールバーの部品の高さ
-pub(super) const CONTROL_H: f32 = 28.0;
+pub(super) const CONTROL_H: f32 = theme::dim::CONTROL;
 /// 部品の枠の中の項目の高さ（枠線と内側の余白を除く）
 const ITEM_H: f32 = CONTROL_H - 6.0;
 /// ツールバーの左右の余白と、部品の間隔

@@ -7,7 +7,7 @@
 //! 帯と所要時間の図は行ごとに 1 つの canvas に描き、表の要素を行数 × 印の数に増やさない。
 
 use gpui::{
-    AnyElement, BorderStyle, Bounds, Div, FontWeight, Pixels, canvas, div, fill, point, prelude::*, px, quad, relative,
+    AnyElement, BorderStyle, Bounds, Div, Pixels, canvas, div, fill, point, prelude::*, px, quad, relative,
     size,
 };
 
@@ -201,7 +201,7 @@ fn cells(
         .child(div().flex_none().w(px(16.0)).flex().justify_center().child(mark))
         .child(div().flex_none().w(px(layout.name_w)).truncate().child(name))
         .child(div().flex_1().min_w(px(48.0)).flex().items_center().child(calls_bar))
-        .child(number(NUM_W, fmt_n(calls.calls)).font_weight(FontWeight::MEDIUM))
+        .child(number(NUM_W, fmt_n(calls.calls)))
         .when(layout.fail_bar, |d| d.child(div().flex_none().w(px(FAIL_W)).child(failure_bar(calls, scale))))
         .child(number(RATE_W, rate).text_color(c(if calls.failures > 0 { theme::TEXT } else { theme::MUTED })))
         .when_some(layout.axis.as_ref(), |d, axis| d.child(axis.plot(durations)))

@@ -31,7 +31,6 @@ impl Render for Tip {
             .bg(c(theme::RAISED))
             .border_1()
             .border_color(c(theme::LINE))
-            .shadow_md()
             .text_small()
             .text_color(c(theme::TEXT))
             .child(self.text.clone())
